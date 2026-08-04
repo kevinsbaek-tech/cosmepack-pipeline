@@ -70,6 +70,7 @@ const COLLECTIONS = {
   products: "products",
   excelArchive: "excel_archive",
   accounts: "accounts",
+  settings: "settings", // 기준정보(물류비/마진율표/관세율/난이도차등율/공급자로고) 저장용, 고정 문서id(pricingConfig) 하나만 사용
 };
 
 async function fsAdd(collectionName, data) {
@@ -959,6 +960,16 @@ function productOptionSurcharge(p) {
 }
 
 // 제품 목록 전체를 baseGroupKey 기준으로 그룹핑(2건 이상 묶인 그룹만 "유사군"으로 의미있음)
+// 제품에 연결된 제안서 개수 계산 — proposalIds(정확한 ID기준, 신규 엑셀업로드부터 자동 연결됨)가 있으면 그걸 쓰고,
+// 없는 옛날 제품(소급 동기화 전)은 기존처럼 제품명 매칭으로 폴백해서 0으로 잘못 보이지 않게 한다.
+function getLinkedProposals(product, proposals) {
+  if (product.proposalIds && product.proposalIds.length > 0) {
+    const idSet = new Set(product.proposalIds);
+    return (proposals || []).filter((p) => idSet.has(p.id));
+  }
+  return (proposals || []).filter((p) => (p.items || []).some((it) => it.productName === product.name));
+}
+
 function buildProductGroups(products) {
   const map = new Map();
   products.forEach((p) => {
@@ -1017,6 +1028,10 @@ const DEFAULT_LOGISTICS = { cbmRate: 98000, blFee: 19000, originFee: 27000, brok
 const DEFAULT_EXRATE = { rmbToKrw: 230, rmbToUsd: 6.8, usdToKrw: 1380 };
 const EXRATE_CACHE_KEY = "cosmepack_exrate_cache";
 const EXRATE_SAVED_KEY = "cosmepack_exrate_saved"; // 사용자가 직접 저장한 환율 + 저장일시
+const PRICING_SETTINGS_KEY = "cosmepack_pricing_settings"; // 기준정보(물류비/마진율표/관세율/난이도차등율/로고) 저장용
+function loadPricingSettingsCache() {
+  try { return JSON.parse(localStorage.getItem(PRICING_SETTINGS_KEY) || "null"); } catch (e) { return null; }
+}
 // 무료 환율 API(open.er-api.com, CORS 제한 없음)로 CNY->KRW, CNY->USD, USD->KRW 중간환율을 가져와
 // 은행 송금(전신환매도율) 기준 근사 우대환율을 계산한다. 실제 은행 고시환율과는 소폭 차이가 있을 수 있는 "추천값"이다.
 async function fetchTodayExchangeRates() {
@@ -1295,10 +1310,25 @@ function AutoResizeTextarea({ value, onChange, placeholder, minRows, readOnly })
 
 /* ===================== 기준정보 설정 모달 ===================== */
 
-function SettingsModal({ open, onClose, logistics, setLogistics, marginTable, setMarginTable, customsRates, setCustomsRates, difficultyMargins, setDifficultyMargins, supplierLogo, setSupplierLogo }) {
+function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginTable, setMarginTable, customsRates, setCustomsRates, difficultyMargins, setDifficultyMargins, supplierLogo, setSupplierLogo }) {
   const [tab, setTab] = useState("logistics");
+  const [saving, setSaving] = useState(false);
   if (!open) return null;
   const updateMargin = (cat, idx, value) => setMarginTable((prev) => { const next = { ...prev, [cat]: [...prev[cat]] }; next[cat][idx] = Number(value) / 100; return next; });
+  // 저장 버튼 — DB(Firestore)+localStorage에 기준정보를 저장하고, 완료 안내 후 모달을 자동으로 닫는다.
+  const handleSaveAndClose = async () => {
+    setSaving(true);
+    try {
+      await onSave();
+      alert("기준정보 설정이 성공적으로 저장되었습니다.");
+      onClose();
+    } catch (e) {
+      console.error(e);
+      alert("저장 중 오류가 발생했습니다. 다시 시도해주세요.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
@@ -1380,7 +1410,7 @@ function SettingsModal({ open, onClose, logistics, setLogistics, marginTable, se
           )}
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end">
-          <button onClick={onClose} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">저장하고 닫기</button>
+          <button onClick={handleSaveAndClose} disabled={saving} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 disabled:opacity-60">{saving ? "저장 중..." : "저장하고 닫기"}</button>
         </div>
       </div>
     </div>
@@ -3416,7 +3446,7 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
 }
 
 function ProductProposalsModal({ product, proposals, onClose, onOpenProposal }) {
-  const matched = (proposals || []).filter((p) => (p.items || []).some((it) => it.productName === product.name));
+  const matched = getLinkedProposals(product, proposals);
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl w-full max-w-2xl overflow-hidden flex flex-col" style={{ maxHeight: "80vh" }}>
@@ -3446,7 +3476,7 @@ function ProductProposalsModal({ product, proposals, onClose, onOpenProposal }) 
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, isAdmin, initialViewProduct, onConsumeInitialView }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, isAdmin, initialViewProduct, onConsumeInitialView }) {
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("list"); // list | card
   const [editingProduct, setEditingProduct] = useState(null);
@@ -3654,6 +3684,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           {onAutoAssignCategories && <button onClick={onAutoAssignCategories} className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 whitespace-nowrap">🏷️ 카테고리 자동 매칭</button>}
           {onStripBrandPrefix && <button onClick={onStripBrandPrefix} className="text-sm px-4 py-2 rounded-lg border border-slate-300 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">✂️ 제품명 [브랜드] 제거</button>}
           {isAdmin && onDeleteAllProducts && <button onClick={onDeleteAllProducts} className="text-sm px-4 py-2 rounded-lg border border-red-200 text-red-600 font-medium hover:bg-red-50 whitespace-nowrap">🗑️ 제품 DB 전체 초기화</button>}
+          {isAdmin && onSyncProposalLinks && <button onClick={onSyncProposalLinks} title="기존에 이미 저장된 제안서들을 다시 훑어서, 제품별 'N개 제안서' 연결 개수를 지금 시점 기준으로 다시 계산합니다." className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 whitespace-nowrap">🔄 제안서 연결 재계산</button>}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {["전체", ...CATEGORIES].map((c) => (
@@ -3725,7 +3756,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
                       <div className="grid grid-cols-2 gap-1">
                         {proposals && (
                           <button onClick={() => setViewingProductProposals(p)} className="text-[11px] leading-tight px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-center">
-                            {(proposals.filter((pr) => (pr.items || []).some((it) => it.productName === p.name))).length}개 제안서
+                            {getLinkedProposals(p, proposals).length}개 제안서
                           </button>
                         )}
                         {onUseInSourcing && (
@@ -3779,10 +3810,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [activeStep, setActiveStep] = useState(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exSettingsOpen, setExSettingsOpen] = useState(false); // 상단 유틸리티바의 "환율 상세설정" 팝업 토글
-  const [logistics, setLogistics] = useState(DEFAULT_LOGISTICS);
-  const [marginTable, setMarginTable] = useState(DEFAULT_MARGIN_TABLE);
-  const [customsRates, setCustomsRates] = useState(DEFAULT_CUSTOMS_RATES);
-  const [difficultyMargins, setDifficultyMargins] = useState(DEFAULT_DIFFICULTY_MARGINS);
+  const [logistics, setLogistics] = useState(() => (loadPricingSettingsCache() || {}).logistics || DEFAULT_LOGISTICS);
+  const [marginTable, setMarginTable] = useState(() => ({ ...DEFAULT_MARGIN_TABLE, ...((loadPricingSettingsCache() || {}).marginTable || {}) }));
+  const [customsRates, setCustomsRates] = useState(() => ({ ...DEFAULT_CUSTOMS_RATES, ...((loadPricingSettingsCache() || {}).customsRates || {}) }));
+  const [difficultyMargins, setDifficultyMargins] = useState(() => (loadPricingSettingsCache() || {}).difficultyMargins || DEFAULT_DIFFICULTY_MARGINS);
   const [clientsList, setClientsList] = useState([]);
   const [exRate, setExRate] = useState(() => {
     try {
@@ -3839,7 +3870,28 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     });
     setToast("오늘 기준 환율을 적용했습니다. (하단 '💾 적용/저장' 버튼을 눌러야 다음 접속에도 유지됩니다)");
   };
-  const [supplierLogo, setSupplierLogo] = useState("");
+  const [supplierLogo, setSupplierLogo] = useState(() => (loadPricingSettingsCache() || {}).supplierLogo || "");
+
+  // 기준정보(물류비/마진율표/관세율/난이도차등율/로고)를 Firestore에서도 불러와 다른 기기와 동기화(최초 1회, 있으면 localStorage 캐시보다 우선 적용)
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !db) return;
+    db.collection(COLLECTIONS.settings).doc("pricingConfig").get().then((doc) => {
+      if (!doc.exists) return;
+      const data = doc.data() || {};
+      if (data.logistics) setLogistics(data.logistics);
+      if (data.marginTable) setMarginTable((prev) => ({ ...prev, ...data.marginTable }));
+      if (data.customsRates) setCustomsRates((prev) => ({ ...prev, ...data.customsRates }));
+      if (data.difficultyMargins) setDifficultyMargins(data.difficultyMargins);
+      if (data.supplierLogo) setSupplierLogo(data.supplierLogo);
+    }).catch((e) => console.error("기준정보 불러오기 실패:", e));
+  }, []);
+
+  // "저장하고 닫기" 버튼 — 기준정보 5종을 localStorage + Firestore에 함께 저장(다음 접속에도 유지, 다른 기기와도 동기화)
+  const saveSettingsConfig = async () => {
+    const payload = { logistics, marginTable, customsRates, difficultyMargins, supplierLogo, savedAt: nowDateTimeStr() };
+    try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); } catch (e) { console.error(e); }
+    try { if (FIREBASE_ENABLED && db) await db.collection(COLLECTIONS.settings).doc("pricingConfig").set(payload); } catch (e) { console.error(e); }
+  };
 
   // 1단계: 가격조사 저장소
   const [sourcingItems, setSourcingItems] = useState([]);
@@ -4094,7 +4146,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
   // 엑셀 보관함: 업로드 시 자동 파싱 + DB 연동
   // 업체/공장/제품 DB 동기화 (신규 업로드시 + "파이프라인 적용" 클릭시 둘 다 재사용)
-  const syncParsedDataToDb = (clientName, items, factories, factoryLinks, factoryHomepages) => {
+  const syncParsedDataToDb = async (clientName, items, factories, factoryLinks, factoryHomepages) => {
     if (clientName && !clientsList.some((c) => c.name === clientName)) {
       addClientRecord({ id: Date.now() + Math.random(), name: clientName, contact: "", channel: "카카오채널", difficulty: "표준", source: "excel" });
     }
@@ -4109,8 +4161,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         updateFactoryRecord(existing.id, { websiteUrl: homepage });
       }
     });
-    if ((items || []).length > 0) {
-      bulkAddProducts(items.map((it) => {
+    if ((items || []).length === 0) return productsList;
+    return await bulkAddProducts(items.map((it) => {
         const noteText = it.notes || it.note || it.printFinishNote || "";
         const rec = {
           name: buildStandardProductName(it.name, it.specRaw || it.specSize, noteText), // "[코스메팩] 재질/노즐·인서트/캡/사이즈/용량/후가공" 표준 형식으로 재조합(제품명+재원+비고 모두 참고)
@@ -4129,7 +4181,6 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         }
         return rec;
       }), "excel");
-    }
   };
 
   // 엑셀 파일 1개를 분석해서 보관함+DB에 반영. silent=true면 개별 토스트를 띄우지 않음(ZIP 일괄처리용)
@@ -4180,8 +4231,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       if (!silent) setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)");
     }
 
-    syncParsedDataToDb(parsed.clientName, parsed.items, parsed.factories, parsed.factoryLinks, parsed.factoryHomepages);
-    await ensureExcelProposalRegistered(parsed.clientName, parsed.items, file.name, parsed.proposalDate);
+    const productSnapshot1 = await syncParsedDataToDb(parsed.clientName, parsed.items, parsed.factories, parsed.factoryLinks, parsed.factoryHomepages);
+    const newProposalId1 = await ensureExcelProposalRegistered(parsed.clientName, parsed.items, file.name, parsed.proposalDate);
+    if (newProposalId1) await linkProposalToProducts(newProposalId1, parsed.items, productSnapshot1);
     return { ok: true, fileName: file.name, itemCount: parsed.items.length };
   };
 
@@ -4371,10 +4423,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
   // 파싱된 품목으로 제안서 레코드를 생성 (같은 파일명+거래처로 이미 등록돼 있으면 중복 생성하지 않음)
   const ensureExcelProposalRegistered = async (clientName, items, fileName, proposalDate) => {
-    if (!items || items.length === 0) return;
+    if (!items || items.length === 0) return null;
     const proposalTitle = fileName.replace(/\.xlsx?$/i, "");
     const already = proposalList.some((p) => p.proposalTitle === proposalTitle && p.clientName === (clientName || "(미확인)"));
-    if (already) return;
+    if (already) return null;
     const draftShapedItems = items.map((it) => ({
       id: Date.now() + Math.random(),
       image: it.image || "", productName: it.name, specSize: it.specSize, material: it.material,
@@ -4394,8 +4446,62 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       proposalTitle, itemSummary, totalAmount, totalCbm,
       items: draftShapedItems, validUntil: addDays(30),
     };
-    setProposalList((prev) => [{ id: Date.now() + Math.random(), ...proposalRecord }, ...prev]);
-    try { await fsAdd(COLLECTIONS.proposals, proposalRecord); } catch (e) { console.error(e); }
+    // 로컬 state와 Firestore 문서가 서로 다른 id를 갖지 않도록, Firestore에 먼저 저장해 실제 id를 받은 뒤 그 id로 로컬에도 반영.
+    // 이 id가 있어야 제품 레코드의 proposalIds 배열에 정확히 연결할 수 있다(제품명 매칭 방식은 표준 제품명 재조합 이후 어긋나는 문제가 있었음).
+    let proposalId = null;
+    try {
+      const res = await fsAdd(COLLECTIONS.proposals, proposalRecord);
+      proposalId = res && res.id;
+    } catch (e) { console.error(e); }
+    const localId = proposalId || (Date.now() + Math.random());
+    setProposalList((prev) => [{ id: localId, ...proposalRecord }, ...prev]);
+    return proposalId || localId;
+  };
+
+  // 엑셀에서 자동 생성된 제안서를 관련 제품 레코드와 ID 기준으로 연결(proposalIds 배열에 push, proposalCount 갱신).
+  // productSnapshot을 넘겨받으면(방금 syncParsedDataToDb가 반환한 최신 목록) 그걸 우선 사용하고, 없으면 현재 productsList state를 사용.
+  const linkProposalToProducts = async (proposalId, items, productSnapshot) => {
+    if (!proposalId || !items || items.length === 0) return;
+    const pool = productSnapshot || productsList;
+    for (const it of items) {
+      const noteText = it.notes || it.note || it.printFinishNote || "";
+      const standardName = buildStandardProductName(it.name, it.specRaw || it.specSize, noteText);
+      const match = pool.find((p) => (p.sku && it.sku && p.sku === it.sku) || p.name === standardName || p.name === it.name);
+      if (!match) continue;
+      const existingIds = match.proposalIds || [];
+      if (existingIds.includes(proposalId)) continue; // 중복 연결 방지
+      const newIds = [...existingIds, proposalId];
+      const patch = { proposalIds: newIds, proposalCount: newIds.length };
+      setProductsList((prev) => prev.map((p) => (p.id === match.id ? { ...p, ...patch } : p)));
+      try { if (FIREBASE_ENABLED && typeof match.id === "string") await fsUpdate(COLLECTIONS.products, match.id, patch); } catch (e) { console.error(e); }
+    }
+  };
+
+  // 기존에 이미 저장돼있던 제안서들을 순회하며 관련 제품의 proposalIds/proposalCount를 다시 계산해 동기화(소급 보정용).
+  // 관리자가 필요할 때 수동으로 실행 — 기존 데이터엔 proposalIds가 없어서 "N개 제안서"가 0으로 보이는 문제를 한번에 바로잡는다.
+  const syncAllProposalProductLinks = async () => {
+    if (!window.confirm(`제안서 ${proposalList.length}건을 순회하며 제품별 연결된 제안서 개수를 다시 계산할까요?`)) return;
+    // 제품별로 proposalIds를 처음부터 새로 집계(누적 아님 — 지금 시점 기준으로 완전히 재계산)
+    const idsByProductId = new Map();
+    for (const proposal of proposalList) {
+      for (const it of (proposal.items || [])) {
+        const noteText = it.notes || "";
+        const standardName = buildStandardProductName(it.productName, it.specSize, noteText);
+        const match = productsList.find((p) => p.name === standardName || p.name === it.productName);
+        if (!match) continue;
+        const list = idsByProductId.get(match.id) || [];
+        if (!list.includes(proposal.id)) list.push(proposal.id);
+        idsByProductId.set(match.id, list);
+      }
+    }
+    let syncedCount = 0;
+    for (const [productId, ids] of idsByProductId.entries()) {
+      const patch = { proposalIds: ids, proposalCount: ids.length };
+      setProductsList((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
+      try { if (FIREBASE_ENABLED && typeof productId === "string") await fsUpdate(COLLECTIONS.products, productId, patch); } catch (e) { console.error(e); }
+      syncedCount++;
+    }
+    setToast(`${syncedCount}개 제품의 제안서 연결 개수를 다시 계산했습니다.`);
   };
 
   // 보관함의 특정 파일 데이터로 파이프라인(1~3단계)을 세팅. 최초 1회에 한해 업체/공장/제품 DB에 심층 반영하고 "적용 완료" 상태로 표시
@@ -4435,8 +4541,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
     if (!item.pipelineApplied) {
       // 최초 적용시에만 업체/공장/제품 DB 심층 반영(홈페이지링크, 수량별단가 등) + 제안서목록 등록 보장
-      syncParsedDataToDb(item.clientName, item.parsedItems, item.parsedFactories, item.parsedFactoryLinks, item.parsedFactoryHomepages);
-      await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName, item.parsedProposalDate);
+      const productSnapshot2 = await syncParsedDataToDb(item.clientName, item.parsedItems, item.parsedFactories, item.parsedFactoryLinks, item.parsedFactoryHomepages);
+      const newProposalId2 = await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName, item.parsedProposalDate);
+      if (newProposalId2) await linkProposalToProducts(newProposalId2, item.parsedItems, productSnapshot2);
       setExcelArchiveList((prev) => prev.map((x) => (x.id === item.id ? { ...x, pipelineApplied: true } : x)));
       try { if (FIREBASE_ENABLED && typeof item.id === "string") await fsUpdate(COLLECTIONS.excelArchive, item.id, { pipelineApplied: true }); } catch (e) { console.error(e); }
       setToast(`"${item.fileName}" 데이터를 파이프라인에 적용하고, 업체·공장·제품 DB를 심층 반영했습니다.`);
@@ -4454,8 +4561,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     let count = 0;
     for (const item of targets) {
       try {
-        syncParsedDataToDb(item.clientName, item.parsedItems, item.parsedFactories, item.parsedFactoryLinks, item.parsedFactoryHomepages);
-        await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName, item.parsedProposalDate);
+        const productSnapshot3 = await syncParsedDataToDb(item.clientName, item.parsedItems, item.parsedFactories, item.parsedFactoryLinks, item.parsedFactoryHomepages);
+        const newProposalId3 = await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName, item.parsedProposalDate);
+        if (newProposalId3) await linkProposalToProducts(newProposalId3, item.parsedItems, productSnapshot3);
         setExcelArchiveList((prev) => prev.map((x) => (x.id === item.id ? { ...x, pipelineApplied: true } : x)));
         try { if (FIREBASE_ENABLED && typeof item.id === "string") await fsUpdate(COLLECTIONS.excelArchive, item.id, { pipelineApplied: true }); } catch (e) { console.error(e); }
         count++;
@@ -4559,6 +4667,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       }
     }
     setToast(`${added}개 신규 등록, ${updated}개 기존 제품 갱신 완료 (SKU/제품명 기준 중복 방지)`);
+    return nextList; // 이번 배치 안에서 즉시 최신 상태를 참조할 수 있도록 반환(React state는 비동기라 이 시점에 productsList로는 못 읽음)
   };
 
   // 제품 관리: SKU 또는 (제품명+규격) 기준 중복 정리 — 가장 정보가 많은 항목만 남기고 나머지 삭제
@@ -4765,7 +4874,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       <ClientInfoModal open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
         onClose={() => setClientModal({ open: false, mode: clientModal.mode })} onSubmit={handleClientSubmit} />
       <PdfPreview open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo} />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} />
 
       <header className="bg-[#1E3A8A] text-white relative">
         {/* 1단: 최상단 유틸리티 바 — 환율 요약(사용자가 저장한 값 우선) + 계정/시스템 상태 */}
@@ -4966,6 +5075,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onSyncFactories={syncFactoriesFromBoxHeroRecords}
           onUploadZip={uploadZipToArchive}
           onDeleteAllProducts={deleteAllProducts}
+          onSyncProposalLinks={syncAllProposalProductLinks}
           onDeleteAllUploaded={deleteAllUploadedProductData}
           isAdmin={isAdmin}
           initialViewProduct={productToView} onConsumeInitialView={() => setProductToView(null)}
