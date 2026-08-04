@@ -268,14 +268,16 @@ function extractProposalItems(rows, imageMap) {
     const specRaw = specIdx >= 0 ? String(row[specIdx] || "") : "";
     const sizeMatch = specRaw.match(/사이즈\s*[:：]?\s*([^\n]+?)(?=\s*재질|$)/);
     const materialMatch = specRaw.match(/재질\s*[:：]?\s*([^\n]+)/);
+    const noteRaw = noteIdx >= 0 ? String(row[noteIdx] || "").trim() : "";
+    const noteSpec = extractSpecFromNote(noteRaw);
     items.push({
-      name: String(name).trim(),
+      name: String(name).replace(/\r?\n+/g, " ").trim(), // 2줄 이상 작성된 제품명도 줄바꿈만 공백으로 바꿔 잘림 없이 100% 보존
       specSize: sizeMatch ? sizeMatch[1].trim() : specRaw.split("\n")[0] || "",
       material: materialMatch ? materialMatch[1].trim() : "",
       quantity: qtyIdx >= 0 ? Number(String(row[qtyIdx]).replace(/[^\d.]/g, "")) || 0 : 0,
       unitPrice: priceIdx >= 0 ? Number(String(row[priceIdx]).replace(/[^\d.]/g, "")) || 0 : 0,
       totalPrice: amountIdx >= 0 ? Number(String(row[amountIdx]).replace(/[^\d.]/g, "")) || 0 : 0,
-      notes: noteIdx >= 0 ? String(row[noteIdx] || "").trim() : "",
+      notes: noteRaw, leadTimeDays: noteSpec.leadTimeDays, printFinishNote: noteSpec.printFinishNote,
       rmbCost: 0, factory: "", factoryLink: "", cbm: 0,
       image: (imageMap && (imageMap[i] || imageMap[i - 1] || imageMap[i + 1] || imageMap[i - 2] || imageMap[i + 2])) || "",
     });
@@ -286,14 +288,21 @@ function extractProposalItems(rows, imageMap) {
 // "가격조사" 시트: 품명/단가(위안화)/수량/운송비/비고/제품링크/회사명(공장)/연락처 — 원가·공장 보강용
 // 자유텍스트(비고 등)에서 CBM/사이즈/재질을 최대한 뽑아내는 보조 파서
 function extractSpecFromNote(note) {
-  if (!note) return { cbm: 0, specSize: "", material: "" };
-  const cbmMatch = String(note).match(/([\d.]+)\s*CBM/i);
-  const sizeMatch = String(note).match(/사이즈\s*[:：]?\s*([^\n]+?)(?=\s*재질|$)/);
-  const materialMatch = String(note).match(/재질\s*[:：]?\s*([^\n]+)/);
+  if (!note) return { cbm: 0, specSize: "", material: "", leadTimeDays: null, printFinishNote: "" };
+  const text = String(note);
+  const cbmMatch = text.match(/예상\s*부피\s*[:：]?\s*([\d.]+)\s*CBM/i) || text.match(/([\d.]+)\s*CBM/i);
+  // 다음 라벨(사이즈/재질/예상/인쇄/후가공) 앞까지만 값으로 인식 — 뒤에 이어지는 다른 항목을 잘못 삼키지 않도록
+  const stopAhead = "(?=\\s*(사이즈|재질|예상|인쇄|후가공)\\s*[:：]|\\n|$)";
+  const sizeMatch = text.match(new RegExp(`사이즈\\s*[:：]?\\s*([^\\n]+?)${stopAhead}`));
+  const materialMatch = text.match(new RegExp(`재질\\s*[:：]?\\s*([^\\n]+?)${stopAhead}`));
+  const leadTimeMatch = text.match(/예상\s*(?:생산|제작)\s*기간\s*[:：]?\s*(?:약\s*)?(\d+(?:\.\d+)?)\s*일/);
+  const printFinishMatch = text.match(new RegExp(`(?:인쇄|후가공)\\s*[:：]?\\s*([^\\n]+?)${stopAhead}`));
   return {
     cbm: cbmMatch ? Number(cbmMatch[1]) || 0 : 0,
     specSize: sizeMatch ? sizeMatch[1].trim() : "",
     material: materialMatch ? materialMatch[1].trim() : "",
+    leadTimeDays: leadTimeMatch ? Math.round(parseFloat(leadTimeMatch[1])) : null,
+    printFinishNote: printFinishMatch ? printFinishMatch[1].trim() : "",
   };
 }
 
@@ -329,11 +338,13 @@ function extractSourcingMap(rows, imageMap) {
     if (contactVal) lastContact = contactVal;
     const note = noteIdx >= 0 ? String(row[noteIdx] || "").trim() : "";
     const noteSpec = extractSpecFromNote(note);
-    map[String(name).trim()] = {
+    const normalizedName = String(name).replace(/\r?\n+/g, " ").trim(); // 2줄 이상 작성된 품명도 줄바꿈만 공백으로 바꿔 잘림 없이 보존
+    map[normalizedName] = {
       image: (imageMap && (imageMap[i] || imageMap[i - 1] || imageMap[i + 1] || imageMap[i - 2] || imageMap[i + 2])) || "",
       rmbCost: priceIdx >= 0 ? Number(row[priceIdx]) || 0 : 0,
       quantity: qtyIdx >= 0 ? Number(row[qtyIdx]) || 0 : 0,
       cbm: noteSpec.cbm, specSize: noteSpec.specSize, material: noteSpec.material, note,
+      leadTimeDays: noteSpec.leadTimeDays, printFinishNote: noteSpec.printFinishNote,
       factoryLink: linkVal || lastLink,
       companyHomepageLink: homepageVal || lastHomepage,
       factory: factoryVal || lastFactory,
@@ -386,6 +397,24 @@ function extractClientFromDuiXia(rows) {
     }
   }
   return "";
+}
+// "제안서(원화)" 시트의 고정 위치(C3=고객사명, D6=작성일자)를 우선 시도하고, 없으면 기존 유연 탐색(貴下 기준)으로 폴백
+function extractClientFromFixedCell(rows) {
+  const v = rows[2] && rows[2][2]; // C3 (0-indexed: row 2, col 2)
+  if (typeof v === "string" && v.trim()) return v.trim();
+  return "";
+}
+function extractProposalDateFromFixedCell(rows) {
+  const v = rows[5] && rows[5][3]; // D6 (0-indexed: row 5, col 3)
+  if (!v) return null;
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    const p = (n) => String(n).padStart(2, "0");
+    return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())} 00:00:00`;
+  }
+  const s = String(v).trim();
+  const m = s.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")} 00:00:00`;
+  return null;
 }
 
 // 엑셀(.xlsx = zip) 안의 그림 개체를 zip 구조에서 직접 추출해 "몇 번째 행에 있는 그림인지" 매핑
@@ -468,7 +497,8 @@ async function parseQuoteWorkbook(workbook, zip) {
   const sourcingRows = toRows(sourcingSheetName);
   const pricingRows = toRows(pricingSheetName);
 
-  const clientName = extractClientFromDuiXia(proposalRows);
+  const clientName = extractClientFromFixedCell(proposalRows) || extractClientFromDuiXia(proposalRows);
+  const proposalDate = extractProposalDateFromFixedCell(proposalRows);
   const pricingSummary = extractPricingSummary(pricingRows);
 
   const proposalImageMap = zip ? await extractSheetImages(zip, workbook, proposalSheetName) : {};
@@ -487,6 +517,8 @@ async function parseQuoteWorkbook(workbook, zip) {
         cbm: it.cbm || src.cbm || 0,
         specSize: it.specSize || src.specSize || "", material: it.material || src.material || "",
         image: it.image || src.image || "",
+        leadTimeDays: it.leadTimeDays || src.leadTimeDays || null,
+        printFinishNote: it.printFinishNote || src.printFinishNote || "",
       };
     });
   } else {
@@ -503,7 +535,7 @@ async function parseQuoteWorkbook(workbook, zip) {
     if (i.factory && i.companyHomepageLink) factoryHomepages[i.factory] = i.companyHomepageLink;
   });
 
-  return { clientName, totalAmount, items, factories, factoryLinks, factoryHomepages, pricingSummary, sheetNames };
+  return { clientName, proposalDate, totalAmount, items, factories, factoryLinks, factoryHomepages, pricingSummary, sheetNames };
 }
 
 
@@ -597,6 +629,11 @@ function extractPriceOutsideParens(text) {
   if (m) return Number(m[0]);
   return extractNumber(text);
 }
+// SKU-XXXXXXXX 형태의 토큰을 텍스트(파일명 등)에서 추출 (박스히어로 업로드, ZIP 일괄업로드 공용)
+function extractSkuToken(text) {
+  const m = String(text || "").match(/SKU-[A-Za-z0-9]+/i);
+  return m ? m[0].toUpperCase() : null;
+}
 function boxHeroRowsToProducts(rows) {
   return rows.map((row) => {
     const name = pickField(row, ["제품명"]);
@@ -676,25 +713,33 @@ const DIFFICULTY_BADGE_STYLE = {
 };
 
 const CATEGORIES = [
-  "PE튜브용기", "라미튜브용기", "드로퍼인서트 튜브용기", "유리용기", "PETG/아크릴용기",
-  "PS용기", "PP용기", "PETG용기", "PET/PE/HDPE용기", "AS/SAN용기(에어리스제외)",
-  "에어리스용기", "기타재질 용기", "펌프", "단상자", "싸바리",
+  "PE튜브(2겹)", "PE튜브(5겹)", "라미튜브", "드로퍼튜브", "기능성튜브",
+  "유리용기", "아크릴용기", "PS용기", "PP용기", "PET용기", "PETG용기", "PE용기",
+  "AS용기(에어리스제외)", "에어리스용기", "PP펌프", "기타펌프", "기타용기",
+  "용기소포자재", "단상자", "싸바리", "쇼핑백", "기타자재",
 ];
 
-// 제품명 "[코스메팩] 유리용기 / 크림용기 / ..." 형태에서 대괄호 뒤 첫 " / " 구간을 카테고리로 추출/매칭
-function guessCategoryFromName(name) {
+// 제품명 "[코스메팩] 유리용기 / 크림용기 / ..." 형태에서 대괄호 뒤 첫 " / " 구간을 카테고리로 우선 매칭.
+// 그래도 못 찾으면(엑셀 품명/비고에 카테고리명이 그냥 섞여 들어간 경우 등) extraText까지 합쳐서
+// 전체 텍스트 어디에든 카테고리명이 포함돼 있는지 폴백으로 검사한다.
+function guessCategoryFromName(name, extraText) {
   if (!name) return "";
   const withoutBracket = name.replace(/^\s*\[[^\]]*\]\s*/, ""); // 맨앞 [코스메팩] 등 제거
   const firstSegment = withoutBracket.split("/")[0].trim();
-  if (!firstSegment) return "";
-  // 1) 완전일치
-  const exact = CATEGORIES.find((c) => c === firstSegment);
-  if (exact) return exact;
-  // 2) 포함관계(양방향) — 공백 제거 후 비교하여 표기 차이(예: "기타재질 용기" vs "기타재질용기") 허용
   const norm = (s) => s.replace(/\s/g, "");
-  const nSeg = norm(firstSegment);
-  const partial = CATEGORIES.find((c) => norm(c) === nSeg || nSeg.includes(norm(c)) || norm(c).includes(nSeg));
-  return partial || "";
+  if (firstSegment) {
+    // 1) 완전일치
+    const exact = CATEGORIES.find((c) => c === firstSegment);
+    if (exact) return exact;
+    // 2) 포함관계(양방향) — 공백 제거 후 비교하여 표기 차이 허용
+    const nSeg = norm(firstSegment);
+    const partial = CATEGORIES.find((c) => norm(c) === nSeg || nSeg.includes(norm(c)) || norm(c).includes(nSeg));
+    if (partial) return partial;
+  }
+  // 3) 폴백: 품명 전체 + 비고(extraText) 어디에든 카테고리명이 그대로 포함돼 있으면 그걸로 인식
+  const fullText = norm(`${name} ${extraText || ""}`);
+  const contained = CATEGORIES.find((c) => fullText.includes(norm(c)));
+  return contained || "";
 }
 
 /* ===================== 유사 제품 그룹핑 & 옵션/스펙 파싱 ===================== */
@@ -772,33 +817,78 @@ const MARGIN_TIER_LABELS = [
   "40,000 - 50,000", "50,000 - 60,000", "60,000 - 70,000", "70,000 - 80,000", "80,000 - 100,000", "100,000 이상",
 ];
 
+// 기존 15개 카테고리 마진율표를 새 22개 카테고리로 재구성. 기존과 동일 개념의 카테고리는 그대로 계승했고,
+// 이번에 세분화/신설된 카테고리(PE튜브 2겹·5겹 구분, 기능성튜브, PET/PE 용기 분리, 펌프 세분화, 소포자재/쇼핑백/기타자재 등)는
+// 가장 가까운 기존 카테고리 값을 잠정 기본값으로 이어받았습니다. ⚙️기준정보설정에서 언제든 조정 가능합니다.
 const DEFAULT_MARGIN_TABLE = {
-  "PE튜브용기":                 [0.35, 0.31, 0.27, 0.25, 0.24, 0.22, 0.20, 0.18, 0.17, 0.16, 0.15],
-  "라미튜브용기":               [0.35, 0.31, 0.27, 0.25, 0.24, 0.22, 0.20, 0.18, 0.17, 0.16, 0.15],
-  "드로퍼인서트 튜브용기":       [0.37, 0.34, 0.31, 0.30, 0.29, 0.27, 0.25, 0.24, 0.20, 0.18, 0.16],
+  "PE튜브(2겹)":                [0.35, 0.31, 0.27, 0.25, 0.24, 0.22, 0.20, 0.18, 0.17, 0.16, 0.15],
+  "PE튜브(5겹)":                [0.37, 0.33, 0.29, 0.27, 0.26, 0.24, 0.22, 0.20, 0.19, 0.18, 0.17],
+  "라미튜브":                   [0.35, 0.31, 0.27, 0.25, 0.24, 0.22, 0.20, 0.18, 0.17, 0.16, 0.15],
+  "드로퍼튜브":                 [0.37, 0.34, 0.31, 0.30, 0.29, 0.27, 0.25, 0.24, 0.20, 0.18, 0.16],
+  "기능성튜브":                 [0.37, 0.34, 0.31, 0.30, 0.29, 0.27, 0.25, 0.24, 0.20, 0.18, 0.16],
   "유리용기":                   [0.38, 0.35, 0.33, 0.31, 0.29, 0.27, 0.25, 0.24, 0.22, 0.20, 0.18],
-  "PETG/아크릴용기":            [0.39, 0.36, 0.34, 0.32, 0.30, 0.28, 0.26, 0.25, 0.23, 0.21, 0.18],
+  "아크릴용기":                 [0.39, 0.36, 0.34, 0.32, 0.30, 0.28, 0.26, 0.25, 0.23, 0.21, 0.18],
   "PS용기":                     [0.27, 0.24, 0.22, 0.21, 0.20, 0.19, 0.18, 0.17, 0.16, 0.15, 0.15],
   "PP용기":                     [0.29, 0.26, 0.24, 0.22, 0.20, 0.18, 0.17, 0.16, 0.15, 0.15, 0.15],
+  "PET용기":                    [0.32, 0.29, 0.27, 0.25, 0.23, 0.21, 0.20, 0.19, 0.18, 0.17, 0.15],
   "PETG용기":                   [0.37, 0.33, 0.31, 0.29, 0.27, 0.25, 0.23, 0.22, 0.20, 0.18, 0.16],
-  "PET/PE/HDPE용기":            [0.32, 0.29, 0.27, 0.25, 0.23, 0.21, 0.20, 0.19, 0.18, 0.17, 0.15],
-  "AS/SAN용기(에어리스제외)":   [0.33, 0.30, 0.28, 0.26, 0.24, 0.22, 0.21, 0.20, 0.19, 0.18, 0.16],
+  "PE용기":                     [0.32, 0.29, 0.27, 0.25, 0.23, 0.21, 0.20, 0.19, 0.18, 0.17, 0.15],
+  "AS용기(에어리스제외)":       [0.33, 0.30, 0.28, 0.26, 0.24, 0.22, 0.21, 0.20, 0.19, 0.18, 0.16],
   "에어리스용기":               [0.36, 0.33, 0.31, 0.29, 0.27, 0.25, 0.23, 0.21, 0.19, 0.17, 0.15],
-  "기타재질 용기":              [0.32, 0.29, 0.27, 0.25, 0.23, 0.21, 0.20, 0.19, 0.18, 0.17, 0.15],
-  "펌프":                       [0.28, 0.25, 0.23, 0.21, 0.19, 0.17, 0.16, 0.15, 0.15, 0.15, 0.15],
+  "PP펌프":                     [0.28, 0.25, 0.23, 0.21, 0.19, 0.17, 0.16, 0.15, 0.15, 0.15, 0.15],
+  "기타펌프":                   [0.28, 0.25, 0.23, 0.21, 0.19, 0.17, 0.16, 0.15, 0.15, 0.15, 0.15],
+  "기타용기":                   [0.32, 0.29, 0.27, 0.25, 0.23, 0.21, 0.20, 0.19, 0.18, 0.17, 0.15],
+  "용기소포자재":               [0.30, 0.27, 0.25, 0.23, 0.21, 0.19, 0.18, 0.17, 0.16, 0.15, 0.15],
   "단상자":                     [0.35, 0.32, 0.30, 0.29, 0.26, 0.23, 0.21, 0.19, 0.17, 0.15, 0.15],
   "싸바리":                     [0.45, 0.42, 0.40, 0.37, 0.34, 0.31, 0.29, 0.27, 0.25, 0.23, 0.21],
+  "쇼핑백":                     [0.35, 0.32, 0.30, 0.29, 0.26, 0.23, 0.21, 0.19, 0.17, 0.15, 0.15],
+  "기타자재":                   [0.32, 0.29, 0.27, 0.25, 0.23, 0.21, 0.20, 0.19, 0.18, 0.17, 0.15],
 };
 
 const DEFAULT_CUSTOMS_RATES = {
-  "PE튜브용기": 2.1, "라미튜브용기": 2.1, "드로퍼인서트 튜브용기": 2.1,
-  "유리용기": 0, "PETG/아크릴용기": 0,
-  "PS용기": 1.7, "PP용기": 1.7, "PETG용기": 1.7, "PET/PE/HDPE용기": 1.7, "AS/SAN용기(에어리스제외)": 1.7,
-  "에어리스용기": 0, "기타재질 용기": 0, "펌프": 0, "단상자": 0, "싸바리": 0,
+  "PE튜브(2겹)": 2.1, "PE튜브(5겹)": 2.1, "라미튜브": 2.1, "드로퍼튜브": 2.1, "기능성튜브": 2.1,
+  "유리용기": 0, "아크릴용기": 0,
+  "PS용기": 1.7, "PP용기": 1.7, "PET용기": 1.7, "PETG용기": 1.7, "PE용기": 1.7, "AS용기(에어리스제외)": 1.7,
+  "에어리스용기": 0, "PP펌프": 0, "기타펌프": 0, "기타용기": 0,
+  "용기소포자재": 0, "단상자": 0, "싸바리": 0, "쇼핑백": 0, "기타자재": 0,
 };
 
 const DEFAULT_LOGISTICS = { cbmRate: 98000, blFee: 19000, originFee: 27000, brokerFee: 30000 };
-const DEFAULT_EXRATE = { rmbToKrw: 230, rmbToUsd: 6.8 };
+const DEFAULT_EXRATE = { rmbToKrw: 230, rmbToUsd: 6.8, usdToKrw: 1380 };
+const EXRATE_CACHE_KEY = "cosmepack_exrate_cache";
+// 무료 환율 API(open.er-api.com, CORS 제한 없음)로 CNY->KRW, CNY->USD, USD->KRW 중간환율을 가져와
+// 은행 송금(전신환매도율) 기준 근사 우대환율을 계산한다. 실제 은행 고시환율과는 소폭 차이가 있을 수 있는 "추천값"이다.
+async function fetchTodayExchangeRates() {
+  const BANK_SPREAD = 0.015; // 전신환매도율 근사 스프레드(중간환율 대비 약 1.5% 차감) — 실제 우대율은 은행/시점마다 다름
+  try {
+    const [cnyRes, usdRes] = await Promise.all([
+      fetch("https://open.er-api.com/v6/latest/CNY"),
+      fetch("https://open.er-api.com/v6/latest/USD"),
+    ]);
+    const cnyData = await cnyRes.json();
+    const usdData = await usdRes.json();
+    if (cnyData.result !== "success" || usdData.result !== "success") throw new Error("환율 API 응답 오류");
+    const rates = {
+      rmbToKrw: Number((cnyData.rates.KRW * (1 - BANK_SPREAD)).toFixed(2)),
+      rmbToUsd: Number(cnyData.rates.USD.toFixed(2)),
+      usdToKrw: Number((usdData.rates.KRW * (1 - BANK_SPREAD)).toFixed(2)),
+      updatedAt: todayDisplay(),
+      fetchedDate: todayStr(),
+    };
+    try { localStorage.setItem(EXRATE_CACHE_KEY, JSON.stringify(rates)); } catch (e) { console.error(e); }
+    return rates;
+  } catch (e) {
+    console.error("환율 API 조회 실패, 캐시된 마지막 환율로 대체:", e);
+    try {
+      const cached = JSON.parse(localStorage.getItem(EXRATE_CACHE_KEY) || "null");
+      return cached;
+    } catch (e2) { return null; }
+  }
+}
+// 환율 값을 "천단위 콤마 + 소수점 둘째자리 고정" 형식으로 표기
+function fmtRate(n) {
+  return (Number(n) || 0).toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 const DEFAULT_LOGO = "data:image/png;base64,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";
 
@@ -2116,7 +2206,7 @@ function ProposalEditStage({ draftItems, setDraftItems, removeDraftItem, clientI
 
 /* ===================== 업체(고객사) 관리 ===================== */
 
-function ExcelArchiveView({ archive, onBack, onUpload, onUploadZip, onApplyAll, onDelete, onApply, onResetExcelData }) {
+function ExcelArchiveView({ archive, onBack, onUpload, onUploadZip, onApplyAll, onDelete, onApply, onResetExcelData, onDeleteAllUploaded }) {
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
@@ -2162,6 +2252,7 @@ function ExcelArchiveView({ archive, onBack, onUpload, onUploadZip, onApplyAll, 
         <h2 className="text-lg font-bold text-slate-800">📂 엑셀 보관함 (데이터룸)</h2>
         <div className="flex gap-2">
           {onApplyAll && <button onClick={onApplyAll} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🔗 전체 파이프라인 적용</button>}
+          {onDeleteAllUploaded && <button onClick={onDeleteAllUploaded} className="px-4 py-2 rounded-lg bg-red-50 text-red-600 border border-red-200 text-sm font-medium hover:bg-red-100 whitespace-nowrap">🗑️ 업로드 제품 전체 삭제</button>}
           {onResetExcelData && <button onClick={onResetExcelData} className="px-4 py-2 rounded-lg bg-red-50 text-red-600 border border-red-200 text-sm font-medium hover:bg-red-100 whitespace-nowrap">🧹 엑셀 연동 데이터 전체 초기화</button>}
           <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
         </div>
@@ -3188,7 +3279,7 @@ function ProductProposalsModal({ product, proposals, onClose, onOpenProposal }) 
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, initialViewProduct, onConsumeInitialView }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, isAdmin, initialViewProduct, onConsumeInitialView }) {
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("list"); // list | card
   const [editingProduct, setEditingProduct] = useState(null);
@@ -3203,6 +3294,8 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
     }
   }, [initialViewProduct]);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [zipBusy, setZipBusy] = useState(false);
+  const zipRef = useRef(null);
   const uploadRef = useRef(null);
   const [categoryFilter, setCategoryFilter] = useState("전체");
   const [page, setPage] = useState(1);
@@ -3225,11 +3318,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
     setEditingProduct(null);
   };
 
-  // SKU-XXXXXXXX 형태의 토큰을 텍스트(파일명 등)에서 추출
-  const extractSkuToken = (text) => {
-    const m = String(text || "").match(/SKU-[A-Za-z0-9]+/i);
-    return m ? m[0].toUpperCase() : null;
-  };
+  // SKU-XXXXXXXX 토큰 추출은 전역 extractSkuToken() 재사용 (App레벨 ZIP 업로드와 동일 로직 공유)
 
   // 박스히어로 데이터 통합 업로드: 파일 하나(또는 여러 개)를 한번에 올리면 확장자/타입으로 자동 구분해서 처리한다.
   // .csv / .xlsx·.xls / .html·.htm → 제품 데이터 파싱 후 SKU(없으면 제품명+규격) 기준 1:1 병합(bulkAddProducts)
@@ -3331,6 +3420,21 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
     }
   };
 
+  // ZIP 일괄 업로드 — 견적엑셀(.xlsx)+제품사진+HTML이 섞인 압축파일을 통째로 올리면
+  // App 레벨의 uploadZipToArchive()가 엑셀 파싱(가격조사/제안서/제안가격 시트)과 SKU기준 이미지 매핑을 한번에 처리하고
+  // 업체·공장·제품·제안서 DB에 자동 반영한다.
+  const handleZipUpload = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file || !onUploadZip) return;
+    setZipBusy(true);
+    try {
+      await onUploadZip(file);
+    } finally {
+      setZipBusy(false);
+      if (zipRef.current) zipRef.current.value = "";
+    }
+  };
+
   return (
     <main className="max-w-7xl mx-auto px-6 py-8">
       {viewingProduct && <ProductDetailModal product={viewingProduct} onClose={() => setViewingProduct(null)} onOpenSimilar={(p) => { setViewingProduct(null); setViewingSimilarProduct(p); }} />}
@@ -3352,6 +3456,18 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
       </div>
 
       <div className="bg-white border border-slate-300 shadow-sm rounded-xl p-4 mb-4">
+        {onUploadZip && (
+          <div className="flex flex-wrap gap-2 items-center mb-3 pb-3 border-b border-slate-100">
+            <button onClick={() => zipRef.current && zipRef.current.click()} disabled={zipBusy} title="견적엑셀(.xlsx)+제품사진+HTML이 함께 들어있는 ZIP 압축파일을 올리면, 엑셀 파싱과 SKU 기준 이미지 매핑을 한번에 처리하고 업체·공장·제품·제안서 DB에 자동 반영합니다." className="text-sm px-5 py-2.5 rounded-lg border-2 border-[#1E3A8A]/30 text-[#1E3A8A] bg-[#1E3A8A]/5 font-semibold hover:bg-[#1E3A8A]/10 disabled:opacity-50 whitespace-nowrap">
+              {zipBusy ? "처리 중..." : "📦 ZIP/엑셀 파일 일괄 업로드"}
+            </button>
+            <input ref={zipRef} type="file" accept=".zip" className="hidden" onChange={handleZipUpload} />
+            {onDeleteAllUploaded && (
+              <button onClick={onDeleteAllUploaded} className="text-sm px-4 py-2 rounded-lg border border-red-200 text-red-600 font-medium hover:bg-red-50 whitespace-nowrap">🗑️ 업로드 제품 전체 삭제</button>
+            )}
+            <span className="text-xs text-slate-400">ZIP 안에 엑셀+사진+HTML을 함께 넣어 올리면 한번에 처리됩니다.</span>
+          </div>
+        )}
         <div className="flex flex-wrap gap-2 items-center mb-3">
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
@@ -3370,6 +3486,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
           {onAutoAssignCategories && <button onClick={onAutoAssignCategories} className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 whitespace-nowrap">🏷️ 카테고리 자동 매칭</button>}
           {onStripBrandPrefix && <button onClick={onStripBrandPrefix} className="text-sm px-4 py-2 rounded-lg border border-slate-300 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">✂️ 제품명 [브랜드] 제거</button>}
+          {isAdmin && onDeleteAllProducts && <button onClick={onDeleteAllProducts} className="text-sm px-4 py-2 rounded-lg border border-red-200 text-red-600 font-medium hover:bg-red-50 whitespace-nowrap">🗑️ 제품 DB 전체 초기화</button>}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {["전체", ...CATEGORIES].map((c) => (
@@ -3500,6 +3617,28 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [difficultyMargins, setDifficultyMargins] = useState(DEFAULT_DIFFICULTY_MARGINS);
   const [clientsList, setClientsList] = useState([]);
   const [exRate, setExRate] = useState(DEFAULT_EXRATE);
+  const [exRateSuggestion, setExRateSuggestion] = useState(null); // API로 받아온 오늘의 추천 환율(안내문구+원클릭적용용, exRate 자체는 건드리지 않음)
+
+  // 페이지 로드시 캐시된 환율을 즉시 보여주고, 오늘 아직 갱신 안 됐으면 API를 호출해 하루 1회만 자동 갱신
+  useEffect(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem(EXRATE_CACHE_KEY) || "null");
+      if (cached) setExRateSuggestion(cached);
+      if (cached && cached.fetchedDate === todayStr()) return; // 오늘 이미 갱신됨
+    } catch (e) { console.error(e); }
+    fetchTodayExchangeRates().then((rates) => { if (rates) setExRateSuggestion(rates); });
+  }, []);
+
+  // "🔄 오늘 환율 적용" 버튼 — API로 받아온 추천 환율을 입력창(exRate)에 즉시 반영해 제안가 계산식에 바로 연동
+  const applyTodayExchangeRates = () => {
+    if (!exRateSuggestion) { setToast("아직 환율 정보를 불러오지 못했습니다. 인터넷 연결을 확인해주세요."); return; }
+    setExRate({
+      rmbToKrw: exRateSuggestion.rmbToKrw,
+      rmbToUsd: exRateSuggestion.rmbToUsd,
+      usdToKrw: exRateSuggestion.usdToKrw,
+    });
+    setToast("오늘 기준 환율을 적용했습니다.");
+  };
   const [supplierLogo, setSupplierLogo] = useState("");
 
   // 1단계: 가격조사 저장소
@@ -3772,10 +3911,15 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     });
     if ((items || []).length > 0) {
       bulkAddProducts(items.map((it) => {
+        const noteText = it.notes || it.note || it.printFinishNote || "";
         const rec = {
           name: it.name, specSize: it.specSize, material: it.material,
           factory: it.factory, factoryLink: it.factoryLink,
           rmbCost: it.rmbCost, lastUnitPrice: it.unitPrice || 0, image: it.image || "",
+          category: guessCategoryFromName(it.name, noteText), // 품명/비고 텍스트에 카테고리명이 포함돼 있으면 자동 선택
+          leadTimeDays: it.leadTimeDays || null, leadTimeText: it.leadTimeDays ? `약 ${it.leadTimeDays}일` : "",
+          otherOptionK: it.printFinishNote || "",
+          moqQuantity: it.quantity || null, moqText: it.quantity ? `${it.quantity.toLocaleString("ko-KR")}개` : "",
         };
         if (it.quantity && it.rmbCost) {
           rec.priceTiers = [{ qty: it.quantity, cbm: it.cbm || "", shippingRmb: it.shippingRmb || "", factoryPriceRmb: it.rmbCost }];
@@ -3817,6 +3961,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       parsedFactoryLinks: parsed.factoryLinks,
       parsedFactoryHomepages: parsed.factoryHomepages || {},
       parsedPricingSummary: parsed.pricingSummary || {},
+      parsedProposalDate: parsed.proposalDate || null,
       sheetNames: parsed.sheetNames,
       fileData, // 큰 파일은 빈 문자열 — 다운로드 버튼에서 안내
       pipelineApplied: false,
@@ -3833,7 +3978,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     }
 
     syncParsedDataToDb(parsed.clientName, parsed.items, parsed.factories, parsed.factoryLinks, parsed.factoryHomepages);
-    await ensureExcelProposalRegistered(parsed.clientName, parsed.items, file.name);
+    await ensureExcelProposalRegistered(parsed.clientName, parsed.items, file.name, parsed.proposalDate);
     return { ok: true, fileName: file.name, itemCount: parsed.items.length };
   };
 
@@ -3851,9 +3996,12 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       setToast("ZIP 파일을 여는 중 오류가 발생했습니다.");
       return;
     }
-    const xlsxEntries = Object.values(zip.files).filter((f) => !f.dir && /\.xlsx$/i.test(f.name));
-    if (xlsxEntries.length === 0) {
-      setToast("ZIP 안에서 .xlsx 엑셀 파일을 찾지 못했습니다.");
+    const allEntries = Object.values(zip.files).filter((f) => !f.dir);
+    const xlsxEntries = allEntries.filter((f) => /\.xlsx$/i.test(f.name));
+    const imageEntries = allEntries.filter((f) => /\.(jpe?g|png|gif|webp)$/i.test(f.name));
+    const htmlEntries = allEntries.filter((f) => /\.html?$/i.test(f.name));
+    if (xlsxEntries.length === 0 && imageEntries.length === 0 && htmlEntries.length === 0) {
+      setToast("ZIP 안에서 처리할 수 있는 파일(.xlsx/.html/이미지)을 찾지 못했습니다.");
       return;
     }
     let successCount = 0;
@@ -3868,7 +4016,71 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         console.error(`ZIP 내 "${entry.name}" 처리 실패:`, e);
       }
     }
-    setToast(`총 ${successCount}개의 엑셀 파일이 추출되어 보관함 등록 및 업체/공장/제품 DB 반영이 완료되었습니다.`);
+
+    // ZIP 안에 이미지/HTML(박스히어로 스타일)이 함께 들어있으면, 파일명/표 안의 SKU를 기준으로 제품 사진만 보완 매핑
+    const skuToImage = new Map();
+    for (const entry of htmlEntries) {
+      try {
+        const text = await entry.async("string");
+        const rows = parseBoxHeroHtml(text);
+        rows.forEach((row) => {
+          const sku = (pickField(row, ["SKU"]) || "").trim().toUpperCase();
+          const image = pickField(row, ["사진"]);
+          if (sku && image) skuToImage.set(sku, image);
+        });
+      } catch (e) { console.error(`ZIP 내 "${entry.name}" HTML 분석 실패:`, e); }
+    }
+    for (const entry of imageEntries) {
+      const sku = extractSkuToken(entry.name.split("/").pop());
+      if (!sku) continue;
+      try {
+        const blob = await entry.async("blob");
+        const asFile = new File([blob], entry.name.split("/").pop());
+        const compressed = await compressImageFile(asFile, 300 * 1024);
+        skuToImage.set(sku, compressed);
+      } catch (e) { console.error(`ZIP 내 "${entry.name}" 이미지 압축 실패:`, e); }
+    }
+    let restored = 0;
+    for (const [sku, image] of skuToImage.entries()) {
+      const target = productsList.find((p) => (p.sku || "").trim().toUpperCase() === sku);
+      if (target) { await updateProductRecord(target.id, { image }); restored++; }
+    }
+
+    const parts = [];
+    if (successCount > 0) parts.push(`엑셀 ${successCount}개 파일 등록`);
+    if (restored > 0) parts.push(`이미지 ${restored}건 SKU매칭 복구`);
+    setToast(parts.length > 0 ? `ZIP 일괄 업로드 완료: ${parts.join(" · ")} (업체·공장·제품·제안서 DB 자동 반영됨)` : "ZIP 안에서 유효한 데이터를 찾지 못했습니다.");
+  };
+
+  // 제품 DB를 (출처와 무관하게) 통째로 비우는 초기화 — 테스트 데이터를 정리하고 깔끔하게 재등록하고 싶을 때 사용. 관리자 전용.
+  const deleteAllProducts = async () => {
+    if (productsList.length === 0) { setToast("제품 DB가 이미 비어있습니다."); return; }
+    if (!window.confirm(`제품 DB 전체(${productsList.length}건)를 초기화할까요? 수동/엑셀/박스히어로 출처를 가리지 않고 모두 삭제되며 되돌릴 수 없습니다.`)) return;
+    if (!window.confirm("정말로 진행할까요? 마지막 확인입니다.")) return;
+    const snapshot = [...productsList];
+    setProductsList([]);
+    for (const p of snapshot) {
+      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsDelete(COLLECTIONS.products, p.id); } catch (e) { console.error(e); }
+    }
+    setToast(`제품 DB ${snapshot.length}건을 전체 초기화했습니다.`);
+  };
+
+  // 엑셀/ZIP으로 업로드되어 잘못 쌓인 제품 데이터를 한번에 깨끗이 비우는 빠른 초기화(제품 DB + 엑셀 보관함).
+  // 재업로드 전 초기화 용도라 권한 제한 없이 누구나 사용 가능(단, 확인창은 반드시 거침).
+  const deleteAllUploadedProductData = async () => {
+    if (productsList.length === 0 && excelArchiveList.length === 0) { setToast("이미 비어있습니다."); return; }
+    if (!window.confirm("기존 업로드된 제품 데이터를 모두 삭제하시겠습니까?")) return;
+    const productSnapshot = [...productsList];
+    const archiveSnapshot = [...excelArchiveList];
+    setProductsList([]);
+    setExcelArchiveList([]);
+    for (const p of productSnapshot) {
+      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsDelete(COLLECTIONS.products, p.id); } catch (e) { console.error(e); }
+    }
+    for (const a of archiveSnapshot) {
+      try { if (FIREBASE_ENABLED && typeof a.id === "string") await fsDelete(COLLECTIONS.excelArchive, a.id); } catch (e) { console.error(e); }
+    }
+    setToast(`업로드된 제품 데이터를 모두 삭제했습니다. (제품 ${productSnapshot.length}건 · 엑셀 보관함 ${archiveSnapshot.length}건) 이제 새 ZIP/엑셀 파일을 다시 업로드해주세요.`);
   };
 
   const deleteExcelArchiveItem = async (item) => {
@@ -3955,7 +4167,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   };
 
   // 파싱된 품목으로 제안서 레코드를 생성 (같은 파일명+거래처로 이미 등록돼 있으면 중복 생성하지 않음)
-  const ensureExcelProposalRegistered = async (clientName, items, fileName) => {
+  const ensureExcelProposalRegistered = async (clientName, items, fileName, proposalDate) => {
     if (!items || items.length === 0) return;
     const proposalTitle = fileName.replace(/\.xlsx?$/i, "");
     const already = proposalList.some((p) => p.proposalTitle === proposalTitle && p.clientName === (clientName || "(미확인)"));
@@ -3974,7 +4186,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const code = getNextProposalCode(dateStr);
     const itemSummary = draftShapedItems.length > 1 ? `${draftShapedItems[0].productName} 외 ${draftShapedItems.length - 1}건` : draftShapedItems[0].productName;
     const proposalRecord = {
-      code, status: "견적제출", reviewStatus: "검토대기", createdAt: nowDateTimeStr(),
+      code, status: "견적제출", reviewStatus: "검토대기", createdAt: proposalDate || nowDateTimeStr(), // "제안서(원화)" D6셀 작성일자 우선 사용, 없으면 업로드 시각
       clientName: clientName || "(미확인)", contact: "", channel: "카카오채널", employee: "(엑셀자동등록)",
       proposalTitle, itemSummary, totalAmount, totalCbm,
       items: draftShapedItems, validUntil: addDays(30),
@@ -4021,7 +4233,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     if (!item.pipelineApplied) {
       // 최초 적용시에만 업체/공장/제품 DB 심층 반영(홈페이지링크, 수량별단가 등) + 제안서목록 등록 보장
       syncParsedDataToDb(item.clientName, item.parsedItems, item.parsedFactories, item.parsedFactoryLinks, item.parsedFactoryHomepages);
-      await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName);
+      await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName, item.parsedProposalDate);
       setExcelArchiveList((prev) => prev.map((x) => (x.id === item.id ? { ...x, pipelineApplied: true } : x)));
       try { if (FIREBASE_ENABLED && typeof item.id === "string") await fsUpdate(COLLECTIONS.excelArchive, item.id, { pipelineApplied: true }); } catch (e) { console.error(e); }
       setToast(`"${item.fileName}" 데이터를 파이프라인에 적용하고, 업체·공장·제품 DB를 심층 반영했습니다.`);
@@ -4040,7 +4252,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     for (const item of targets) {
       try {
         syncParsedDataToDb(item.clientName, item.parsedItems, item.parsedFactories, item.parsedFactoryLinks, item.parsedFactoryHomepages);
-        await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName);
+        await ensureExcelProposalRegistered(item.clientName, item.parsedItems, item.fileName, item.parsedProposalDate);
         setExcelArchiveList((prev) => prev.map((x) => (x.id === item.id ? { ...x, pipelineApplied: true } : x)));
         try { if (FIREBASE_ENABLED && typeof item.id === "string") await fsUpdate(COLLECTIONS.excelArchive, item.id, { pipelineApplied: true }); } catch (e) { console.error(e); }
         count++;
@@ -4073,17 +4285,18 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     }
   };
 
-  // 제품명("[코스메팩] 유리용기 / ...")에서 카테고리를 추출해 일괄 매칭
+  // 제품명("[코스메팩] 유리용기 / ...")과 비고류 텍스트에서 카테고리를 추출해 일괄 매칭
+  const guessCategoryForProduct = (p) => guessCategoryFromName(p.name, [p.otherOptionK, p.proposalNotesK, p.productionNotesC, p.specSize].filter(Boolean).join(" "));
   const autoAssignCategories = async () => {
-    const targets = productsList.filter((p) => !p.category && guessCategoryFromName(p.name));
+    const targets = productsList.filter((p) => !p.category && guessCategoryForProduct(p));
     if (targets.length === 0) { setToast("자동 매칭할 대상이 없습니다. (이미 카테고리가 있거나, 제품명에서 카테고리를 인식할 수 없습니다)"); return; }
-    if (!window.confirm(`제품명을 분석해서 ${targets.length}개 제품의 카테고리를 자동으로 채울까요?`)) return;
+    if (!window.confirm(`제품명/비고를 분석해서 ${targets.length}개 제품의 카테고리를 자동으로 채울까요?`)) return;
     setProductsList((prev) => prev.map((p) => {
-      const guessed = guessCategoryFromName(p.name);
+      const guessed = guessCategoryForProduct(p);
       return (!p.category && guessed) ? { ...p, category: guessed } : p;
     }));
     for (const p of targets) {
-      const guessed = guessCategoryFromName(p.name);
+      const guessed = guessCategoryForProduct(p);
       try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, { category: guessed }); } catch (e) { console.error(e); }
     }
     setToast(`${targets.length}개 제품의 카테고리를 자동으로 채웠습니다.`);
@@ -4107,7 +4320,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     let added = 0, updated = 0;
     const nextList = [...productsList];
     for (const rIn of records) {
-      let r = (!rIn.category && guessCategoryFromName(rIn.name)) ? { ...rIn, category: guessCategoryFromName(rIn.name) } : rIn;
+      const guessExtra = [rIn.otherOptionK, rIn.proposalNotesK, rIn.productionNotesC].filter(Boolean).join(" ");
+      let r = (!rIn.category && guessCategoryFromName(rIn.name, guessExtra)) ? { ...rIn, category: guessCategoryFromName(rIn.name, guessExtra) } : rIn;
       const key = (r.sku && r.sku.trim()) || null;
       const match = key
         ? nextList.find((p) => p.sku && p.sku.trim() === key)
@@ -4366,10 +4580,24 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-3 bg-white/10 rounded-lg px-4 py-2.5">
-              <div className="flex items-center gap-2"><span className="text-xs text-white/80 font-medium">위안→원화</span><input type="number" step="0.01" disabled={!isAdmin} value={exRate.rmbToKrw} onChange={(e) => setExRate({ ...exRate, rmbToKrw: Number(e.target.value) })} className={"w-20 px-2 py-1 rounded-md bg-white/95 text-slate-800 text-sm outline-none" + (!isAdmin ? " opacity-60 cursor-not-allowed" : "")} /></div>
-              <div className="w-px h-5 bg-white/20" />
-              <div className="flex items-center gap-2"><span className="text-xs text-white/80 font-medium">위안→달러</span><input type="number" step="0.01" disabled={!isAdmin} value={exRate.rmbToUsd} onChange={(e) => setExRate({ ...exRate, rmbToUsd: Number(e.target.value) })} className={"w-20 px-2 py-1 rounded-md bg-white/95 text-slate-800 text-sm outline-none" + (!isAdmin ? " opacity-60 cursor-not-allowed" : "")} /></div>
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-3 bg-white/10 rounded-lg px-4 py-2.5">
+                <div className="flex items-center gap-2"><span className="text-xs text-white/80 font-medium">위안→원화</span><input type="number" step="0.01" disabled={!isAdmin} value={exRate.rmbToKrw} onChange={(e) => setExRate({ ...exRate, rmbToKrw: Number(e.target.value) })} className={"w-20 px-2 py-1 rounded-md bg-white/95 text-slate-800 text-sm outline-none" + (!isAdmin ? " opacity-60 cursor-not-allowed" : "")} /></div>
+                <div className="w-px h-5 bg-white/20" />
+                <div className="flex items-center gap-2"><span className="text-xs text-white/80 font-medium">위안→달러</span><input type="number" step="0.01" disabled={!isAdmin} value={exRate.rmbToUsd} onChange={(e) => setExRate({ ...exRate, rmbToUsd: Number(e.target.value) })} className={"w-20 px-2 py-1 rounded-md bg-white/95 text-slate-800 text-sm outline-none" + (!isAdmin ? " opacity-60 cursor-not-allowed" : "")} /></div>
+                <div className="w-px h-5 bg-white/20" />
+                <div className="flex items-center gap-2"><span className="text-xs text-white/80 font-medium">달러→원화</span><input type="number" step="0.01" disabled={!isAdmin} value={exRate.usdToKrw} onChange={(e) => setExRate({ ...exRate, usdToKrw: Number(e.target.value) })} className={"w-24 px-2 py-1 rounded-md bg-white/95 text-slate-800 text-sm outline-none" + (!isAdmin ? " opacity-60 cursor-not-allowed" : "")} /></div>
+              </div>
+              {exRateSuggestion && (
+                <div className="flex items-center gap-2 flex-wrap px-1">
+                  <span className="text-[11px] text-white/70">
+                    💡 오늘 기준 환율(송금보낼 때): 1 CNY = {fmtRate(exRateSuggestion.rmbToKrw)} KRW | 1 USD = {fmtRate(exRateSuggestion.usdToKrw)} KRW (업데이트: {exRateSuggestion.updatedAt})
+                  </span>
+                  {isAdmin && (
+                    <button onClick={applyTodayExchangeRates} className="text-[11px] px-2 py-1 rounded-md bg-white/20 hover:bg-white/30 font-medium whitespace-nowrap">🔄 오늘 환율 적용</button>
+                  )}
+                </div>
+              )}
             </div>
             <button onClick={() => setView("clients")} className="bg-white/15 hover:bg-white/25 transition-colors text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap">🏢 업체 관리</button>
             <button onClick={() => setView("factories")} className="bg-white/15 hover:bg-white/25 transition-colors text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap">🏭 공장 관리</button>
@@ -4480,7 +4708,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <ClientsView clients={clientsList} proposals={proposalList} onBack={() => setView("pipeline")} onAdd={addClientRecord} onUpdate={updateClientRecord} onDelete={deleteClientRecord} onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })} isAdmin={isAdmin} />
       )}
       {view === "excel" && (
-        <ExcelArchiveView archive={excelArchiveList} onBack={() => setView("pipeline")} onUpload={uploadExcelToArchive} onUploadZip={uploadZipToArchive} onApplyAll={applyAllExcelToPipeline} onDelete={deleteExcelArchiveItem} onApply={applyExcelToPipeline} onResetExcelData={resetExcelUploadedData} />
+        <ExcelArchiveView archive={excelArchiveList} onBack={() => setView("pipeline")} onUpload={uploadExcelToArchive} onUploadZip={uploadZipToArchive} onApplyAll={applyAllExcelToPipeline} onDelete={deleteExcelArchiveItem} onApply={applyExcelToPipeline} onResetExcelData={resetExcelUploadedData} onDeleteAllUploaded={deleteAllUploadedProductData} />
       )}
       {view === "factories" && (
         <FactoriesView factories={factoriesList} products={productsList} onBack={() => setView("pipeline")} onAdd={addFactoryRecord} onUpdate={updateFactoryRecord} onDelete={deleteFactoryRecord} onImportFromProducts={importFactoriesFromProducts} isAdmin={isAdmin}
@@ -4494,6 +4722,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onUseInSourcing={(p) => { setProductToPick(p); setView("pipeline"); setActiveStep(1); }}
           onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })}
           onSyncFactories={syncFactoriesFromBoxHeroRecords}
+          onUploadZip={uploadZipToArchive}
+          onDeleteAllProducts={deleteAllProducts}
+          onDeleteAllUploaded={deleteAllUploadedProductData}
+          isAdmin={isAdmin}
           initialViewProduct={productToView} onConsumeInitialView={() => setProductToView(null)}
         />
       )}
