@@ -69,6 +69,7 @@ const COLLECTIONS = {
   factories: "factories",
   products: "products",
   excelArchive: "excel_archive",
+  accounts: "accounts",
 };
 
 async function fsAdd(collectionName, data) {
@@ -5051,6 +5052,26 @@ function Root() {
   const [accounts, setAccounts] = useState(loadAccounts);
 
   useEffect(() => {
+    // 계정 목록(아이디/비번)을 이 브라우저의 localStorage에만 두면 다른 컴퓨터에서 로그인할 때 안 보이는 문제가 있어
+    // Firestore로 실시간 공유한다. Firestore에 계정이 하나도 없으면(최초 1회) 이 브라우저의 기존 계정
+    // (관리자가 이미 만들어둔 커스텀 계정 포함, 없으면 기본계정)을 그대로 업로드해서 이관한다.
+    if (!FIREBASE_ENABLED || !db) return;
+    const unsub = db.collection(COLLECTIONS.accounts).onSnapshot(
+      (snap) => {
+        if (snap.empty) {
+          const seed = loadAccounts();
+          seed.forEach((acc) => { db.collection(COLLECTIONS.accounts).doc(acc.id).set(acc).catch((e) => console.error(e)); });
+          setAccounts(seed);
+        } else {
+          setAccounts(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+        }
+      },
+      (err) => console.error("accounts 구독 오류:", err)
+    );
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
     if (!FIREBASE_ENABLED) return; // 로컬 모드에서는 로그인 없이 바로 진입
     const unsub = auth.onAuthStateChanged((u) => {
       if (u) {
@@ -5078,20 +5099,26 @@ function Root() {
     try { localStorage.removeItem(ROLE_STORAGE_KEY); } catch (e) { console.error(e); }
     setRoleUser(null);
   };
-  const saveAccount = (acc) => {
+  const saveAccount = async (acc) => {
     setAccounts((prev) => {
       const exists = prev.some((a) => a.id === acc.id);
       const next = exists ? prev.map((a) => (a.id === acc.id ? acc : a)) : [...prev, acc];
-      saveAccounts(next);
+      if (!FIREBASE_ENABLED) saveAccounts(next); // 로컬(오프라인) 모드 폴백
       return next;
     });
+    if (FIREBASE_ENABLED && db) {
+      try { await db.collection(COLLECTIONS.accounts).doc(acc.id).set(acc); } catch (e) { console.error(e); }
+    }
   };
-  const deleteAccount = (id) => {
+  const deleteAccount = async (id) => {
     setAccounts((prev) => {
       const next = prev.filter((a) => a.id !== id);
-      saveAccounts(next);
+      if (!FIREBASE_ENABLED) saveAccounts(next);
       return next;
     });
+    if (FIREBASE_ENABLED && db) {
+      try { await db.collection(COLLECTIONS.accounts).doc(id).delete(); } catch (e) { console.error(e); }
+    }
   };
 
   if (checking) {
