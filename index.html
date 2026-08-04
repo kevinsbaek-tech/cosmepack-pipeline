@@ -272,6 +272,7 @@ function extractProposalItems(rows, imageMap) {
     const noteSpec = extractSpecFromNote(noteRaw);
     items.push({
       name: String(name).replace(/\r?\n+/g, " ").trim(), // 2줄 이상 작성된 제품명도 줄바꿈만 공백으로 바꿔 잘림 없이 100% 보존
+      specRaw, // 재원 컬럼 원본 전체(제품명 자동조합 알고리즘에서 캡/재질 등 부가정보까지 참고하기 위해 보존)
       specSize: sizeMatch ? sizeMatch[1].trim() : specRaw.split("\n")[0] || "",
       material: materialMatch ? materialMatch[1].trim() : "",
       quantity: qtyIdx >= 0 ? Number(String(row[qtyIdx]).replace(/[^\d.]/g, "")) || 0 : 0,
@@ -557,6 +558,7 @@ async function parseQuoteWorkbook(workbook, zip) {
         image: it.image || src.image || "",
         leadTimeDays: it.leadTimeDays || src.leadTimeDays || null,
         printFinishNote: it.printFinishNote || src.printFinishNote || "",
+        sourcingNote: src.note || "", // "가격조사" 시트 비고란 전체 원문(줄바꿈 포함) — 제품DB의 "제작기타사항(C)"에 그대로 저장하기 위함
       };
       if (!merged.unitPrice) merged.unitPrice = findProposalPrice(it.name); // 제안서 시트에 단가가 비어있으면 "제안가격" 시트 M열로 보강
       return merged;
@@ -674,6 +676,38 @@ function extractSkuToken(text) {
   const m = String(text || "").match(/SKU-[A-Za-z0-9]+/i);
   return m ? m[0].toUpperCase() : null;
 }
+// 세그먼트 텍스트의 괄호 "안" 내용에서 수량을 추출 — 예: "(5천개기준) 약 1 CBM"에서 "5천개기준"만 뽑아 "천" 단위를 정확히 인식.
+// (괄호를 통째로 제거해버리면 "5천개기준" 자체가 사라져서 수량을 못 뽑는 실수를 방지하기 위한 전용 함수)
+function extractQtyFromSegment(segment) {
+  const m = String(segment || "").match(/[\(（]([^\)）]*)[\)）]/);
+  const inside = m ? m[1] : segment;
+  return extractKoreanQuantity(inside);
+}
+// (C)제품예상부피/(C)중국내운송료/(C)공장단가 텍스트에 "/"로 구분된 여러 수량 구간이 있으면
+// (예: "(5천개기준) 약 1 CBM / (1만개기준) 약 2 CBM") 구간별로 각각 파싱해서 별도 행(tier)을 생성.
+// 세 필드 중 어느 하나라도 "/"가 있으면 다중구간으로 보고, 같은 순번끼리 짝지어 매핑한다(필드별 구간개수가 다르면 그 필드의 마지막 구간값을 재사용).
+function buildMultiTierPriceRows(cbmRaw, shippingRaw, priceRaw, fallbackQty) {
+  const splitSeg = (raw) => String(raw || "").split("/").map((s) => s.trim()).filter(Boolean);
+  const cbmSegs = splitSeg(cbmRaw);
+  const shipSegs = splitSeg(shippingRaw);
+  const priceSegs = splitSeg(priceRaw);
+  const maxLen = Math.max(cbmSegs.length, shipSegs.length, priceSegs.length);
+  if (maxLen <= 1) return null; // 다중 구간이 아니면 null 반환(호출부에서 기존 단일구간 로직 사용)
+  const pick = (segs, i) => segs[i] || segs[segs.length - 1] || "";
+  const rows = [];
+  for (let i = 0; i < maxLen; i++) {
+    const cbmSeg = pick(cbmSegs, i), shipSeg = pick(shipSegs, i), priceSeg = pick(priceSegs, i);
+    const qty = extractQtyFromSegment(cbmSeg) || extractQtyFromSegment(shipSeg) || extractQtyFromSegment(priceSeg) || fallbackQty || "";
+    rows.push({
+      qty,
+      cbm: extractPriceOutsideParens(cbmSeg) || "",
+      shippingRmb: extractPriceOutsideParens(shipSeg) || "",
+      factoryPriceRmb: extractPriceOutsideParens(priceSeg) || "",
+    });
+  }
+  return rows;
+}
+
 function boxHeroRowsToProducts(rows) {
   return rows.map((row) => {
     const name = pickField(row, ["제품명"]);
@@ -681,8 +715,11 @@ function boxHeroRowsToProducts(rows) {
     const moqText = pickField(row, ["(K)최소제작수량"]);
     const leadTimeText = pickField(row, ["(K)예상제작기간"]);
     const cbmText = pickField(row, ["(C)제품예상부피"]);
-    const totalShippingRmb = extractPriceOutsideParens(pickField(row, ["(C)중국내운송료"]));
-    const rmbCost = extractPriceOutsideParens(pickField(row, ["(C)공장단가"]));
+    const cbmNumber = extractPriceOutsideParens(cbmText); // "(1만개기준) 약 1 CBM" 같은 텍스트에서도 순수 숫자(1)만 정확히 추출
+    const shippingRaw = pickField(row, ["(C)중국내운송료"]);
+    const priceRaw = pickField(row, ["(C)공장단가"]);
+    const totalShippingRmb = extractPriceOutsideParens(shippingRaw);
+    const rmbCost = extractPriceOutsideParens(priceRaw);
     const moqQuantity = extractKoreanQuantity(moqText);
     const leadTimeDays = extractLeadTimeDays(leadTimeText);
     const rec = {
@@ -716,7 +753,7 @@ function boxHeroRowsToProducts(rows) {
       availableVolumeC: pickField(row, ["(C)제품제공가능용량"]),
       cbmText,
       totalShippingRmb,
-      shippingText: pickField(row, ["(C)중국내운송료"]),
+      shippingText: shippingRaw,
       rmbCost,
       factoryPriceNote: pickField(row, ["(C)공장단가설명"]),
       containerPrintPriceC: pickField(row, ["(C)용기인쇄단가"]),
@@ -731,9 +768,12 @@ function boxHeroRowsToProducts(rows) {
       // 원본 전체 (테이블 헤더 그대로) — 화면에 없는 항목까지 전부 보존
       raw: row,
     };
-    // MOQ+공장단가가 모두 있으면 수량별 단가표(1단계 "🔍 기존 제품 DB" RMB피커)에 바로 뜨도록 기본 구간 하나를 자동 생성
-    if (moqQuantity && rmbCost) {
-      rec.priceTiers = [{ qty: moqQuantity, cbm: cbmText || "", shippingRmb: totalShippingRmb || "", factoryPriceRmb: rmbCost }];
+    // "/"로 구분된 다중 수량구간이 있으면 구간별로 여러 행을 생성, 없으면 기존처럼 MOQ+공장단가 기준 단일 구간 하나만 생성
+    const multiTiers = buildMultiTierPriceRows(cbmText, shippingRaw, priceRaw, moqQuantity);
+    if (multiTiers) {
+      rec.priceTiers = multiTiers;
+    } else if (moqQuantity && rmbCost) {
+      rec.priceTiers = [{ qty: moqQuantity, cbm: cbmNumber || "", shippingRmb: totalShippingRmb || "", factoryPriceRmb: rmbCost }];
     }
     return rec;
   }).filter(Boolean);
@@ -799,14 +839,17 @@ const CAP_TYPE_KEYWORDS = ["원터치캡", "스크류캡", "플립캡", "디스�
 const FINISH_KEYWORDS = ["실크 1도", "실크1도", "실크 2도", "실크2도", "유광", "무광", "조색", "금박", "은박", "핫스탬핑", "UV코팅"];
 
 /* ===================== 코스메팩 표준 제품명 자동 조합 (Format Builder) ===================== */
-// "[코스메팩] 재질/용기종류 / 캡·인서트·후가공옵션(있으면) / 사이즈·규격(있으면) / 용량·중량" 순서로 재조합
+// "[코스메팩] 재질/용기종류 / 노즐·인서트형태(있으면) / 캡형태(있으면) / 사이즈·규격(있으면) / 용량·중량(있으면) / 후가공·특이사항(있으면)" 순서로 재조합
+// 출처: "제안서(원화)" 시트의 [제품명] + [재원] + [비고] 텍스트를 모두 합쳐서 파싱한다.
 
-// 1) 재질/용기종류 — 엑셀에는 "PE", "라미 ABL", "용기: AS", "유리"처럼 재질명 단독 또는 라벨+재질로만 적혀있고
-// "PE튜브"/"AS용기"처럼 완성된 합성어로는 잘 안 적혀있어서, 재질 키워드를 먼저 찾고 문맥(튜브/용기/ABL/PBL 단어, 재질 종류)으로
-// 용기 형태를 추론해서 합성한다. ABL/PBL은 그 자체로 "라미 계열 튜브"를 뜻하는 기술용어라 표시용 재질명으로는 쓰지 않고 튜브 추론 힌트로만 사용.
+// 1) 재질/용기종류 — "크림용기"/"로션용기"처럼 이미 완성된 합성어가 있으면 그대로 쓰고,
+// 없으면 재질명(PE/라미/AS 등) 단독 추출 후 문맥(튜브/용기/ABL/PBL)으로 용기 형태를 추론해서 합성한다.
 const DISPLAY_MATERIAL_KEYWORDS = ["PETG", "PET", "PP", "PE", "PS", "AS", "라미", "유리", "아크릴", "에어리스"];
 const TUBE_TYPE_HINT_WORDS = ["ABL", "PBL"]; // 재질명은 아니지만 "튜브" 형태를 암시하는 기술용어
 function parseMaterialAndType(text) {
+  // 이미 완성된 용기종류 합성어(크림용기, 로션용기 등)가 있으면 재질 추론 없이 그대로 사용
+  const compound = extractFirstKeyword(text, CONTAINER_TYPE_KEYWORDS.filter((k) => k !== "튜브"));
+  if (compound) return compound;
   const material = extractFirstKeyword(text, DISPLAY_MATERIAL_KEYWORDS);
   if (!material) return "";
   if (material === "에어리스") return "에어리스용기"; // 이미 그 자체로 완결된 용기 종류
@@ -818,21 +861,28 @@ function parseMaterialAndType(text) {
   return `${material}${type}`;
 }
 
-// 2) 캡/인서트/후가공 옵션 — "드로퍼인서트"/"원통형캡"처럼 이미 완성된 복합단어를 먼저 찾고,
-// 없으면 "캡: ABS"/"인서트: X" 같은 라벨+값 패턴을 파싱해서 "ABS캡"/"X인서트" 형태로 조합.
-// 그것도 없으면 "드로퍼"/"펌프"/"에어리스"/"스프레이" 같은 단독 캡타입 단어를 사용.
-const CAP_COMPOUND_KEYWORDS = ["드로퍼인서트", "오리피스인서트", "마개인서트", "이중구조캡", "역류방지인서트", "원통형캡", "원터치캡", "스크류캡", "플립캡", "디스크캡"];
-function parseCapOption(text) {
-  const compound = extractFirstKeyword(text, CAP_COMPOUND_KEYWORDS);
-  if (compound) return compound;
-  const capLabelMatch = text.match(/캡\s*[:：]\s*([A-Za-z0-9가-힣]+)/);
-  if (capLabelMatch) return `${capLabelMatch[1]}캡`;
-  const insertLabelMatch = text.match(/인서트\s*[:：]\s*([A-Za-z0-9가-힣]+)/);
-  if (insertLabelMatch) return `${insertLabelMatch[1]}인서트`;
-  return extractFirstKeyword(text, ["드로퍼", "펌프", "에어리스", "스프레이"]) || "";
+// 2) 노즐/인서트/기능 — "노즐: 단노즐(선크림)형"처럼 라벨+상세문구가 있으면 그 문구를 통째로 살리고,
+// 라벨이 없으면 단노즐/드로퍼/펌프/스파출라/에어리스 같은 단독 키워드로 대체
+function parseNozzleOrInsert(text) {
+  let m = text.match(/노즐\s*[:：]\s*([^\n/]+)/);
+  if (m) return m[1].trim();
+  m = text.match(/인서트\s*[:：]\s*([^\n/]+)/);
+  if (m) return m[1].trim();
+  return extractFirstKeyword(text, ["단노즐", "이중노즐", "드로퍼", "펌프", "스파출라", "에어리스", "오리피스"]) || "";
 }
 
-// 3) 사이즈/규격 — "19파이"/"25파이" 같은 파이 표기, "64*53.5mm"처럼 가로*세로 mm 표기, 단일 mm 표기를 순서대로 시도
+// 3) 캡 형태 — "타원형캡"/"원통형캡"/"탈부착캡"처럼 완성된 캡 명칭을 우선 찾고,
+// 없으면 "캡: ABS" 같은 라벨+재질 패턴을 "ABS캡" 형태로 조합
+const CAP_SHAPE_KEYWORDS = ["타원형캡", "원통형캡", "탈부착캡", "원터치캡", "스크류캡", "플립캡", "디스크캡"];
+function parseCapShape(text) {
+  const compound = extractFirstKeyword(text, CAP_SHAPE_KEYWORDS);
+  if (compound) return compound;
+  const m = text.match(/캡\s*[:：]\s*([A-Za-z0-9가-힣]+)/);
+  if (!m) return "";
+  return m[1].endsWith("캡") ? m[1] : `${m[1]}캡`;
+}
+
+// 4) 사이즈/규격 — "19파이"/"25파이" 같은 파이 표기, "64*53.5mm"처럼 가로*세로 mm 표기, 단일 mm 표기를 순서대로 시도
 function parseSizeSpec(text) {
   let m = text.match(/(\d+(?:\.\d+)?\s*[*×xX]\s*\d+(?:\.\d+)?\s*mm)/i);
   if (m) return m[1].replace(/\s+/g, "");
@@ -843,16 +893,28 @@ function parseSizeSpec(text) {
   return "";
 }
 
-// 엑셀 품명/비고 원문에서 재질·캡/인서트옵션·사이즈·용량을 뽑아 코스메팩 표준 형식으로 재조합.
-// 재질을 전혀 인식하지 못하면(정보가 너무 부족하면) "[코스메팩] 50g"처럼 껍데기만 남는 걸 막기 위해 원본 품명을 그대로 유지한다.
-function buildStandardProductName(rawName, note) {
-  const text = `${rawName || ""} ${note || ""}`;
+// 5) 후가공/특이사항 — "후가공: 은박용기 은박캡"처럼 라벨+상세문구가 있으면 그대로 살리고,
+// 없으면 무광/유광/실크인쇄/은박/금박/사출 등 키워드를 모아 공백으로 이어붙임
+const FINISH_NOTE_KEYWORDS = ["무광 코팅", "무광코팅", "실크 인쇄", "실크인쇄", "은박", "금박", "사출", "유광", "조색", "핫스탬핑", "UV코팅"];
+function parseFinishNote(text) {
+  const m = text.match(/후가공\s*[:：]\s*([^\n/]+)/);
+  if (m) return m[1].trim();
+  const found = extractAllKeywords(text, FINISH_NOTE_KEYWORDS);
+  return found.length > 0 ? found.join(" ") : "";
+}
+
+// "제안서(원화)" 시트의 [제품명]+[재원]+[비고]를 모두 합쳐서 파싱하고 코스메팩 표준 형식으로 재조합.
+// 재질/용기종류를 전혀 인식하지 못하면(정보가 너무 부족하면) "[코스메팩] 50g"처럼 껍데기만 남는 걸 막기 위해 원본 품명을 그대로 유지한다.
+function buildStandardProductName(rawName, specText, noteText) {
+  const text = `${rawName || ""} ${specText || ""} ${noteText || ""}`;
   const material = parseMaterialAndType(text);
   if (!material) return (rawName || "").trim(); // 재질/용기종류를 못 찾으면 원본 품명 그대로(안전장치)
-  const cap = parseCapOption(text);
+  const nozzle = parseNozzleOrInsert(text);
+  const cap = parseCapShape(text);
   const size = parseSizeSpec(text);
   const capacity = extractCapacityToken(text) || "";
-  const parts = [material, cap, size, capacity].filter(Boolean); // 빈 항목은 자동으로 걸러져 슬래시 중복/공백이 남지 않음
+  const finish = parseFinishNote(text);
+  const parts = [material, nozzle, cap, size, capacity, finish].filter(Boolean); // 빈 항목은 자동으로 걸러져 슬래시 중복/공백이 남지 않음
   return `[코스메팩] ${parts.join(" / ")}`;
 }
 
@@ -3753,7 +3815,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setExRate(formatted);
     setExRateSavedAt(savedAt);
     try { localStorage.setItem(EXRATE_SAVED_KEY, JSON.stringify({ ...formatted, savedAt })); } catch (e) { console.error(e); }
-    setToast("환율을 저장했습니다. (제안가 계산에 즉시 반영됩니다)");
+    alert("환율 설정이 성공적으로 변경되었습니다."); // 확인 누르면 즉시 아래에서 모달을 닫음
+    setExSettingsOpen(false);
   };
 
   // 페이지 로드시 캐시된 환율을 즉시 보여주고, 오늘 아직 갱신 안 됐으면 API를 호출해 하루 1회만 자동 갱신
@@ -4050,13 +4113,15 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       bulkAddProducts(items.map((it) => {
         const noteText = it.notes || it.note || it.printFinishNote || "";
         const rec = {
-          name: buildStandardProductName(it.name, noteText), // 엑셀 원본 품명을 "[코스메팩] 재질/인서트/캡/사이즈/용량" 표준 형식으로 재조합
+          name: buildStandardProductName(it.name, it.specRaw || it.specSize, noteText), // "[코스메팩] 재질/노즐·인서트/캡/사이즈/용량/후가공" 표준 형식으로 재조합(제품명+재원+비고 모두 참고)
           specSize: it.specSize, material: it.material,
           factory: it.factory, factoryLink: it.factoryLink,
           rmbCost: it.rmbCost, lastUnitPrice: it.unitPrice || 0, image: it.image || "",
           category: guessCategoryFromName(it.name, noteText), // 품명/비고 텍스트에 카테고리명이 포함돼 있으면 자동 선택
           leadTimeDays: it.leadTimeDays || null, leadTimeText: it.leadTimeDays ? `약 ${it.leadTimeDays}일` : "",
           otherOptionK: it.printFinishNote || "", otherOptionC: it.printFinishNote || "", // 비고란의 인쇄/후가공 문구를 K(제안용)/C(원가용) 양쪽에 동일하게 반영
+          proposalNotesK: it.notes || "", // "제안서(원화)" 시트 비고 컬럼 전체 원문(줄바꿈 포함) → 1.기본한국스펙 [제안기타사항]
+          productionNotesC: it.sourcingNote || it.note || "", // "가격조사" 시트 비고 컬럼 전체 원문(줄바꿈 포함) → 2.중국공장스펙 [제작기타사항] (제안서시트 인식실패시 폴백 경로의 note 필드도 함께 대응)
           moqQuantity: it.quantity || null, moqText: it.quantity ? `${it.quantity.toLocaleString("ko-KR")}개` : "",
         };
         if (it.quantity && it.rmbCost) {
@@ -4711,7 +4776,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 💡 적용 환율: 위안→원화 {fmtRate(exRate.rmbToKrw)}원 | 위안→달러 {fmtRate(exRate.rmbToUsd)} | 달러→원화 {fmtRate(exRate.usdToKrw)}원
                 {exRateSavedAt && <span className="text-white/50"> (저장일: {exRateSavedAt.slice(0, 16)})</span>}
               </span>
-              <button onClick={() => setExSettingsOpen((v) => !v)} className="px-2 py-0.5 rounded bg-white/15 hover:bg-white/25 font-medium whitespace-nowrap">⚙️ 고시환율 보기</button>
+              <button onClick={() => setExSettingsOpen((v) => !v)} className="px-2 py-0.5 rounded bg-white/15 hover:bg-white/25 font-medium whitespace-nowrap">⚙️ 환율설정</button>
 
               {exSettingsOpen && (
                 <React.Fragment>
@@ -4737,9 +4802,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
                     <div className="text-xs font-semibold text-slate-500 mb-2 pt-3 border-t border-slate-100">2. 🏦 은행 실시간 고시환율 참고</div>
                     {exRateSuggestion ? (
-                      <div className="text-[11px] text-slate-500 bg-slate-50 rounded-lg px-2.5 py-2 mb-3 leading-relaxed">
-                        <div className="text-slate-400 mb-1">송금보낼 때 / 기준일자: {exRateSuggestion.apiUpdatedAt || exRateSuggestion.updatedAt}</div>
-                        1 CNY = {fmtRate(exRateSuggestion.rmbToKrw)} KRW | 1 USD = {fmtRate(exRateSuggestion.usdToKrw)} KRW
+                      <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-3 mb-3">
+                        <div className="text-[11px] text-slate-500 mb-1.5">송금보낼 때 / 기준일자: {exRateSuggestion.apiUpdatedAt || exRateSuggestion.updatedAt}</div>
+                        <div style={{ fontSize: "1.15rem", fontWeight: "bold", color: "#1e3a8a" }}>
+                          1 CNY = {fmtRate(exRateSuggestion.rmbToKrw)} KRW | 1 USD = {fmtRate(exRateSuggestion.usdToKrw)} KRW
+                        </div>
                       </div>
                     ) : (
                       <div className="text-[11px] text-slate-400 mb-3">아직 은행 고시환율을 불러오지 못했습니다.</div>
