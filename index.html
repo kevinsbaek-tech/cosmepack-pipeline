@@ -2459,8 +2459,6 @@ function ExcelArchiveView({ archive, onBack, onUpload, onUploadZip, onApplyAll, 
         <div className="flex gap-2">
           {onApplyAll && <button onClick={onApplyAll} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🔗 전체 파이프라인 적용</button>}
           {onDedupe && <button onClick={onDedupe} title="파일명이 같은 중복 항목을 찾아 파일명당 1건(적용완료/최신 우선)만 남기고 정리합니다" className="px-4 py-2 rounded-lg border border-amber-200 text-amber-700 bg-amber-50 text-sm font-medium hover:bg-amber-100 whitespace-nowrap">🧹 중복 파일 정리</button>}
-          {onDeleteAllUploaded && <button onClick={onDeleteAllUploaded} className="px-4 py-2 rounded-lg bg-red-50 text-red-600 border border-red-200 text-sm font-medium hover:bg-red-100 whitespace-nowrap">🗑️ 업로드 제품 전체 삭제</button>}
-          {onResetExcelData && <button onClick={onResetExcelData} className="px-4 py-2 rounded-lg bg-red-50 text-red-600 border border-red-200 text-sm font-medium hover:bg-red-100 whitespace-nowrap">🧹 엑셀 연동 데이터 전체 초기화</button>}
           <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
         </div>
       </div>
@@ -3669,9 +3667,6 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
               {zipBusy ? "처리 중..." : "📦 ZIP/엑셀 파일 일괄 업로드"}
             </button>
             <input ref={zipRef} type="file" accept=".zip" className="hidden" onChange={handleZipUpload} />
-            {onDeleteAllUploaded && (
-              <button onClick={onDeleteAllUploaded} className="text-sm px-4 py-2 rounded-lg border border-red-200 text-red-600 font-medium hover:bg-red-50 whitespace-nowrap">🗑️ 업로드 제품 전체 삭제</button>
-            )}
             <span className="text-xs text-slate-400">ZIP 안에 엑셀+사진+HTML을 함께 넣어 올리면 한번에 처리됩니다.</span>
           </div>
         )}
@@ -3686,15 +3681,8 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
             <button onClick={() => setViewMode("card")} title="카드 뷰" className={"px-3 py-1.5 rounded-md text-sm " + (viewMode === "card" ? "bg-[#1E3A8A] text-white" : "text-slate-500 hover:bg-slate-50")}>🎴</button>
           </div>
           <button onClick={() => setEditingProduct({})} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
-          <button onClick={() => uploadRef.current && uploadRef.current.click()} disabled={uploadBusy} title="박스히어로 엑셀(.xlsx/.csv), '웹페이지 저장(.html)' 파일, 또는 파일명에 SKU가 포함된 이미지 파일을 올리면 자동으로 구분해서 처리합니다. 제품 데이터 파일은 SKU 기준 병합(신규등록/갱신), 이미지 파일은 사진만 SKU 매칭으로 복구됩니다." className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 font-medium hover:bg-emerald-100 disabled:opacity-50 whitespace-nowrap">
-            {uploadBusy ? "처리 중..." : "📦 박스히어로 데이터 일괄 업로드"}
-          </button>
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
-          {onAutoAssignCategories && <button onClick={onAutoAssignCategories} className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 whitespace-nowrap">🏷️ 카테고리 자동 매칭</button>}
-          {onStripBrandPrefix && <button onClick={onStripBrandPrefix} className="text-sm px-4 py-2 rounded-lg border border-slate-300 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">✂️ 제품명 [브랜드] 제거</button>}
-          {isAdmin && onDeleteAllProducts && <button onClick={onDeleteAllProducts} className="text-sm px-4 py-2 rounded-lg border border-red-200 text-red-600 font-medium hover:bg-red-50 whitespace-nowrap">🗑️ 제품 DB 전체 초기화</button>}
-          {isAdmin && onSyncProposalLinks && <button onClick={onSyncProposalLinks} title="기존에 이미 저장된 제안서들을 다시 훑어서, 제품별 'N개 제안서' 연결 개수를 지금 시점 기준으로 다시 계산합니다." className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 whitespace-nowrap">🔄 제안서 연결 재계산</button>}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {["전체", ...CATEGORIES].map((c) => (
