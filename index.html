@@ -1129,11 +1129,17 @@ function getMarginRate(marginTable, category, totalRmbAmount) {
   return rates[idx];
 }
 
-function composeNotes({ spec, printPrice, finishing, leadTime, cbm, extraOptions }) {
+function composeNotes({ spec, printPrice, finishing, leadTime, cbm, extraOptions, selectedFinishingItems, finishingApplyMode }) {
   const lines = [];
   if (spec) lines.push(spec);
   if (printPrice) lines.push(`실크 인쇄: 1도당 단가 ${printPrice}원/ea`);
-  if (finishing) lines.push(`기타 후가공: ${finishing}`);
+  if (finishingApplyMode === "apply" && selectedFinishingItems && selectedFinishingItems.length > 0) {
+    lines.push(`적용 후가공: ${selectedFinishingItems.map((f) => `${f.name}(${rmb(f.rmbPrice)}/${won(f.krwPrice)})`).join(", ")}`);
+  } else if (finishingApplyMode === "guide" && finishing) {
+    lines.push(`후가공 안내: ${finishing}`); // 가격에는 반영하지 않고 안내 문구만 노출(고객이 선택시 별도 협의)
+  } else if (finishing) {
+    lines.push(`기타 후가공: ${finishing}`);
+  }
   lines.push(`예상 생산기간: 주문 확정 및 최종 사양 확인 후 약 ${leadTime || 30}일`);
   if (cbm) lines.push(`예상 부피: 약 ${cbm}CBM`);
   (extraOptions || []).forEach((opt) => { if (opt && opt.trim()) lines.push(`• ${opt.trim()}`); });
@@ -1310,11 +1316,25 @@ function AutoResizeTextarea({ value, onChange, placeholder, minRows, readOnly })
 
 /* ===================== 기준정보 설정 모달 ===================== */
 
-function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginTable, setMarginTable, customsRates, setCustomsRates, difficultyMargins, setDifficultyMargins, supplierLogo, setSupplierLogo }) {
+function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginTable, setMarginTable, customsRates, setCustomsRates, difficultyMargins, setDifficultyMargins, supplierLogo, setSupplierLogo, finishingOptions, setFinishingOptions }) {
   const [tab, setTab] = useState("logistics");
   const [saving, setSaving] = useState(false);
+  const [finishingCategory, setFinishingCategory] = useState(CATEGORIES[0]); // 후가공 관리 탭에서 지금 편집중인 카테고리
   if (!open) return null;
   const updateMargin = (cat, idx, value) => setMarginTable((prev) => { const next = { ...prev, [cat]: [...prev[cat]] }; next[cat][idx] = Number(value) / 100; return next; });
+  // 후가공 항목 추가/수정/삭제 — 카테고리별 배열로 관리
+  const finishingList = finishingOptions[finishingCategory] || [];
+  const addFinishingItem = () => {
+    const next = [...finishingList, { id: Date.now() + Math.random(), name: "", rmbPrice: 0, krwPrice: 0 }];
+    setFinishingOptions({ ...finishingOptions, [finishingCategory]: next });
+  };
+  const updateFinishingItem = (id, field, value) => {
+    const next = finishingList.map((f) => (f.id === id ? { ...f, [field]: field === "name" ? value : Number(value) } : f));
+    setFinishingOptions({ ...finishingOptions, [finishingCategory]: next });
+  };
+  const deleteFinishingItem = (id) => {
+    setFinishingOptions({ ...finishingOptions, [finishingCategory]: finishingList.filter((f) => f.id !== id) });
+  };
   // 저장 버튼 — DB(Firestore)+localStorage에 기준정보를 저장하고, 완료 안내 후 모달을 자동으로 닫는다.
   const handleSaveAndClose = async () => {
     setSaving(true);
@@ -1338,7 +1358,7 @@ function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginT
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
         <div className="px-6 pt-4 flex gap-2 border-b border-slate-200">
-          {[["logistics", "A. 물류 부대비용"], ["margin", "B. 카테고리별 이익율표"], ["customs", "C. 카테고리별 관세율"], ["difficulty", "E. 업체 난이도별 마진 차등율"], ["logo", "D. 공급자 로고"]].map(([key, label]) => (
+          {[["logistics", "A. 물류 부대비용"], ["margin", "B. 카테고리별 이익율표"], ["customs", "C. 카테고리별 관세율"], ["finishing", "F. 카테고리별 후가공 내역"], ["difficulty", "E. 업체 난이도별 마진 차등율"], ["logo", "D. 공급자 로고"]].map(([key, label]) => (
             <button key={key} onClick={() => setTab(key)} className={"px-4 py-2 text-sm font-medium rounded-t-lg -mb-px border-b-2 " + (tab === key ? "border-[#1E3A8A] text-[#1E3A8A]" : "border-transparent text-slate-400 hover:text-slate-600")}>{label}</button>
           ))}
         </div>
@@ -1384,6 +1404,40 @@ function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginT
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+          {tab === "finishing" && (
+            <div>
+              <p className="text-xs text-slate-500 mb-4">카테고리별로 후가공 항목(실크인쇄, 금박, UV코팅 등)을 자유롭게 등록해두면, 제안가 계산 화면 "④ 후가공 선택"에서 체크박스로 골라 단가에 바로 합산할 수 있습니다.</p>
+              <div className="flex flex-wrap gap-1.5 mb-4">
+                {CATEGORIES.map((cat) => (
+                  <button key={cat} onClick={() => setFinishingCategory(cat)} className={"text-xs px-3 py-1.5 rounded-full font-medium whitespace-nowrap " + (finishingCategory === cat ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>{cat}</button>
+                ))}
+              </div>
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead><tr className="bg-slate-50 text-slate-500">
+                    <th className="text-left px-3 py-2 font-medium">후가공명</th>
+                    <th className="text-left px-3 py-2 font-medium w-32">위안화 단가(RMB)</th>
+                    <th className="text-left px-3 py-2 font-medium w-32">원화 단가(KRW)</th>
+                    <th className="w-16"></th>
+                  </tr></thead>
+                  <tbody>
+                    {finishingList.length === 0 && (
+                      <tr><td colSpan={4} className="text-center text-slate-400 py-6">등록된 후가공 항목이 없습니다. 아래 버튼으로 추가해주세요.</td></tr>
+                    )}
+                    {finishingList.map((f) => (
+                      <tr key={f.id} className="border-t border-slate-100">
+                        <td className="px-3 py-1.5"><input className="w-full px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={f.name} onChange={(e) => updateFinishingItem(f.id, "name", e.target.value)} placeholder="예: 실크인쇄 1도당" /></td>
+                        <td className="px-3 py-1.5"><input type="number" step="0.01" className="w-full px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={f.rmbPrice} onChange={(e) => updateFinishingItem(f.id, "rmbPrice", e.target.value)} /></td>
+                        <td className="px-3 py-1.5"><input type="number" className="w-full px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={f.krwPrice} onChange={(e) => updateFinishingItem(f.id, "krwPrice", e.target.value)} /></td>
+                        <td className="px-3 py-1.5 text-center"><button onClick={() => deleteFinishingItem(f.id)} className="text-red-400 hover:text-red-600">🗑️</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button onClick={addFinishingItem} className="mt-3 text-xs px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5">➕ 후가공 항목 추가</button>
             </div>
           )}
           {tab === "difficulty" && (
@@ -3812,6 +3866,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [marginTable, setMarginTable] = useState(() => ({ ...DEFAULT_MARGIN_TABLE, ...((loadPricingSettingsCache() || {}).marginTable || {}) }));
   const [customsRates, setCustomsRates] = useState(() => ({ ...DEFAULT_CUSTOMS_RATES, ...((loadPricingSettingsCache() || {}).customsRates || {}) }));
   const [difficultyMargins, setDifficultyMargins] = useState(() => (loadPricingSettingsCache() || {}).difficultyMargins || DEFAULT_DIFFICULTY_MARGINS);
+  const [finishingOptions, setFinishingOptions] = useState(() => (loadPricingSettingsCache() || {}).finishingOptions || {}); // { [카테고리]: [{id,name,rmbPrice,krwPrice}] }
   const [clientsList, setClientsList] = useState([]);
   const [exRate, setExRate] = useState(() => {
     try {
@@ -3881,12 +3936,13 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       if (data.customsRates) setCustomsRates((prev) => ({ ...prev, ...data.customsRates }));
       if (data.difficultyMargins) setDifficultyMargins(data.difficultyMargins);
       if (data.supplierLogo) setSupplierLogo(data.supplierLogo);
+      if (data.finishingOptions) setFinishingOptions(data.finishingOptions);
     }).catch((e) => console.error("기준정보 불러오기 실패:", e));
   }, []);
 
-  // "저장하고 닫기" 버튼 — 기준정보 5종을 localStorage + Firestore에 함께 저장(다음 접속에도 유지, 다른 기기와도 동기화)
+  // "저장하고 닫기" 버튼 — 기준정보 6종을 localStorage + Firestore에 함께 저장(다음 접속에도 유지, 다른 기기와도 동기화)
   const saveSettingsConfig = async () => {
-    const payload = { logistics, marginTable, customsRates, difficultyMargins, supplierLogo, savedAt: nowDateTimeStr() };
+    const payload = { logistics, marginTable, customsRates, difficultyMargins, supplierLogo, finishingOptions, savedAt: nowDateTimeStr() };
     try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); } catch (e) { console.error(e); }
     try { if (FIREBASE_ENABLED && db) await db.collection(COLLECTIONS.settings).doc("pricingConfig").set(payload); } catch (e) { console.error(e); }
   };
@@ -3910,6 +3966,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [rmbBox, setRmbBox] = useState(0);
   const [rmbInspect, setRmbInspect] = useState(0);
   const [rmbShip, setRmbShip] = useState(0);
+  const [selectedFinishingIds, setSelectedFinishingIds] = useState([]); // "④ 후가공 선택"에서 체크된 항목 id들(가격반영모드)
+  const [finishingApplyMode, setFinishingApplyMode] = useState("apply"); // "apply"=선택한 후가공 단가를 원가에 합산 / "guide"=가격변동없이 안내문구만 노출
   const [costLocked, setCostLocked] = useState(true);
   const [spec, setSpec] = useState("화이트 용기 / 화이트 캡 기본 사양");
   const [printPrice, setPrintPrice] = useState(20);
@@ -3920,14 +3978,19 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [marginClientName, setMarginClientName] = useState("");
 
   useEffect(() => { setCustomsRate(customsRates[category] ?? 0); }, [category]);
-  useEffect(() => { setMarginOverride(null); }, [category]);
+  useEffect(() => { setMarginOverride(null); setSelectedFinishingIds([]); }, [category]);
 
   const calc = useMemo(() => {
     const qty = Number(quantity) || 0;
     const boxPerUnit = qty > 0 ? (Number(rmbBox) || 0) / qty : 0;
     const inspectPerUnit = qty > 0 ? (Number(rmbInspect) || 0) / qty : 0;
     const shipPerUnit = qty > 0 ? (Number(rmbShip) || 0) / qty : 0;
-    const unitRmb = (Number(rmbBase) || 0) + boxPerUnit + inspectPerUnit + shipPerUnit;
+    // "④ 후가공 선택"에서 가격반영 모드로 체크된 항목들의 위안화 단가 합산(개당) — 미선택/안내모드일 땐 가격에 영향 없음
+    const selectedFinishingItems = finishingApplyMode === "apply"
+      ? (finishingOptions[category] || []).filter((f) => selectedFinishingIds.includes(f.id))
+      : [];
+    const finishingRmbPerUnit = selectedFinishingItems.reduce((s, f) => s + (Number(f.rmbPrice) || 0), 0);
+    const unitRmb = (Number(rmbBase) || 0) + boxPerUnit + inspectPerUnit + shipPerUnit + finishingRmbPerUnit;
     const totalRmbPayment = unitRmb * qty;
     const autoMarginRate = getMarginRate(marginTable, category, totalRmbPayment);
     const clientDifficulty = (clientsList.find((c) => c.name === marginClientName) || {}).difficulty || "표준";
@@ -3949,8 +4012,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       unitCostKrw, pureFactoryCostKrw, overheadPerUnit, logisticsPerUnit, customsPerUnit, totalCostPerUnit,
       proposedPrice, profitPerUnit, profitRate, totalProfit: profitPerUnit * qty, totalProposal: proposedPrice * qty,
       totalFactoryCost: pureFactoryCostKrw * qty, totalOverhead: overheadPerUnit * qty,
+      selectedFinishingItems, finishingRmbPerUnit,
     };
-  }, [category, quantity, cbm, customsRate, rmbBase, rmbBox, rmbInspect, rmbShip, marginTable, logistics, exRate, marginOverride, clientsList, difficultyMargins, marginClientName]);
+  }, [category, quantity, cbm, customsRate, rmbBase, rmbBox, rmbInspect, rmbShip, marginTable, logistics, exRate, marginOverride, clientsList, difficultyMargins, marginClientName, finishingOptions, selectedFinishingIds, finishingApplyMode]);
 
   const [draftItems, setDraftItems] = useState([]);
   const [clientInfo, setClientInfo] = useState({ clientName: "", contact: "", channel: "카카오채널", employee: "", proposalTitle: "" });
@@ -3988,6 +4052,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setItemFactory(""); setItemWechatGroup("");
     setSpec("화이트 용기 / 화이트 캡 기본 사양"); setPrintPrice(20); setFinishing("별도 견적"); setLeadTime(30);
     setExtraOptions([]);
+    setSelectedFinishingIds([]); setFinishingApplyMode("apply");
     setMarginOverride(null);
   };
 
@@ -4869,7 +4934,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
   const addItemToDraft = () => {
     if (!productName.trim()) { setToast("제품명을 입력해주세요."); return; }
-    const notes = composeNotes({ spec, printPrice, finishing, leadTime, cbm, extraOptions });
+    const notes = composeNotes({ spec, printPrice, finishing, leadTime, cbm, extraOptions, selectedFinishingItems: calc.selectedFinishingItems, finishingApplyMode });
     const calcSnapshot = {
       rmbBase: Number(rmbBase) || 0, rmbBox: Number(rmbBox) || 0, rmbInspect: Number(rmbInspect) || 0, rmbShip: Number(rmbShip) || 0,
       customsRate: Number(customsRate) || 0, marginOverride, marginRate: calc.marginRate, autoMarginRate: calc.autoMarginRate,
@@ -4957,7 +5022,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       <ClientInfoModal open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
         onClose={() => setClientModal({ open: false, mode: clientModal.mode })} onSubmit={handleClientSubmit} />
       <PdfPreview open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo} />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} />
 
       <header className="bg-[#1E3A8A] text-white relative">
         {/* 1단: 최상단 유틸리티 바 — 환율 요약(사용자가 저장한 값 우선) + 계정/시스템 상태 */}
@@ -5243,7 +5308,43 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 </div>
                 <div className="mt-3 pt-3 border-t border-dashed border-slate-200 text-xs text-slate-500 flex justify-between"><span>상품대금 합계 (RMB/개)</span><span className="font-semibold text-slate-700">{rmb(calc.unitRmb)}</span></div>
               </Card>
-              <Card title="④ 물류비 고정항목" right={<button onClick={() => setSettingsOpen(true)} className="text-xs text-[#1D4ED8] hover:underline">설정에서 수정 →</button>}>
+              <Card title="④ 후가공 선택" right={<button onClick={() => setSettingsOpen(true)} className="text-xs text-[#1D4ED8] hover:underline">기준정보에서 항목 관리 →</button>}>
+                <div className="flex gap-2 mb-3">
+                  <button onClick={() => setFinishingApplyMode("apply")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium " + (finishingApplyMode === "apply" ? "bg-[#1E3A8A] text-white" : "border border-slate-200 text-slate-600 hover:bg-slate-50")}>✅ 후가공 선택(단가 반영)</button>
+                  <button onClick={() => setFinishingApplyMode("guide")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium " + (finishingApplyMode === "guide" ? "bg-amber-500 text-white" : "border border-slate-200 text-slate-600 hover:bg-slate-50")}>📝 미선택 / 별도 안내</button>
+                </div>
+                {finishingApplyMode === "apply" ? (
+                  (finishingOptions[category] || []).length === 0 ? (
+                    <p className="text-xs text-slate-400 py-3">이 카테고리에 등록된 후가공 항목이 없습니다. <button onClick={() => setSettingsOpen(true)} className="text-[#1D4ED8] underline">기준정보에서 추가</button>하면 여기 체크박스로 나타납니다.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {(finishingOptions[category] || []).map((f) => {
+                        const checked = selectedFinishingIds.includes(f.id);
+                        return (
+                          <label key={f.id} className={"flex items-center justify-between gap-3 px-3 py-2 rounded-lg border cursor-pointer text-xs " + (checked ? "border-[#1E3A8A] bg-[#1E3A8A]/5" : "border-slate-200 hover:bg-slate-50")}>
+                            <span className="flex items-center gap-2">
+                              <input type="checkbox" checked={checked} onChange={() => setSelectedFinishingIds((prev) => checked ? prev.filter((id) => id !== f.id) : [...prev, f.id])} />
+                              <span className="font-medium text-slate-700">{f.name || "(이름없음)"}</span>
+                            </span>
+                            <span className="text-slate-500 whitespace-nowrap">{rmb(f.rmbPrice)} / {won(f.krwPrice)}</span>
+                          </label>
+                        );
+                      })}
+                      {calc.selectedFinishingItems.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-dashed border-slate-200 text-xs text-slate-500 flex justify-between">
+                          <span>후가공 추가금 합계 (RMB/개)</span><span className="font-semibold text-[#1E3A8A]">{rmb(calc.finishingRmbPerUnit)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                ) : (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">별도 안내 문구 <span className="text-slate-400 font-normal">가격에는 반영되지 않고, 제안서·인보이스 비고란에 그대로 표시됩니다</span></label>
+                    <textarea className={inputCls} rows={2} value={finishing} onChange={(e) => setFinishing(e.target.value)} placeholder="예: 실크인쇄 선택 시 1도당 0.1위안(약 20원) 추가 적용" />
+                  </div>
+                )}
+              </Card>
+              <Card title="⑤ 물류비 고정항목" right={<button onClick={() => setSettingsOpen(true)} className="text-xs text-[#1D4ED8] hover:underline">설정에서 수정 →</button>}>
                 <div className="grid grid-cols-2 gap-3 text-xs text-slate-600">
                   <div className="flex justify-between bg-slate-50 rounded-lg px-3 py-2"><span>CBM당 운송료</span><span className="font-medium">{won(logistics.cbmRate)}</span></div>
                   <div className="flex justify-between bg-slate-50 rounded-lg px-3 py-2"><span>BL 비용</span><span className="font-medium">{won(logistics.blFee)}</span></div>
@@ -5263,7 +5364,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                   </span>
                 </div>
               </Card>
-              <Card title="⑤ 제안서 비고 상세" right={<span className="text-xs text-slate-400">제안서 '비고'란에 자동 반영</span>}>
+              <Card title="⑥ 제안서 비고 상세" right={<span className="text-xs text-slate-400">제안서 '비고'란에 자동 반영</span>}>
                 <Field label="사양" hint="색상, 옵션 등"><input className={inputCls} value={spec} onChange={(e) => setSpec(e.target.value)} /></Field>
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="실크인쇄 단가" hint="원/ea, 1도 기준"><input type="number" className={inputCls} value={printPrice} onChange={(e) => setPrintPrice(e.target.value)} /></Field>
