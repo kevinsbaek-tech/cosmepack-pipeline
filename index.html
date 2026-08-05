@@ -841,7 +841,122 @@ const CAP_TYPE_KEYWORDS = ["원터치캡", "스크류캡", "플립캡", "디스�
 // 후가공/옵션 키워드
 const FINISH_KEYWORDS = ["실크 1도", "실크1도", "실크 2도", "실크2도", "유광", "무광", "조색", "금박", "은박", "핫스탬핑", "UV코팅"];
 
-/* ===================== 코스메팩 표준 제품명 자동 조합 (Format Builder) ===================== */
+// ===== 후가공 단가 분석 리포트 =====
+// 1) 기준정보에 등록된 후가공 마스터데이터를 카테고리+후가공명 기준으로 집계(중복 등록/누락 점검용)
+function buildFinishingMasterReport(finishingOptions) {
+  const groups = {};
+  Object.entries(finishingOptions || {}).forEach(([category, list]) => {
+    (list || []).forEach((f) => {
+      const key = `${category}__${f.name || "(이름없음)"}`;
+      if (!groups[key]) groups[key] = { category, name: f.name || "(이름없음)", rmbList: [], krwList: [], optionType: f.optionType, unitLabel: f.unitLabel };
+      groups[key].rmbList.push(Number(f.rmbPrice) || 0);
+      groups[key].krwList.push(Number(f.krwPrice) || 0);
+    });
+  });
+  const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+  return Object.values(groups).map((g) => ({
+    category: g.category, name: g.name, count: g.rmbList.length,
+    avgRmb: avg(g.rmbList), avgKrw: avg(g.krwList),
+    note: (g.optionType === "variable" ? `가변(${g.unitLabel || "단위없음"})` : "고정단가") + (g.rmbList.length > 1 ? " · 중복등록 확인필요" : ""),
+  })).sort((a, b) => a.category.localeCompare(b.category, "ko") || a.name.localeCompare(b.name, "ko"));
+}
+// 2) 제품 비고 텍스트(otherOptionK/otherOptionC/productionNotesC/proposalNotesK)에서 후가공 키워드+인접 가격을 최선추정으로 추출(부정확할 수 있음)
+const FINISHING_TEXT_SCAN_KEYWORDS = ["실크인쇄", "핫스탬핑", "무광 코팅", "무광코팅", "유광", "조색", "금박", "은박", "UV코팅", "라벨", "코팅", "인쇄"];
+function extractFinishingMentionsFromText(text) {
+  const found = [];
+  if (!text) return found;
+  FINISHING_TEXT_SCAN_KEYWORDS.forEach((kw) => {
+    const idx = text.indexOf(kw);
+    if (idx < 0) return;
+    const window = text.slice(Math.max(0, idx - 10), idx + 50);
+    const rmbMatch = window.match(/(\d+(?:\.\d+)?)\s*위안/);
+    const krwMatch = window.match(/(\d+(?:\.\d+)?)\s*원/);
+    found.push({ name: kw, rmbPrice: rmbMatch ? Number(rmbMatch[1]) : null, krwPrice: krwMatch ? Number(krwMatch[1]) : null });
+  });
+  return found;
+}
+function buildFinishingTextReport(products) {
+  const groups = {};
+  (products || []).forEach((p) => {
+    const category = p.category || "(카테고리 미지정)";
+    const text = [p.otherOptionK, p.otherOptionC, p.productionNotesC, p.proposalNotesK].filter(Boolean).join(" ");
+    extractFinishingMentionsFromText(text).forEach((m) => {
+      const key = `${category}__${m.name}`;
+      if (!groups[key]) groups[key] = { category, name: m.name, rmbList: [], krwList: [], count: 0 };
+      groups[key].count++;
+      if (m.rmbPrice != null) groups[key].rmbList.push(m.rmbPrice);
+      if (m.krwPrice != null) groups[key].krwList.push(m.krwPrice);
+    });
+  });
+  const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+  return Object.values(groups).map((g) => ({
+    category: g.category, name: g.name, count: g.count,
+    avgRmb: avg(g.rmbList), avgKrw: avg(g.krwList),
+    note: g.rmbList.length === 0 && g.krwList.length === 0 ? "언급만 있고 단가 텍스트는 못 찾음" : "제품 비고 텍스트 추출(부정확할 수 있음)",
+  })).sort((a, b) => b.count - a.count);
+}
+
+function FinishingAnalysisModal({ finishingOptions, products, onClose }) {
+  const masterRows = useMemo(() => buildFinishingMasterReport(finishingOptions), [finishingOptions]);
+  const textRows = useMemo(() => buildFinishingTextReport(products), [products]);
+  useEffect(() => {
+    // 요청하신대로 콘솔에도 표 형태로 함께 출력
+    console.log("=== [기준정보] 카테고리별 후가공 마스터데이터 분석 ===");
+    console.table(masterRows.map((r) => ({ 카테고리: r.category, 후가공명: r.name, 등록개수: r.count, "RMB평균": r.avgRmb.toFixed(2), "KRW평균": Math.round(r.avgKrw), 비고: r.note })));
+    console.log("=== [제품 비고 텍스트 추출] 카테고리별 후가공 언급 분석(부정확할 수 있음) ===");
+    console.table(textRows.map((r) => ({ 카테고리: r.category, 후가공명: r.name, 등록개수: r.count, "RMB평균": r.avgRmb != null ? r.avgRmb.toFixed(2) : "-", "KRW평균": r.avgKrw != null ? Math.round(r.avgKrw) : "-", 비고: r.note })));
+  }, [masterRows, textRows]);
+
+  const Table = ({ rows }) => (
+    <div className="border border-slate-200 rounded-lg overflow-hidden mb-2">
+      <table className="w-full text-xs">
+        <thead><tr className="bg-slate-50 text-slate-500">
+          <th className="text-left px-3 py-2 font-medium">카테고리</th>
+          <th className="text-left px-3 py-2 font-medium">후가공명</th>
+          <th className="text-right px-3 py-2 font-medium">등록 개수</th>
+          <th className="text-right px-3 py-2 font-medium">위안화 평균(RMB)</th>
+          <th className="text-right px-3 py-2 font-medium">원화 평균(KRW)</th>
+          <th className="text-left px-3 py-2 font-medium">비고</th>
+        </tr></thead>
+        <tbody>
+          {rows.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">데이터가 없습니다.</td></tr>}
+          {rows.map((r, i) => (
+            <tr key={i} className="border-t border-slate-100">
+              <td className="px-3 py-1.5">{r.category}</td>
+              <td className="px-3 py-1.5 font-medium text-slate-700">{r.name}</td>
+              <td className="px-3 py-1.5 text-right">{r.count}</td>
+              <td className="px-3 py-1.5 text-right">{r.avgRmb != null ? rmb(r.avgRmb) : "-"}</td>
+              <td className="px-3 py-1.5 text-right">{r.avgKrw != null ? won(r.avgKrw) : "-"}</td>
+              <td className="px-3 py-1.5 text-slate-500">{r.note}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "95vw", maxWidth: "1000px", height: "85vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+          <h2 className="text-base font-bold text-slate-800">📊 카테고리별 후가공 단가 분석 리포트</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 overflow-y-auto flex-1">
+          <div className="text-xs font-semibold text-slate-600 mb-2">1. 기준정보 등록 마스터데이터 기준 (정확함)</div>
+          <p className="text-[11px] text-slate-400 mb-2">⚙️기준정보 &gt; 후가공 관리에 실제 등록된 단가입니다. "등록 개수"가 2 이상이면 같은 카테고리에 동일한 이름이 중복 등록된 것이니 확인해주세요.</p>
+          <Table rows={masterRows} />
+
+          <div className="text-xs font-semibold text-slate-600 mb-2 mt-6">2. 제품 비고 텍스트 추출 기준 (참고용, 부정확할 수 있음)</div>
+          <p className="text-[11px] text-slate-400 mb-2">각 제품의 비고/사양 텍스트 안에서 후가공 키워드와 그 주변의 "N위안"/"N원" 표기를 찾아 최선 추정으로 집계한 것입니다. 실제 등록 단가와 다를 수 있습니다.</p>
+          <Table rows={textRows} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // "[코스메팩] 재질/용기종류 / 노즐·인서트형태(있으면) / 캡형태(있으면) / 사이즈·규격(있으면) / 용량·중량(있으면) / 후가공·특이사항(있으면)" 순서로 재조합
 // 출처: "제안서(원화)" 시트의 [제품명] + [재원] + [비고] 텍스트를 모두 합쳐서 파싱한다.
 
@@ -1415,7 +1530,7 @@ function AutoResizeTextarea({ value, onChange, placeholder, minRows, readOnly })
 
 /* ===================== 기준정보 설정 모달 ===================== */
 
-function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginTable, setMarginTable, customsRates, setCustomsRates, difficultyMargins, setDifficultyMargins, supplierLogo, setSupplierLogo, finishingOptions, setFinishingOptions }) {
+function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginTable, setMarginTable, customsRates, setCustomsRates, difficultyMargins, setDifficultyMargins, supplierLogo, setSupplierLogo, finishingOptions, setFinishingOptions, onShowAnalysis }) {
   const [tab, setTab] = useState("logistics");
   const [saving, setSaving] = useState(false);
   const [finishingCategory, setFinishingCategory] = useState(CATEGORIES[0]); // 후가공 관리 탭에서 지금 편집중인 카테고리
@@ -1509,6 +1624,9 @@ function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginT
           {tab === "finishing" && (
             <div>
               <p className="text-xs text-slate-500 mb-4">카테고리별로 후가공 항목(실크인쇄, 금박, UV코팅 등)을 자유롭게 등록해두면, 제안가 계산 화면 "④ 후가공 선택"에서 체크박스로 골라 단가에 바로 합산할 수 있습니다.</p>
+              {onShowAnalysis && (
+                <button onClick={onShowAnalysis} className="mb-4 text-xs px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5">📊 카테고리별 후가공 단가 분석 리포트 보기</button>
+              )}
               <div className="flex flex-wrap gap-1.5 mb-4">
                 {CATEGORIES.map((cat) => (
                   <button key={cat} onClick={() => setFinishingCategory(cat)} className={"text-xs px-3 py-1.5 rounded-full font-medium whitespace-nowrap " + (finishingCategory === cat ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>{cat}</button>
@@ -3004,8 +3122,8 @@ function FactoryFormModal({ factory, onClose, onSave }) {
 function FactoryProductsModal({ factory, products, onClose, onOpenProduct }) {
   const matched = products.filter((p) => p.factory === factory.name);
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-2xl overflow-hidden flex flex-col" style={{ maxHeight: "80vh" }}>
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-2xl overflow-hidden flex flex-col" style={{ maxHeight: "80vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <h2 className="text-base font-bold text-slate-800">🏭 {factory.name} — 생산 제품 ({matched.length}건)</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
@@ -4121,6 +4239,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showFinishingAnalysis, setShowFinishingAnalysis] = useState(false);
   const [exSettingsOpen, setExSettingsOpen] = useState(false); // 상단 유틸리티바의 "환율 상세설정" 팝업 토글
   const [logistics, setLogistics] = useState(() => (loadPricingSettingsCache() || {}).logistics || DEFAULT_LOGISTICS);
   const [marginTable, setMarginTable] = useState(() => ({ ...DEFAULT_MARGIN_TABLE, ...((loadPricingSettingsCache() || {}).marginTable || {}) }));
@@ -5314,7 +5433,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       <ClientInfoModal open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
         onClose={() => setClientModal({ open: false, mode: clientModal.mode })} onSubmit={handleClientSubmit} />
       <PdfPreview open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo} />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} onShowAnalysis={() => setShowFinishingAnalysis(true)} />
+      {showFinishingAnalysis && (
+        <FinishingAnalysisModal finishingOptions={finishingOptions} products={productsList} onClose={() => setShowFinishingAnalysis(false)} />
+      )}
 
       <header className="bg-[#1E3A8A] text-white relative">
         {/* 1단: 최상단 유틸리티 바 — 환율 요약(사용자가 저장한 값 우선) + 계정/시스템 상태 */}
