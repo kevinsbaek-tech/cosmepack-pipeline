@@ -897,10 +897,46 @@ function buildFinishingTextReport(products) {
   })).sort((a, b) => b.count - a.count);
 }
 
+// 병합 비교용 제품 카드 — 📦제품관리 카드뷰와 동일한 포맷(썸네일/제품명/카테고리배지/규격·재질/태그)으로 좌우 나란히 비교할 수 있게 렌더링
+function ProductCompareCard({ product, label, accent }) {
+  if (!product) {
+    return (
+      <div className="border-2 border-dashed border-slate-200 rounded-xl p-4 flex items-center justify-center text-xs text-slate-400" style={{ minHeight: "160px" }}>
+        박스히어로 후보를 선택하면 여기에 표시됩니다
+      </div>
+    );
+  }
+  const attrs = deriveProductAttributes(product);
+  const tags = [...attrs.materials, ...attrs.capTypes, ...attrs.finishes];
+  return (
+    <div className={"border rounded-xl p-4 " + (accent || "border-slate-200 bg-white")}>
+      <div className="text-[10px] font-semibold text-slate-400 mb-2">{label}</div>
+      <div className="flex gap-3">
+        <div className="w-20 h-20 rounded-lg bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+          {product.image ? <img src={product.image} alt={product.name} className="w-full h-full object-cover" /> : <span className="text-slate-300 text-xs">사진</span>}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold truncate" style={{ color: "#1e293b" }}>{product.name}</div>
+          {product.category && <span className="inline-block mt-1 text-[10px] px-2 py-0.5 rounded-full bg-[#1E3A8A]/10 text-[#1E3A8A] font-medium">{product.category}</span>}
+          <div className="text-xs mt-1 text-slate-500">{product.specSize || "규격 미상"}{product.material ? ` / ${product.material}` : ""}</div>
+          <div className="text-xs mt-0.5 text-slate-400">SKU: {product.sku || "-"} {product.barcode ? `· 바코드: ${product.barcode}` : ""}</div>
+          {product.factory && <div className="text-xs mt-0.5 text-slate-400">🏭 {product.factory}</div>}
+        </div>
+      </div>
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-3">
+          {tags.map((t, i) => <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{t}</span>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ManualMergeModal({ items, products, onMerge, onClose }) {
   const [picks, setPicks] = useState({}); // { excelProductId: 선택된 boxHeroProductId }
   const boxHeroCandidates = (products || []).filter((p) => p.source !== "excel");
   const [remaining, setRemaining] = useState(items || []);
+  const [expandedId, setExpandedId] = useState(null); // 제품명 클릭시 1:1 상세비교카드가 펼쳐진 행
   const doMerge = async (excelId) => {
     const boxId = picks[excelId];
     if (!boxId) return;
@@ -909,35 +945,49 @@ function ManualMergeModal({ items, products, onMerge, onClose }) {
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "95vw", maxWidth: "800px", height: "80vh" }} onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "95vw", maxWidth: "900px", height: "85vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <h2 className="text-base font-bold text-slate-800">🔗 박스히어로 제품 수동 병합 ({remaining.length}건 남음)</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
         <div className="p-5 overflow-y-auto flex-1">
-          <p className="text-xs text-slate-500 mb-4">SKU/바코드도 없고 제품명+규격이 정확히 일치하는 박스히어로 제품도 못 찾은 항목들입니다. 아래에서 직접 매칭할 박스히어로 제품을 골라 병합해주세요.</p>
+          <p className="text-xs text-slate-500 mb-4">SKU/바코드도 없고 제품명+규격이 정확히 일치하는 박스히어로 제품도 못 찾은 항목들입니다. 아래에서 직접 매칭할 박스히어로 제품을 골라 병합해주세요. 제품명을 클릭하면 1:1 상세 비교 카드가 펼쳐집니다.</p>
           {remaining.length === 0 ? (
             <p className="text-xs text-slate-400 text-center py-10">남은 항목이 없습니다. 🎉</p>
           ) : (
             <div className="space-y-2">
-              {remaining.map((p) => (
-                <div key={p.id} className="flex items-center gap-2 border border-slate-200 rounded-lg p-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-slate-800 truncate">{p.name}</div>
-                    <div className="text-xs text-slate-400 truncate">{p.specSize || "규격 미상"}</div>
+              {remaining.map((p) => {
+                const pickedCandidate = boxHeroCandidates.find((b) => b.id === picks[p.id]);
+                const isExpanded = expandedId === p.id;
+                return (
+                  <div key={p.id} className="border border-slate-200 rounded-lg overflow-hidden">
+                    <div className="flex items-center gap-2 p-3">
+                      <div className="flex-1 min-w-0">
+                        <button onClick={() => setExpandedId(isExpanded ? null : p.id)} className="text-sm font-medium text-slate-800 hover:text-[#1E3A8A] hover:underline truncate text-left">
+                          {p.name} <span className="text-slate-300 text-xs">{isExpanded ? "▲" : "▼"}</span>
+                        </button>
+                        <div className="text-xs text-slate-400 truncate">{p.specSize || "규격 미상"}</div>
+                      </div>
+                      <select
+                        value={picks[p.id] || ""}
+                        onChange={(e) => setPicks((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                        className="text-xs px-2 py-1.5 rounded border border-slate-200 outline-none focus:border-[#1E3A8A] max-w-[260px]"
+                      >
+                        <option value="">박스히어로 제품 선택...</option>
+                        {boxHeroCandidates.map((b) => <option key={b.id} value={b.id}>{b.name} {b.sku ? `(${b.sku})` : ""}</option>)}
+                      </select>
+                      <MergeCandidateThumb product={pickedCandidate} />
+                      <button onClick={() => doMerge(p.id)} disabled={!picks[p.id]} className="text-xs px-3 py-1.5 rounded-lg bg-[#1E3A8A] text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">병합</button>
+                    </div>
+                    {isExpanded && (
+                      <div className="grid grid-cols-2 gap-3 p-3 pt-0 bg-slate-50/50">
+                        <ProductCompareCard product={p} label="📋 원본 제품 (엑셀/제품 DB)" accent="border-slate-200 bg-white" />
+                        <ProductCompareCard product={pickedCandidate} label="📦 박스히어로 후보" accent="border-[#1E3A8A]/30 bg-white" />
+                      </div>
+                    )}
                   </div>
-                  <select
-                    value={picks[p.id] || ""}
-                    onChange={(e) => setPicks((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                    className="text-xs px-2 py-1.5 rounded border border-slate-200 outline-none focus:border-[#1E3A8A] max-w-[260px]"
-                  >
-                    <option value="">박스히어로 제품 선택...</option>
-                    {boxHeroCandidates.map((b) => <option key={b.id} value={b.id}>{b.name} {b.sku ? `(${b.sku})` : ""}</option>)}
-                  </select>
-                  <MergeCandidateThumb product={boxHeroCandidates.find((b) => b.id === picks[p.id])} />
-                  <button onClick={() => doMerge(p.id)} disabled={!picks[p.id]} className="text-xs px-3 py-1.5 rounded-lg bg-[#1E3A8A] text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">병합</button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
