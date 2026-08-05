@@ -73,6 +73,7 @@ const COLLECTIONS = {
   excelArchive: "excel_archive",
   accounts: "accounts",
   settings: "settings", // 기준정보(물류비/마진율표/관세율/난이도차등율/공급자로고) 저장용, 고정 문서id(pricingConfig) 하나만 사용
+  tasks: "task_assignments", // 업무지시 & 소통방
 };
 
 async function fsAdd(collectionName, data) {
@@ -150,8 +151,11 @@ function compressDataUrl(dataUrl, maxBytes) {
   });
 }
 
+// 제품 사진을 압축해서 Firestore 문서 안에 base64로 저장한다. 목록/카드에서는 대부분 작은 썸네일로만 보이므로
+// 압축 목표치를 낮게(기본 120KB, 최대 640px) 잡아서 문서 크기와 전체 로딩 페이로드를 줄인다.
+// (Firestore 실시간 구독은 컬렉션 전체를 가져오는 구조라, 문서 하나하나의 크기가 곧 전체 로딩 속도에 직결됨)
 function compressImageFile(file, maxBytes) {
-  maxBytes = maxBytes || 300 * 1024;
+  maxBytes = maxBytes || 120 * 1024;
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;
@@ -159,7 +163,7 @@ function compressImageFile(file, maxBytes) {
       const img = new Image();
       img.onerror = reject;
       img.onload = () => {
-        let maxDim = 900;
+        let maxDim = 640;
         const attempt = (dim, quality) => {
           const scale = Math.min(1, dim / Math.max(img.width, img.height));
           const w = Math.max(1, Math.round(img.width * scale));
@@ -932,16 +936,24 @@ function ProductCompareCard({ product, label, accent }) {
   );
 }
 
-function ManualMergeModal({ items, products, onMerge, onClose }) {
+function ManualMergeModal({ items, products, factories, onMerge, onUpdateProduct, onClose }) {
   const [picks, setPicks] = useState({}); // { excelProductId: 선택된 boxHeroProductId }
   const boxHeroCandidates = (products || []).filter((p) => p.source !== "excel");
   const [remaining, setRemaining] = useState(items || []);
   const [expandedId, setExpandedId] = useState(null); // 제품명 클릭시 1:1 상세비교카드가 펼쳐진 행
+  const [editingProduct, setEditingProduct] = useState(null); // 왼쪽 원본 카드 클릭시 여는 제품수정 팝업
   const doMerge = async (excelId) => {
     const boxId = picks[excelId];
     if (!boxId) return;
     await onMerge(excelId, boxId);
     setRemaining((prev) => prev.filter((p) => p.id !== excelId));
+  };
+  // 원본 제품을 수정하고 저장하면 — 그 즉시 이 제품은 정리가 끝난 것으로 보고 수동병합 대기 목록에서 빼준다(모달은 닫지 않고 계속 이어서 작업 가능).
+  const handleSaveOriginalProduct = async (id, patch) => {
+    await onUpdateProduct(id, patch);
+    setRemaining((prev) => prev.filter((p) => p.id !== id));
+    setEditingProduct(null);
+    setExpandedId(null);
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -951,7 +963,7 @@ function ManualMergeModal({ items, products, onMerge, onClose }) {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
         <div className="p-5 overflow-y-auto flex-1">
-          <p className="text-xs text-slate-500 mb-4">SKU/바코드도 없고 제품명+규격이 정확히 일치하는 박스히어로 제품도 못 찾은 항목들입니다. 아래에서 직접 매칭할 박스히어로 제품을 골라 병합해주세요. 제품명을 클릭하면 1:1 상세 비교 카드가 펼쳐집니다.</p>
+          <p className="text-xs text-slate-500 mb-4">SKU/바코드도 없고 제품명+규격이 정확히 일치하는 박스히어로 제품도 못 찾은 항목들입니다. 아래에서 직접 매칭할 박스히어로 제품을 골라 병합해주세요. 제품명을 클릭하면 1:1 상세 비교 카드가 펼쳐지고, 왼쪽 원본 카드를 클릭하면 제품 정보를 바로 수정할 수 있습니다.</p>
           {remaining.length === 0 ? (
             <p className="text-xs text-slate-400 text-center py-10">남은 항목이 없습니다. 🎉</p>
           ) : (
@@ -981,7 +993,9 @@ function ManualMergeModal({ items, products, onMerge, onClose }) {
                     </div>
                     {isExpanded && (
                       <div className="grid grid-cols-2 gap-3 p-3 pt-0 bg-slate-50/50">
-                        <ProductCompareCard product={p} label="📋 원본 제품 (엑셀/제품 DB)" accent="border-slate-200 bg-white" />
+                        <div onClick={() => onUpdateProduct && setEditingProduct(p)} className={onUpdateProduct ? "cursor-pointer" : ""} title={onUpdateProduct ? "클릭하면 이 제품 정보를 바로 수정할 수 있습니다" : ""}>
+                          <ProductCompareCard product={p} label="📋 원본 제품 (엑셀/제품 DB) — 클릭해서 수정" accent="border-slate-200 bg-white hover:border-[#1E3A8A]/50 transition-colors" />
+                        </div>
                         <ProductCompareCard product={pickedCandidate} label="📦 박스히어로 후보" accent="border-[#1E3A8A]/30 bg-white" />
                       </div>
                     )}
@@ -992,6 +1006,13 @@ function ManualMergeModal({ items, products, onMerge, onClose }) {
           )}
         </div>
       </div>
+      {editingProduct && (
+        <ProductEditModal
+          product={editingProduct} factories={factories}
+          onClose={() => setEditingProduct(null)}
+          onSave={handleSaveOriginalProduct}
+        />
+      )}
     </div>
   );
 }
@@ -1573,7 +1594,7 @@ function ImageUpload({ value, onChange }) {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     try {
-      const compressed = await compressImageFile(file, 300 * 1024);
+      const compressed = await compressImageFile(file, 120 * 1024);
       onChange(compressed);
     } catch (err) {
       console.error(err);
@@ -1904,6 +1925,22 @@ const STATUS_COLORS = {
 
 // 직원 작성 → 대표님 검토/수정 → 최종 승인 → 발송 결재 워크플로우 (제안서 진행상태(STATUS_OPTIONS)와는 별개의 축)
 const REVIEW_STATUS_OPTIONS = ["검토대기", "검토중", "승인완료", "발송완료"];
+// ===== 업무지시 & 소통방 =====
+const TASK_STATUS_OPTIONS = ["지시대기", "조사작성중", "검토요청", "최종완료"];
+const TASK_STATUS_LABELS = { "지시대기": "🔴 지시(대기)", "조사작성중": "🟡 조사/작성 중", "검토요청": "🔵 검토 요청", "최종완료": "🟢 최종 완료" };
+const TASK_STATUS_COLORS = {
+  "지시대기": "bg-red-50 text-red-600 border-red-200",
+  "조사작성중": "bg-amber-50 text-amber-700 border-amber-200",
+  "검토요청": "bg-blue-50 text-blue-700 border-blue-200",
+  "최종완료": "bg-emerald-50 text-emerald-700 border-emerald-200",
+};
+const TASK_CHANNEL_OPTIONS = ["카카오톡", "카카오채널", "이메일", "전화", "기타"];
+
+// ===== 4단계 · 샘플 진행 =====
+const SAMPLE_STATUS_OPTIONS = ["요청", "발주", "입고", "발송"];
+const SAMPLE_STATUS_LABELS = { "요청": "📥 고객 요청", "발주": "🛒 주문/발주", "입고": "📦 입고/준비완료", "발송": "🚚 최종 발송" };
+const SAMPLE_STATUS_DATE_FIELD = { "요청": "requestDate", "발주": "orderDate", "입고": "stockInDate", "발송": "dispatchDate" };
+const SAMPLE_SHIPPING_FEES = { "일반": 2500, "항공": 15000 };
 const REVIEW_STATUS_LABELS = {
   "검토대기": "📝 검토대기",
   "검토중": "✏️ 검토/수정중",
@@ -3776,7 +3813,7 @@ function FileNoteUpload({ label, hint, file, note, onFileChange, onNoteChange })
     setBusy(true);
     try {
       const isImage = f.type.startsWith("image/");
-      const data = isImage ? await compressImageFile(f, 300 * 1024) : await readFileAsDataUrl(f);
+      const data = isImage ? await compressImageFile(f, 120 * 1024) : await readFileAsDataUrl(f);
       onFileChange(data, f.name);
     } catch (err) {
       console.error(err);
@@ -3865,7 +3902,7 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     setCompressing(true);
-    try { setImage(await compressImageFile(file, 300 * 1024)); }
+    try { setImage(await compressImageFile(file, 120 * 1024)); }
     catch (err) { console.error(err); }
     finally { setCompressing(false); }
   };
@@ -4161,7 +4198,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           const sku = extractSkuToken(file.name);
           if (!sku) continue; // 파일명에 SKU가 없으면 어느 제품인지 알 수 없어 건너뜀
           try {
-            const compressed = await compressImageFile(file, 300 * 1024);
+            const compressed = await compressImageFile(file, 120 * 1024);
             skuToImage.set(sku, compressed);
           } catch (err) {
             console.error(`"${file.name}" 이미지 압축 실패:`, err);
@@ -4408,6 +4445,380 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
   );
 }
 
+/* ===================== 업무 지시 & 소통방 ===================== */
+function TaskCreateModal({ accounts, onClose, onSave }) {
+  const staffOptions = (accounts || []).filter((a) => a.role !== "admin");
+  const [clientName, setClientName] = useState("");
+  const [assignee, setAssignee] = useState((staffOptions[0] && staffOptions[0].name) || "");
+  const [content, setContent] = useState("");
+  const [channel, setChannel] = useState(TASK_CHANNEL_OPTIONS[0]);
+  const [dueDate, setDueDate] = useState("");
+  const canSave = clientName.trim() && assignee && content.trim();
+  const save = () => {
+    if (!canSave) return;
+    onSave({
+      clientName: clientName.trim(), assignee, content: content.trim(), channel, dueDate,
+      status: "지시대기", comments: [], linkedProposalCode: "", linkedProposalClient: "",
+    });
+    onClose();
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">📋 신규 업무 지시</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-3 max-h-[70vh] overflow-y-auto">
+          <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: 비저블유스" /></Field>
+          <Field label="담당 직원">
+            <select className={inputCls} value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+              {staffOptions.length === 0 && <option value="">등록된 직원 계정이 없습니다</option>}
+              {staffOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+            </select>
+          </Field>
+          <Field label="요청 제품 및 조사 내용"><textarea className={inputCls} rows={4} value={content} onChange={(e) => setContent(e.target.value)} placeholder="예: OO브랜드 크림용기 50g 견적 조사, 원터치캡 옵션 포함" /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="문의 채널">
+              <select className={inputCls} value={channel} onChange={(e) => setChannel(e.target.value)}>
+                {TASK_CHANNEL_OPTIONS.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="마감 희망일"><input type="date" className={inputCls} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
+          <button onClick={save} disabled={!canSave} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">지시 등록</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskCard({ task, isAdmin, currentUserName, proposals, onUpdateStatus, onAddComment, onLinkProposal, onDelete }) {
+  const [commentText, setCommentText] = useState("");
+  const [linking, setLinking] = useState(false);
+  const submitComment = () => {
+    if (!commentText.trim()) return;
+    onAddComment(task, commentText.trim());
+    setCommentText("");
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-slate-800 truncate">{task.clientName}</div>
+          <div className="text-xs text-slate-400 mt-0.5">👤 담당: {task.assignee} · 📞 {task.channel}{task.dueDate ? ` · ⏰ 마감 ${task.dueDate}` : ""}</div>
+        </div>
+        <select
+          value={task.status}
+          onChange={(e) => onUpdateStatus(task, e.target.value)}
+          className={"text-[11px] px-2 py-1 rounded-lg border font-semibold shrink-0 " + (TASK_STATUS_COLORS[task.status] || "")}
+        >
+          {TASK_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>)}
+        </select>
+      </div>
+      <p className="text-xs text-slate-600 whitespace-pre-line mb-3 pb-3 border-b border-slate-100">{task.content}</p>
+
+      <div className="mb-3">
+        {task.linkedProposalCode ? (
+          <div className="text-xs px-2.5 py-1.5 rounded-lg bg-[#1E3A8A]/5 text-[#1E3A8A] flex items-center justify-between">
+            <span>📄 연결된 제안서: {task.linkedProposalCode} ({task.linkedProposalClient})</span>
+            <button onClick={() => setLinking(true)} className="underline text-[11px] shrink-0 ml-2">변경</button>
+          </div>
+        ) : (
+          <button onClick={() => setLinking(true)} className="text-xs px-2.5 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5">📄 제안서 연결</button>
+        )}
+        {linking && (
+          <select
+            autoFocus
+            defaultValue=""
+            onChange={(e) => { const p = (proposals || []).find((pr) => String(pr.id) === e.target.value); if (p) onLinkProposal(task, p); setLinking(false); }}
+            onBlur={() => setLinking(false)}
+            className="mt-2 w-full text-xs px-2 py-1.5 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]"
+          >
+            <option value="">제안서 선택...</option>
+            {(proposals || []).slice(0, 100).map((p) => <option key={p.id} value={p.id}>{p.code} · {p.clientName}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div className="text-[11px] font-semibold text-slate-500 mb-1.5">💬 소통 메모</div>
+      <div className="space-y-1.5 mb-2 max-h-32 overflow-y-auto">
+        {(task.comments || []).length === 0 && <p className="text-[11px] text-slate-300">아직 남긴 메모가 없습니다.</p>}
+        {(task.comments || []).map((c) => (
+          <div key={c.id} className="text-[11px] bg-slate-50 rounded-lg px-2.5 py-1.5">
+            <span className="font-semibold text-slate-600">{c.author}</span>
+            <span className="text-slate-400"> · {c.createdAt}</span>
+            <div className="text-slate-700 whitespace-pre-line">{c.text}</div>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-1.5">
+        <input value={commentText} onChange={(e) => setCommentText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitComment()} placeholder="메모/원가/진행상황 남기기..." className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+        <button onClick={submitComment} className="text-xs px-3 py-1.5 rounded-lg bg-slate-700 text-white hover:opacity-90 whitespace-nowrap">등록</button>
+      </div>
+      {isAdmin && (
+        <div className="text-right mt-2">
+          <button onClick={() => onDelete(task)} className="text-[11px] text-red-400 hover:text-red-600">🗑️ 지시 삭제</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserName, onBack, onCreate, onUpdateStatus, onAddComment, onLinkProposal, onDelete }) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [filter, setFilter] = useState("전체"); // 전체 | 대기중 | 진행중 | 완료
+  const filtered = (tasks || []).filter((t) => {
+    if (filter === "전체") return true;
+    if (filter === "대기중") return t.status === "지시대기";
+    if (filter === "진행중") return t.status === "조사작성중" || t.status === "검토요청";
+    if (filter === "완료") return t.status === "최종완료";
+    return true;
+  });
+  return (
+    <main className="max-w-7xl mx-auto px-6 py-8">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-lg font-bold text-slate-800">📋 업무 지시 & 소통방</h2>
+        <div className="flex gap-2">
+          {isAdmin && <button onClick={() => setShowCreate(true)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 업무 지시</button>}
+          <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 mb-5">
+        {["전체", "대기중", "진행중", "완료"].map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (filter === f ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>{f}</button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">해당하는 업무 지시가 없습니다.</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filtered.map((t) => (
+            <TaskCard key={t.id} task={t} isAdmin={isAdmin} currentUserName={currentUserName} proposals={proposals}
+              onUpdateStatus={onUpdateStatus} onAddComment={onAddComment} onLinkProposal={onLinkProposal} onDelete={onDelete} />
+          ))}
+        </div>
+      )}
+
+      {showCreate && <TaskCreateModal accounts={accounts} onClose={() => setShowCreate(false)} onSave={onCreate} />}
+    </main>
+  );
+}
+
+/* ===================== 4단계 · 샘플 진행 ===================== */
+// 고객 안내문 3종 템플릿 + 원클릭 복사 모달. ③번은 배송방식(일반/항공) 선택에 따라 부가세·총금액을 실시간 계산해 문구에 반영.
+function SampleAnnounceModal({ onClose }) {
+  const [tab, setTab] = useState(1);
+  const [shipMethod, setShipMethod] = useState("일반");
+  const [copied, setCopied] = useState(false);
+
+  const text1 = "안녕하세요, 고객님. 요청하신 제품 샘플 발송 관련하여 안내드립니다. 통상적으로 많이 찾으시는 범용 샘플은 한국 본사에 재고를 보유하고 있으나, 고객님께서 요청하신 모델은 특수 규격 제품으로 현재 중국 지사에서 공장 발주를 통해 수급해야 하는 상황입니다. 이에 따라 현지 공장에서 지사로 입고된 후 한국으로 발송되는 과정이 추가되어, 일반 샘플보다 준비 기간이 다소 소요되는 점 양해 부탁드립니다.";
+
+  const text2 = "안녕하세요, 고객님. 요청하신 제품의 샘플 발송에 대해 안내드립니다. 저희는 고객님의 부담을 덜어드리고자 샘플비와 중국 현지 내 운송료 전액을 당사에서 지원해 드리고 있습니다. 다만, 샘플은 아이템당 1개로 제한되며, 한국까지의 배송비는 수령 방식에 따라 아래와 같이 운영되오니 확인 후 선택 부탁드립니다.\n\n1. 일반 배송 (경제적 선택)\n- 방식: 매주 월요일 중국에서 한국 본사로 일괄 발송 → 국내 택배로 재발송\n- 배송비: 2,500원 / 소요 기간: 약 10일\n\n2. 항공 특송 (빠른 수령)\n- 방식: 중국 지사에서 고객님 주소지로 항공 직배송\n- 배송비: 15,000원 / 소요 기간: 약 4~5일\n\n원하시는 배송 방법을 알려주시면 입금 계좌 안내와 함께 신속히 발송 준비를 도와드리겠습니다. 감사합니다.\n(주)비케이브로 백상선 올림";
+
+  const shipFee = SAMPLE_SHIPPING_FEES[shipMethod];
+  const vat = Math.round(shipFee * 0.1);
+  const total = shipFee + vat;
+  const text3 = `입금 계좌 (선입금 확인 후 발송)\n- 국민은행 : 024837-04-007281\n- 예금주 : (주)비케이브로\n- 입금요청금액 : ${shipFee.toLocaleString("ko-KR")}원 + ${vat.toLocaleString("ko-KR")}원(부가가치세) = ${total.toLocaleString("ko-KR")}원\n\n세금계산서 발행을 위하여, 사업자등록증 사본과 이메일 주소 부탁드립니다. 입금 후 회신 주시면 신속히 준비하여 발송해 드리겠습니다.`;
+
+  const texts = { 1: text1, 2: text2, 3: text3 };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(texts[tab]); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) { console.error(e); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-xl overflow-hidden flex flex-col" style={{ maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+          <h2 className="text-base font-bold text-slate-800">💬 고객 안내문 생성</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="flex gap-1.5 px-6 pt-4">
+          {[[1, "① 국내 재고 없음 안내"], [2, "② 배송방식 선택 안내"], [3, "③ 계좌입금·VAT 안내"]].map(([k, label]) => (
+            <button key={k} onClick={() => setTab(k)} className={"text-xs px-3 py-1.5 rounded-full font-medium whitespace-nowrap " + (tab === k ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>{label}</button>
+          ))}
+        </div>
+        {tab === 3 && (
+          <div className="flex items-center gap-2 px-6 pt-3">
+            <span className="text-xs text-slate-500">배송방식:</span>
+            {["일반", "항공"].map((m) => (
+              <button key={m} onClick={() => setShipMethod(m)} className={"text-xs px-2.5 py-1 rounded-full font-medium " + (shipMethod === m ? "bg-amber-500 text-white" : "border border-slate-200 text-slate-600")}>{m} ({SAMPLE_SHIPPING_FEES[m].toLocaleString("ko-KR")}원)</button>
+            ))}
+          </div>
+        )}
+        <div className="p-6 overflow-y-auto flex-1">
+          <textarea readOnly value={texts[tab]} rows={12} className="w-full text-xs leading-relaxed p-3 rounded-lg border border-slate-200 outline-none whitespace-pre-line" />
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end shrink-0">
+          <button onClick={copy} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">{copied ? "✅ 복사됨!" : "📋 원클릭 복사"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SampleCreateModal({ accounts, onClose, onSave }) {
+  const assigneeOptions = accounts || [];
+  const [clientName, setClientName] = useState("");
+  const [productName, setProductName] = useState("");
+  const [stockLocation, setStockLocation] = useState("korea");
+  const [assignee, setAssignee] = useState((assigneeOptions[0] && assigneeOptions[0].name) || "");
+  const [requestDate, setRequestDate] = useState(todayStr());
+  const canSave = clientName.trim() && productName.trim();
+  const save = () => {
+    if (!canSave) return;
+    onSave({
+      clientName: clientName.trim(), productName: productName.trim(), stockLocation, assignee,
+      status: "요청", requestDate, orderDate: "", stockInDate: "", dispatchDate: "", shippingMethod: "", notes: "",
+    });
+    onClose();
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">🧪 신규 샘플 등록</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-3">
+          <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
+          <Field label="요청 제품"><input className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="예: 크림용기 50g 화이트" /></Field>
+          <Field label="재고 위치">
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setStockLocation("korea")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium border " + (stockLocation === "korea" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇰🇷 한국 본사 재고 있음</button>
+              <button type="button" onClick={() => setStockLocation("china")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium border " + (stockLocation === "china" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇨🇳 재고 없음(중국 발주)</button>
+            </div>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="담당 직원">
+              <select className={inputCls} value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+                {assigneeOptions.length === 0 && <option value="">등록된 계정이 없습니다</option>}
+                {assigneeOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+              </select>
+            </Field>
+            <Field label="요청일"><input type="date" className={inputCls} value={requestDate} onChange={(e) => setRequestDate(e.target.value)} /></Field>
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
+          <button onClick={save} disabled={!canSave} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">등록</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SampleCard({ sample, accounts, isAdmin, onUpdate, onDelete }) {
+  const [showAnnounce, setShowAnnounce] = useState(false);
+  const stepIndex = SAMPLE_STATUS_OPTIONS.indexOf(sample.status);
+  const setStatus = (status) => {
+    const dateField = SAMPLE_STATUS_DATE_FIELD[status];
+    const patch = { status };
+    if (dateField && !sample[dateField]) patch[dateField] = todayStr(); // 그 단계로 처음 넘어갈 때 오늘 날짜를 자동으로 채워줌(이후 수정 가능)
+    onUpdate(sample, patch);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-slate-800 truncate">{sample.clientName}</div>
+          <div className="text-xs text-slate-500 truncate mt-0.5">{sample.productName}</div>
+        </div>
+        <div className="flex gap-1 shrink-0">
+          <button onClick={() => onUpdate(sample, { stockLocation: "korea" })} className={"text-[10px] px-2 py-1 rounded-full font-medium " + (sample.stockLocation === "korea" ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-500")}>🇰🇷 국내</button>
+          <button onClick={() => onUpdate(sample, { stockLocation: "china" })} className={"text-[10px] px-2 py-1 rounded-full font-medium " + (sample.stockLocation === "china" ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-500")}>🇨🇳 중국발주</button>
+        </div>
+      </div>
+
+      {/* 4단계 서브 파이프라인 진행바 */}
+      <div className="flex items-center mb-3">
+        {SAMPLE_STATUS_OPTIONS.map((s, i) => (
+          <React.Fragment key={s}>
+            <button onClick={() => setStatus(s)} title={SAMPLE_STATUS_LABELS[s]} className={"flex-1 text-[10px] py-1.5 rounded-lg font-semibold text-center " + (i <= stepIndex ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-400")}>
+              {SAMPLE_STATUS_LABELS[s].split(" ")[0]}
+            </button>
+            {i < SAMPLE_STATUS_OPTIONS.length - 1 && <div className={"w-2 h-0.5 shrink-0 " + (i < stepIndex ? "bg-[#1E3A8A]" : "bg-slate-200")} />}
+          </React.Fragment>
+        ))}
+      </div>
+      <div className="text-[11px] text-center text-slate-500 mb-3">현재 단계: <b className="text-[#1E3A8A]">{SAMPLE_STATUS_LABELS[sample.status]}</b></div>
+
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <Field label="담당 직원">
+          <select className="w-full px-2 py-1.5 text-xs rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={sample.assignee || ""} onChange={(e) => onUpdate(sample, { assignee: e.target.value })}>
+            <option value="">미지정</option>
+            {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+          </select>
+        </Field>
+        <Field label="배송방식(참고)">
+          <select className="w-full px-2 py-1.5 text-xs rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={sample.shippingMethod || ""} onChange={(e) => onUpdate(sample, { shippingMethod: e.target.value })}>
+            <option value="">미선택</option>
+            <option value="일반">일반배송(2,500원)</option>
+            <option value="항공">항공특송(15,000원)</option>
+          </select>
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-x-2 gap-y-1.5 mb-3 text-[11px]">
+        {[["requestDate", "요청일"], ["orderDate", "발주일"], ["stockInDate", "입고일"], ["dispatchDate", "발송일"]].map(([field, label]) => (
+          <label key={field} className="flex items-center gap-1.5">
+            <span className="text-slate-400 w-9 shrink-0">{label}</span>
+            <input type="date" value={sample[field] || ""} onChange={(e) => onUpdate(sample, { [field]: e.target.value })} className="flex-1 px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+          </label>
+        ))}
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={() => setShowAnnounce(true)} className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium">💬 고객 안내문 생성</button>
+        {isAdmin && <button onClick={() => onDelete(sample)} className="text-xs px-2 text-red-400 hover:text-red-600">🗑️</button>}
+      </div>
+      {showAnnounce && <SampleAnnounceModal onClose={() => setShowAnnounce(false)} />}
+    </div>
+  );
+}
+
+function SampleStageView({ samples, accounts, isAdmin, onCreate, onUpdate, onDelete }) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [filter, setFilter] = useState("전체");
+  const filtered = (samples || []).filter((s) => filter === "전체" || s.status === filter);
+  return (
+    <main className="max-w-7xl mx-auto px-6 py-8">
+      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-6">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="text-2xl">🧪</span>
+          <div>
+            <h2 className="text-base font-bold text-slate-800">4단계 · 샘플 진행</h2>
+            <p className="text-xs text-slate-500">재고 위치(국내/중국발주)에 따라 발송 경로를 구분하고, 요청→발주→입고→발송 4단계로 진행 상황을 관리합니다.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex gap-1.5">
+          {["전체", ...SAMPLE_STATUS_OPTIONS].map((f) => (
+            <button key={f} onClick={() => setFilter(f)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (filter === f ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>{f === "전체" ? "전체" : SAMPLE_STATUS_LABELS[f]}</button>
+          ))}
+        </div>
+        <button onClick={() => setShowCreate(true)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 샘플 등록</button>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">해당하는 샘플 진행 건이 없습니다.</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filtered.map((s) => <SampleCard key={s.id} sample={s} accounts={accounts} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} />)}
+        </div>
+      )}
+
+      {showCreate && <SampleCreateModal accounts={accounts} onClose={() => setShowCreate(false)} onSave={onCreate} />}
+    </main>
+  );
+}
+
 /* ===================== 메인 앱 ===================== */
 
 function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDeleteAccount }) {
@@ -4584,6 +4995,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [factoriesList, setFactoriesList] = useState([]);
   const [productsList, setProductsList] = useState([]);
   const [excelArchiveList, setExcelArchiveList] = useState([]);
+  const [taskList, setTaskList] = useState([]);
+  const [sampleList, setSampleList] = useState([]);
   const [productToPick, setProductToPick] = useState(null);
   const [productToView, setProductToView] = useState(null);
   // 날짜별(YYYYMMDD) 제안번호 순번 카운터. useState가 아닌 ref를 쓰는 이유:
@@ -4600,7 +5013,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const unsub4 = fsSubscribe(COLLECTIONS.factories, (list) => setFactoriesList(list));
     const unsub5 = fsSubscribe(COLLECTIONS.products, (list) => setProductsList(list));
     const unsub6 = fsSubscribe(COLLECTIONS.excelArchive, (list) => setExcelArchiveList(list));
-    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); };
+    const unsub7 = fsSubscribe(COLLECTIONS.tasks, (list) => setTaskList(list));
+    const unsub8 = fsSubscribe(COLLECTIONS.samples, (list) => setSampleList(list));
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); };
   }, []);
   const [clientModal, setClientModal] = useState({ open: false, mode: "save" });
   const [view, setView] = useState("pipeline"); // pipeline | proposals | clients | factories | products | excel
@@ -4916,7 +5331,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       try {
         const blob = await entry.async("blob");
         const asFile = new File([blob], entry.name.split("/").pop());
-        const compressed = await compressImageFile(asFile, 300 * 1024);
+        const compressed = await compressImageFile(asFile, 120 * 1024);
         skuToImage.set(sku, compressed);
       } catch (e) { console.error(`ZIP 내 "${entry.name}" 이미지 압축 실패:`, e); }
     }
@@ -5012,6 +5427,50 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
   // 엑셀보관함 중복 정리 — 같은 파일명이 여러 번 올라와 있으면(같은 파일 재업로드, ZIP+단건 중복 업로드 등)
   // 파일명당 1건만 남기고 나머지를 삭제한다. 우선순위: "🔗파이프라인 적용완료" 상태인 것을 우선 보존, 그 다음 가장 최근 업로드분을 보존.
+  // ===== 업무 지시 & 소통방 =====
+  const addTaskAssignment = async (rec) => {
+    const local = { id: Date.now() + Math.random(), ...rec };
+    setTaskList((prev) => [local, ...prev]);
+    try { await fsAdd(COLLECTIONS.tasks, rec); setToast("업무 지시를 등록했습니다."); } catch (e) { console.error(e); }
+  };
+  const updateTaskStatus = async (task, status) => {
+    setTaskList((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t)));
+    try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, { status }); } catch (e) { console.error(e); }
+  };
+  const addTaskComment = async (task, text) => {
+    const authorName = (roleUser && roleUser.displayName) || "알 수 없음";
+    const comment = { id: Date.now() + Math.random(), author: authorName, text, createdAt: nowDateTimeStr() };
+    const nextComments = [...(task.comments || []), comment];
+    setTaskList((prev) => prev.map((t) => (t.id === task.id ? { ...t, comments: nextComments } : t)));
+    try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, { comments: nextComments }); } catch (e) { console.error(e); }
+  };
+  const linkTaskProposal = async (task, proposal) => {
+    const patch = { linkedProposalId: String(proposal.id), linkedProposalCode: proposal.code, linkedProposalClient: proposal.clientName };
+    setTaskList((prev) => prev.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
+    try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, patch); } catch (e) { console.error(e); }
+  };
+  const deleteTaskAssignment = async (task) => {
+    if (!window.confirm(`"${task.clientName}" 업무 지시를 삭제할까요?`)) return;
+    setTaskList((prev) => prev.filter((t) => t.id !== task.id));
+    try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsDelete(COLLECTIONS.tasks, task.id); } catch (e) { console.error(e); }
+  };
+
+  // ===== 4단계 · 샘플 진행 =====
+  const addSample = async (rec) => {
+    const local = { id: Date.now() + Math.random(), ...rec };
+    setSampleList((prev) => [local, ...prev]);
+    try { await fsAdd(COLLECTIONS.samples, rec); setToast("샘플 진행 건을 등록했습니다."); } catch (e) { console.error(e); }
+  };
+  const updateSample = async (sample, patch) => {
+    setSampleList((prev) => prev.map((s) => (s.id === sample.id ? { ...s, ...patch } : s)));
+    try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsUpdate(COLLECTIONS.samples, sample.id, patch); } catch (e) { console.error(e); }
+  };
+  const deleteSample = async (sample) => {
+    if (!window.confirm(`"${sample.clientName} - ${sample.productName}" 샘플 진행 건을 삭제할까요?`)) return;
+    setSampleList((prev) => prev.filter((s) => s.id !== sample.id));
+    try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsDelete(COLLECTIONS.samples, sample.id); } catch (e) { console.error(e); }
+  };
+
   const dedupeExcelArchive = async () => {
     const groups = {};
     excelArchiveList.forEach((item) => {
@@ -5656,7 +6115,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <FinishingAnalysisModal finishingOptions={finishingOptions} products={productsList} onClose={() => setShowFinishingAnalysis(false)} />
       )}
       {manualMergeList && (
-        <ManualMergeModal items={manualMergeList} products={productsList} onMerge={mergeProductWithBoxHero} onClose={() => setManualMergeList(null)} />
+        <ManualMergeModal items={manualMergeList} products={productsList} factories={factoriesList} onMerge={mergeProductWithBoxHero} onUpdateProduct={updateProductRecord} onClose={() => setManualMergeList(null)} />
       )}
 
       <header className="bg-[#1E3A8A] text-white relative">
@@ -5735,6 +6194,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
             {[
+              { key: "tasks", label: "📋 업무지시" },
               { key: "products", label: "📦 제품 관리" },
               { key: "proposals", label: "📄 제안서 목록" },
               { key: "excel", label: "📂 엑셀 보관함" },
@@ -5842,6 +6302,15 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
       {view === "clients" && (
         <ClientsView clients={clientsList} proposals={proposalList} onBack={() => setView("pipeline")} onAdd={addClientRecord} onUpdate={updateClientRecord} onDelete={deleteClientRecord} onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })} onBulkDelete={bulkDeleteClients} isAdmin={isAdmin} />
+      )}
+      {view === "tasks" && (
+        <TaskAssignmentView
+          tasks={taskList} accounts={accounts} proposals={proposalList} isAdmin={isAdmin}
+          currentUserName={(roleUser && roleUser.displayName) || ""}
+          onBack={() => setView("pipeline")}
+          onCreate={addTaskAssignment} onUpdateStatus={updateTaskStatus} onAddComment={addTaskComment}
+          onLinkProposal={linkTaskProposal} onDelete={deleteTaskAssignment}
+        />
       )}
       {view === "excel" && (
         <ExcelArchiveView archive={excelArchiveList} onBack={() => setView("pipeline")} onUpload={uploadExcelToArchive} onUploadZip={uploadZipToArchive} onApplyAll={applyAllExcelToPipeline} onDelete={deleteExcelArchiveItem} onApply={applyExcelToPipeline} onResetExcelData={resetExcelUploadedData} onDeleteAllUploaded={deleteAllUploadedProductData} onDedupe={dedupeExcelArchive} onBulkDelete={bulkDeleteExcelArchive} />
@@ -6292,14 +6761,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
 
       {view === "pipeline" && activeStep === 4 && (
-        <PlaceholderStage icon="🧪" title="4단계 · 샘플 진행 (Sample Invoice)"
-          desc="제안서 검토 후 샘플을 요청하면 이 단계에서 샘플비 인보이스를 발행합니다."
-          points={[
-            "샘플비 인보이스 (샘플단가 + 중국내 운송료 + 택배비, 원화/달러 선택)",
-            "CT샘플(맞춤형 내용물 적합성 테스트) 인보이스 — 본 발주 시 전액 차감 안내 포함",
-            "입금계좌 안내: " + SUPPLIER.bank,
-            "인쇄/PDF 출력 기능",
-          ]} />
+        <SampleStageView samples={sampleList} accounts={accounts} isAdmin={isAdmin} onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample} />
       )}
 
       {view === "pipeline" && activeStep === 5 && (
