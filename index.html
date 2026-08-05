@@ -729,6 +729,7 @@ function boxHeroRowsToProducts(rows) {
       name,
       sku: pickField(row, ["SKU"]),
       barcode: pickField(row, ["바코드"]),
+      stockQuantity: pickField(row, ["재고수량", "재고", "Stock", "stock"]),
       specSize: pickField(row, ["(K)제품사이즈"]),
       material: pickField(row, ["(K)제품재질"]),
       image: pickField(row, ["사진"]),
@@ -894,6 +895,54 @@ function buildFinishingTextReport(products) {
     avgRmb: avg(g.rmbList), avgKrw: avg(g.krwList),
     note: g.rmbList.length === 0 && g.krwList.length === 0 ? "언급만 있고 단가 텍스트는 못 찾음" : "제품 비고 텍스트 추출(부정확할 수 있음)",
   })).sort((a, b) => b.count - a.count);
+}
+
+function ManualMergeModal({ items, products, onMerge, onClose }) {
+  const [picks, setPicks] = useState({}); // { excelProductId: 선택된 boxHeroProductId }
+  const boxHeroCandidates = (products || []).filter((p) => p.source !== "excel");
+  const [remaining, setRemaining] = useState(items || []);
+  const doMerge = async (excelId) => {
+    const boxId = picks[excelId];
+    if (!boxId) return;
+    await onMerge(excelId, boxId);
+    setRemaining((prev) => prev.filter((p) => p.id !== excelId));
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "95vw", maxWidth: "800px", height: "80vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+          <h2 className="text-base font-bold text-slate-800">🔗 박스히어로 제품 수동 병합 ({remaining.length}건 남음)</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-5 overflow-y-auto flex-1">
+          <p className="text-xs text-slate-500 mb-4">SKU/바코드도 없고 제품명+규격이 정확히 일치하는 박스히어로 제품도 못 찾은 항목들입니다. 아래에서 직접 매칭할 박스히어로 제품을 골라 병합해주세요.</p>
+          {remaining.length === 0 ? (
+            <p className="text-xs text-slate-400 text-center py-10">남은 항목이 없습니다. 🎉</p>
+          ) : (
+            <div className="space-y-2">
+              {remaining.map((p) => (
+                <div key={p.id} className="flex items-center gap-2 border border-slate-200 rounded-lg p-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-800 truncate">{p.name}</div>
+                    <div className="text-xs text-slate-400 truncate">{p.specSize || "규격 미상"}</div>
+                  </div>
+                  <select
+                    value={picks[p.id] || ""}
+                    onChange={(e) => setPicks((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                    className="text-xs px-2 py-1.5 rounded border border-slate-200 outline-none focus:border-[#1E3A8A] max-w-[260px]"
+                  >
+                    <option value="">박스히어로 제품 선택...</option>
+                    {boxHeroCandidates.map((b) => <option key={b.id} value={b.id}>{b.name} {b.sku ? `(${b.sku})` : ""}</option>)}
+                  </select>
+                  <button onClick={() => doMerge(p.id)} disabled={!picks[p.id]} className="text-xs px-3 py-1.5 rounded-lg bg-[#1E3A8A] text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">병합</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function FinishingAnalysisModal({ finishingOptions, products, onClose }) {
@@ -1120,6 +1169,24 @@ function smartProductSearch(products, query) {
   return scored.map((s) => s.p);
 }
 
+// ===== 엑셀 유입 제품(SKU/바코드 누락) ↔ 박스히어로 제품 병합 매칭 =====
+const normalizeMatchKey = (s) => String(s || "").replace(/\s+/g, "").toLowerCase();
+// 우선순위: 1) SKU/바코드 일치 → 2) 제품명+규격 완전일치(공백정제) → 없으면 null(수동매칭 대상)
+function findBoxHeroMatch(excelProduct, allProducts) {
+  const candidates = (allProducts || []).filter((p) => p.id !== excelProduct.id && p.source !== "excel");
+  if (excelProduct.sku) {
+    const bySku = candidates.find((p) => p.sku && normalizeMatchKey(p.sku) === normalizeMatchKey(excelProduct.sku));
+    if (bySku) return bySku;
+  }
+  if (excelProduct.barcode) {
+    const byBarcode = candidates.find((p) => p.barcode && normalizeMatchKey(p.barcode) === normalizeMatchKey(excelProduct.barcode));
+    if (byBarcode) return byBarcode;
+  }
+  const nameKey = normalizeMatchKey(excelProduct.name) + "|" + normalizeMatchKey(excelProduct.specSize);
+  const byName = candidates.find((p) => (normalizeMatchKey(p.name) + "|" + normalizeMatchKey(p.specSize)) === nameKey);
+  return byName || null;
+}
+
 function getLinkedProposals(product, proposals) {
   if (product.proposalIds && product.proposalIds.length > 0) {
     const idSet = new Set(product.proposalIds);
@@ -1319,6 +1386,7 @@ function describeFinishingSelection(f, qty) {
 
 // 미선택/별도안내 모드의 기본 안내문구 자동 생성: "{후가공명} 추가 선택 시 {단위당 단가} 가산"
 function defaultFinishingGuideText(f) {
+  if (f.guideText && f.guideText.trim()) return f.guideText.trim(); // 기준정보에 미리 등록해둔 안내문구가 있으면 그대로 사용
   const base = cleanFinishingBaseName(f.name);
   const priceText = `${won(f.krwPrice)}(${rmb(f.rmbPrice)})`;
   if (f.optionType === "variable" && f.unitLabel) {
@@ -1333,15 +1401,16 @@ function composeNotes({ spec, finishing, leadTime, cbm, extraOptions, selectedFi
   if (finishingApplyMode === "apply" && selectedFinishingItems && selectedFinishingItems.length > 0) {
     // 여러 후가공을 한 줄에 쉼표로 이어붙이지 않고, 각각 독립된 줄로 push — 나중에 lines.join("\n")될 때 항목별로 줄바꿈됨
     selectedFinishingItems.forEach((f) => lines.push(describeFinishingSelection(f, f.qty)));
-  } else if (finishingApplyMode === "guide" && guideFinishingTexts && guideFinishingTexts.length > 0) {
-    // 가격에는 반영하지 않고, 체크한 후가공별 안내 문구만 비고에 그대로 노출(고객이 선택시 별도 협의)
-    guideFinishingTexts.forEach((t) => { if (t && t.trim()) lines.push(`📝 ${t.trim()}`); });
-  } else if (finishing) {
+  } else if (finishingApplyMode !== "guide" && finishing) {
     lines.push(`기타 후가공: ${finishing}`);
   }
   lines.push(`예상 생산기간: 주문 확정 및 최종 사양 확인 후 약 ${leadTime || 30}일`);
   if (cbm) lines.push(`예상 부피: 약 ${cbm}CBM`);
   (extraOptions || []).forEach((opt) => { if (opt && opt.trim()) lines.push(`• ${opt.trim()}`); });
+  // "미선택/별도안내" 문구는 가격에 영향 없는 참고사항이므로 다른 기본 사양/후가공 설명들보다 항상 맨 마지막에 배치
+  if (finishingApplyMode === "guide" && guideFinishingTexts && guideFinishingTexts.length > 0) {
+    guideFinishingTexts.forEach((t) => { if (t && t.trim()) lines.push(`📝 ${t.trim()}`); });
+  }
   return lines.join("\n");
 }
 
@@ -1539,10 +1608,10 @@ function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginT
   // 후가공 항목 추가/수정/삭제 — 카테고리별 배열로 관리
   const finishingList = finishingOptions[finishingCategory] || [];
   const addFinishingItem = () => {
-    const next = [...finishingList, { id: Date.now() + Math.random(), name: "", rmbPrice: 0, krwPrice: 0, optionType: "fixed", unitLabel: "" }];
+    const next = [...finishingList, { id: Date.now() + Math.random(), name: "", rmbPrice: 0, krwPrice: 0, optionType: "fixed", unitLabel: "", guideText: "" }];
     setFinishingOptions({ ...finishingOptions, [finishingCategory]: next });
   };
-  const FINISHING_TEXT_FIELDS = ["name", "optionType", "unitLabel"];
+  const FINISHING_TEXT_FIELDS = ["name", "optionType", "unitLabel", "guideText"];
   const updateFinishingItem = (id, field, value) => {
     const next = finishingList.map((f) => (f.id === id ? { ...f, [field]: FINISHING_TEXT_FIELDS.includes(field) ? value : Number(value) } : f));
     setFinishingOptions({ ...finishingOptions, [finishingCategory]: next });
@@ -1640,11 +1709,12 @@ function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginT
                     <th className="text-left px-3 py-2 font-medium w-24">단위 명칭</th>
                     <th className="text-left px-3 py-2 font-medium w-32">위안화 단가(RMB)</th>
                     <th className="text-left px-3 py-2 font-medium w-32">원화 단가(KRW)</th>
+                    <th className="text-left px-3 py-2 font-medium w-56">미선택 안내 문구</th>
                     <th className="w-16"></th>
                   </tr></thead>
                   <tbody>
                     {finishingList.length === 0 && (
-                      <tr><td colSpan={6} className="text-center text-slate-400 py-6">등록된 후가공 항목이 없습니다. 아래 버튼으로 추가해주세요.</td></tr>
+                      <tr><td colSpan={7} className="text-center text-slate-400 py-6">등록된 후가공 항목이 없습니다. 아래 버튼으로 추가해주세요.</td></tr>
                     )}
                     {finishingList.map((f) => (
                       <tr key={f.id} className="border-t border-slate-100">
@@ -1658,6 +1728,7 @@ function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginT
                         <td className="px-3 py-1.5"><input className="w-full px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={f.unitLabel || ""} onChange={(e) => updateFinishingItem(f.id, "unitLabel", e.target.value)} placeholder="도/개/회" disabled={f.optionType !== "variable"} /></td>
                         <td className="px-3 py-1.5"><input type="number" step="0.01" className="w-full px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={f.rmbPrice} onChange={(e) => updateFinishingItem(f.id, "rmbPrice", e.target.value)} /></td>
                         <td className="px-3 py-1.5"><input type="number" className="w-full px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={f.krwPrice} onChange={(e) => updateFinishingItem(f.id, "krwPrice", e.target.value)} /></td>
+                        <td className="px-3 py-1.5"><input className="w-full px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={f.guideText || ""} onChange={(e) => updateFinishingItem(f.id, "guideText", e.target.value)} placeholder="예: 실크인쇄 추가 선택 시 1도당 ₩30(¥0.1) 가산" /></td>
                         <td className="px-3 py-1.5 text-center"><button onClick={() => deleteFinishingItem(f.id)} className="text-red-400 hover:text-red-600">🗑️</button></td>
                       </tr>
                     ))}
@@ -3225,6 +3296,17 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
   };
 
   const countFor = (f) => products.filter((p) => p.factory === f.name).length;
+  // 공장에 연결된 제품들의 카테고리 출현빈도를 집계해 가장 많이 매칭된 카테고리(주력 카테고리)를 찾는다.
+  // products/factories가 바뀔 때마다(부모 state 변경 → 리렌더) 매번 새로 계산되므로 별도 캐시 없이 항상 최신값을 보여준다.
+  const dominantCategoryFor = (f) => {
+    const matched = products.filter((p) => p.factory === f.name);
+    if (matched.length === 0) return null;
+    const freq = {};
+    matched.forEach((p) => { const c = p.category || "미분류"; freq[c] = (freq[c] || 0) + 1; });
+    const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+    const [topCategory, topCount] = sorted[0];
+    return { topCategory, topCount, totalProducts: matched.length, distinctCategories: sorted.length };
+  };
 
   return (
     <main className="max-w-7xl mx-auto px-6 py-8">
@@ -3289,7 +3371,15 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
                 <tr key={f.id} className={"border-t border-slate-100 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
                   {onBulkDelete && <td className="px-2 py-3 text-center"><input type="checkbox" checked={selectedIds.includes(f.id)} onChange={() => toggleSelectOne(f.id)} /></td>}
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <button onClick={() => setViewingFactoryDetail(f)} className="font-semibold hover:text-[#1E3A8A] hover:underline text-left" style={{ color: "#111827" }}>{f.name}</button>
+                    <button onClick={() => setViewingFactoryDetail(f)} className="font-semibold hover:text-[#1E3A8A] hover:underline text-left block" style={{ color: "#111827" }}>{f.name}</button>
+                    {(() => {
+                      const info = dominantCategoryFor(f);
+                      if (!info) return <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-400 mt-1 inline-block">연결 제품 없음</span>;
+                      const label = info.distinctCategories > 1
+                        ? `대표: ${info.topCategory} (${info.topCount}개) · 외 ${info.distinctCategories - 1}개 카테고리 (총 ${info.totalProducts}개 제품)`
+                        : `주력 카테고리: ${info.topCategory} (${info.totalProducts}개)`;
+                      return <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-[#1D4ED8] mt-1 inline-block whitespace-normal">{label}</span>;
+                    })()}
                   </td>
                   <td className="px-4 py-3" style={{ color: "#1E293B" }}>{f.wechatGroup || <span className="text-slate-400">-</span>}</td>
                   <td className="px-4 py-3" style={{ color: "#1E293B" }}>{f.contact || <span className="text-slate-400">-</span>}</td>
@@ -3886,7 +3976,7 @@ function ProductProposalsModal({ product, proposals, onClose, onOpenProposal }) 
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onBulkDelete, isAdmin, initialViewProduct, onConsumeInitialView }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, isAdmin, initialViewProduct, onConsumeInitialView }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -4099,6 +4189,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           <button onClick={() => setEditingProduct({})} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
+          {isAdmin && onAutoMergeBoxHero && <button onClick={onAutoMergeBoxHero} title="SKU/바코드가 없는 엑셀 유입 제품을 박스히어로 제품과 자동으로(안되면 수동으로) 병합합니다" className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 whitespace-nowrap">🔗 박스히어로 제품 병합</button>}
         </div>
         {onBulkDelete && (
           <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-100">
@@ -4240,6 +4331,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [activeStep, setActiveStep] = useState(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showFinishingAnalysis, setShowFinishingAnalysis] = useState(false);
+  const [manualMergeList, setManualMergeList] = useState(null);
   const [exSettingsOpen, setExSettingsOpen] = useState(false); // 상단 유틸리티바의 "환율 상세설정" 팝업 토글
   const [logistics, setLogistics] = useState(() => (loadPricingSettingsCache() || {}).logistics || DEFAULT_LOGISTICS);
   const [marginTable, setMarginTable] = useState(() => ({ ...DEFAULT_MARGIN_TABLE, ...((loadPricingSettingsCache() || {}).marginTable || {}) }));
@@ -4770,6 +4862,47 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
   // 엑셀/ZIP으로 업로드되어 잘못 쌓인 제품 데이터를 한번에 깨끗이 비우는 빠른 초기화(제품 DB + 엑셀 보관함).
   // 재업로드 전 초기화 용도라 권한 제한 없이 누구나 사용 가능(단, 확인창은 반드시 거침).
+  // SKU/바코드가 없는 엑셀유입 제품 1건과 박스히어로 제품 1건을 하나로 병합.
+  // SKU/바코드/재고수량은 박스히어로 쪽을, 공장원가(RMB)/제안단가/후가공설정/제안서이력(proposalIds)은 엑셀 쪽을 우선 유지하고, 병합된 박스히어로 원본은 삭제한다.
+  const mergeProductWithBoxHero = async (excelProductId, boxHeroProductId) => {
+    const excelP = productsList.find((p) => p.id === excelProductId);
+    const boxP = productsList.find((p) => p.id === boxHeroProductId);
+    if (!excelP || !boxP) return;
+    const merged = {
+      ...excelP, // 공장원가/제안단가/후가공(otherOptionK,C)/proposalIds/proposalCount/카테고리 등 엑셀쪽 데이터는 그대로 보존
+      sku: excelP.sku || boxP.sku,
+      barcode: excelP.barcode || boxP.barcode,
+      stockQuantity: boxP.stockQuantity || excelP.stockQuantity,
+      image: excelP.image || boxP.image,
+      // 엑셀쪽에 비어있는 스펙 정보는 박스히어로쪽으로 보강
+      specSize: excelP.specSize || boxP.specSize,
+      material: excelP.material || boxP.material,
+      moqQuantity: excelP.moqQuantity || boxP.moqQuantity,
+      leadTimeDays: excelP.leadTimeDays || boxP.leadTimeDays,
+    };
+    setProductsList((prev) => prev.filter((p) => p.id !== boxHeroProductId).map((p) => (p.id === excelProductId ? merged : p)));
+    try {
+      if (FIREBASE_ENABLED && typeof excelProductId === "string") await fsUpdate(COLLECTIONS.products, excelProductId, merged);
+      if (FIREBASE_ENABLED && typeof boxHeroProductId === "string") await fsDelete(COLLECTIONS.products, boxHeroProductId);
+    } catch (e) { console.error(e); }
+  };
+
+  // SKU/바코드가 없는 엑셀유입 제품 전체를 훑어서 1)SKU/바코드 일치 2)제품명+규격 완전일치 로 자동매칭되는 것만 일괄 병합.
+  // 매칭 안 된 나머지는 반환해서 화면에서 수동 매칭(3순위 드롭다운)할 수 있게 한다.
+  const autoMergeExcelWithBoxHero = async () => {
+    const targets = productsList.filter((p) => p.source === "excel" && !p.sku && !p.barcode);
+    if (targets.length === 0) { setToast("SKU/바코드가 없는 엑셀 유입 제품이 없습니다."); return []; }
+    let mergedCount = 0;
+    const unmatched = [];
+    for (const p of targets) {
+      const match = findBoxHeroMatch(p, productsList);
+      if (match) { await mergeProductWithBoxHero(p.id, match.id); mergedCount++; }
+      else unmatched.push(p);
+    }
+    setToast(`${mergedCount}건 자동 병합 완료. ${unmatched.length > 0 ? `${unmatched.length}건은 수동 매칭이 필요합니다.` : ""}`);
+    return unmatched;
+  };
+
   const deleteAllUploadedProductData = async () => {
     if (productsList.length === 0 && excelArchiveList.length === 0) { setToast("이미 비어있습니다."); return; }
     if (!window.confirm("기존 업로드된 제품 데이터를 모두 삭제하시겠습니까?")) return;
@@ -5437,6 +5570,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       {showFinishingAnalysis && (
         <FinishingAnalysisModal finishingOptions={finishingOptions} products={productsList} onClose={() => setShowFinishingAnalysis(false)} />
       )}
+      {manualMergeList && (
+        <ManualMergeModal items={manualMergeList} products={productsList} onMerge={mergeProductWithBoxHero} onClose={() => setManualMergeList(null)} />
+      )}
 
       <header className="bg-[#1E3A8A] text-white relative">
         {/* 1단: 최상단 유틸리티 바 — 환율 요약(사용자가 저장한 값 우선) + 계정/시스템 상태 */}
@@ -5640,6 +5776,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onUploadZip={uploadZipToArchive}
           onDeleteAllProducts={deleteAllProducts}
           onSyncProposalLinks={syncAllProposalProductLinks}
+          onAutoMergeBoxHero={async () => { const unmatched = await autoMergeExcelWithBoxHero(); if (unmatched && unmatched.length > 0) setManualMergeList(unmatched); }}
           onBulkDelete={bulkDeleteProducts}
           onDeleteAllUploaded={deleteAllUploadedProductData}
           isAdmin={isAdmin}
