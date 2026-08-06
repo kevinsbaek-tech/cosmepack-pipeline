@@ -1939,8 +1939,9 @@ const TASK_CHANNEL_OPTIONS = ["카카오톡", "카카오채널", "이메일", "�
 
 // ===== 4단계 · 샘플 진행 =====
 const SAMPLE_STATUS_OPTIONS = ["요청", "발주", "입고", "발송"];
-const SAMPLE_STATUS_LABELS = { "요청": "📥 고객 요청", "발주": "🛒 주문/발주", "입고": "📦 입고/준비완료", "발송": "🚚 최종 발송" };
+const SAMPLE_STATUS_LABELS = { "요청": "📥 고객요청", "발주": "🛒 주문발주", "입고": "📦 입고완료", "발송": "🚚 발송완료" };
 const SAMPLE_STATUS_DATE_FIELD = { "요청": "requestDate", "발주": "orderDate", "입고": "stockInDate", "발송": "dispatchDate" };
+const SAMPLE_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "발주": "orderConfirmedBy", "입고": "stockInConfirmedBy", "발송": "dispatchConfirmedBy" };
 const SAMPLE_SHIPPING_FEES = { "일반": 2500, "항공": 15000 };
 const REVIEW_STATUS_LABELS = {
   "검토대기": "📝 검토대기",
@@ -4628,6 +4629,14 @@ const SAMPLE_INVOICE_COL_WIDTHS = [
   { wch: 9.5 }, { wch: 8 }, { wch: 3.5 }, { wch: 8 }, { wch: 15 }, { wch: 18 }, { wch: 15 }, { wch: 18 },
 ];
 
+// 인보이스 참고사항에 쓰는 "YYYY년 M월 D일" 포맷 변환(<input type="date">의 YYYY-MM-DD를 받아 변환)
+function formatKoreanDate(dateStr) {
+  if (!dateStr) return "";
+  const [y, m, d] = dateStr.split("-");
+  if (!y || !m || !d) return dateStr;
+  return `${y}년 ${Number(m)}월 ${Number(d)}일`;
+}
+
 // 인보이스 입력데이터(data)로 실제 셀 좌표에 값/수식을 채운 워크시트 객체를 만든다. 원본서식의 고정 라벨/공급자정보는 그대로 하드코딩.
 function buildSampleInvoiceSheetData(data) {
   const rows = {};
@@ -4642,16 +4651,16 @@ function buildSampleInvoiceSheetData(data) {
   set("C7", "작성일자 :"); set("D7", data.writeDate || todayStr()); set("E7", "(유효기간:30일)");
   set("K7", "전화"); set("L7", " 031.977.7322"); set("M7", "팩스"); set("N7", "031.977.6322");
   set("K8", "입금계좌"); set("L8", "   국민은행     024837-04-007281    ㈜비케이브로");
-  set("C9", "◎ 귀사의 무궁한 발전을 진심으로 기원합니다.");
-  set("C10", "◎ 귀사가 요청하신 샘플비 및 운송료에 대하여, 다음과 같이 제품 인보이스를 보내드립니다.");
-  set("C11", "◎ 샘플준비는 비용과 시간이 소요됩니다. \n    하지만, 최근 실제 주문과는 무관하게 단순하게 제품비교 및 단순 보유를 위해서 샘플만 요청하시는 사례가 발생하고 있습니다. \n    이로 인해 정작 샘플이 꼭 필요하고 받아야하는 고객분들께서 제 때 샘플을 받아보지 못하여 피해를 보는 사례가 생기고 있어, \n    이런 이유로 부득이하게, 샘플비용과 중국 내 운송료 및 택배비는 고객님께서 부담드리는 점 너그러이 양해 부탁드립니다. \n    청구된 샘플비용은 주문시에 차감하여드립니다.");
-  set("C12", "◎ 사업자등록증 사본과 이메일주소를 보내주시면, 세금계산서 발행을 하여드립니다.");
-  set("C13", "◎ 입금을 확인한 후에 샘플이 발송되며, 택배번호는 발송일 다음날 나옵니다. 번호 나오면 보내드립니다.");
+  set("C9", data.greetingLines[0]);
+  set("C10", data.greetingLines[1]);
+  set("C11", data.greetingLines[2]);
+  set("C12", data.greetingLines[3]);
+  set("C13", data.greetingLines[4]);
   set("B15", "No"); set("C15", "제품사진"); set("E15", "제품명"); set("G15", "재원"); set("I15", "주문     수량"); set("K15", "단가(ea)"); set("L15", "금액(\\)"); set("M15", "비고");
   set("B16", 1); set("C16", data.productImage ? "(사진 별도 첨부)" : ""); set("E16", data.productName || ""); set("G16", data.spec || ""); set("I16", Number(data.qty) || 0); set("K16", Number(data.unitPrice) || 0); set("L16", { f: "I16*K16" }); set("M16", "당사부담");
   set("B17", 2); set("E17", "중국내 운송료"); set("I17", data.shippingRmbFee ? 1 : 0); set("K17", Number(data.shippingRmbFee) || 0); set("L17", { f: "I17*K17" }); set("M17", "당사부담");
-  set("B18", 3); set("E18", "택배비"); set("G18", " "); set("I18", data.domesticMethod === "일반" ? 1 : 0); set("K18", 2500); set("L18", { f: "I18*K18" }); set("M18", "7일을 기다린다고 하면");
-  set("B19", 3); set("E19", "항공택배비"); set("G19", "1KG 미만"); set("I19", data.domesticMethod === "항공" ? 1 : 0); set("K19", 11500); set("L19", { f: "I19*K19" }); set("M19", "급하다고 하면");
+  set("B18", 3); set("E18", "택배비"); set("G18", " "); set("I18", data.domesticMethod === "일반" ? 1 : 0); set("K18", 2500); set("L18", { f: "I18*K18" }); set("M18", "");
+  set("B19", 3); set("E19", "항공택배비"); set("G19", "1KG 미만"); set("I19", data.domesticMethod === "항공" ? 1 : 0); set("K19", 11500); set("L19", { f: "I19*K19" }); set("M19", "");
   set("B20", "합   계"); set("L20", { f: "SUM(L16:L19)" });
   set("B21", "부가가치세"); set("L21", { f: "L20*0.1" });
   set("B22", "합계금액"); set("L22", { f: "L20+L21" });
@@ -4659,8 +4668,8 @@ function buildSampleInvoiceSheetData(data) {
   set("C25", "1. 받으실분 주소 : " + (data.receiveAddress || ""));
   set("C26", `2. 택배발송 에정일자 : ${data.dispatchDateText || ""}`);
   set("C27", `3. 택배수령 예정일자 : ${data.receiveDateText || ""} (우체국택배 또는 대한통운)`);
-  set("C28", "4. 당사에 의뢰하여 주시면, 최선을 다하겠습니다.");
-  set("C29", "5. 사업자등록증 사본과 이메일 주소를 보내주시면 세금계산서를 발행하여 드립니다.");
+  set("C28", data.footerExtraLines[0]);
+  set("C29", data.footerExtraLines[1]);
   set("M31", "             ㈜ 비케이브로");
   return rows;
 }
@@ -4858,7 +4867,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
   );
 }
 
-function SampleInvoiceModal({ sample, products, onClose }) {
+function SampleInvoiceModal({ sample, products, supplierLogo, onClose }) {
   const matchedProduct = (products || []).find((p) => p.name === sample.productName);
   const [clientName, setClientName] = useState(sample.clientName || "");
   const [writeDate, setWriteDate] = useState(todayStr());
@@ -4870,9 +4879,25 @@ function SampleInvoiceModal({ sample, products, onClose }) {
   const [shippingRmbFee, setShippingRmbFee] = useState(0);
   const [domesticMethod, setDomesticMethod] = useState(sample.shippingMethod || "일반");
   const [receiveAddress, setReceiveAddress] = useState("");
-  const [dispatchDateText, setDispatchDateText] = useState(sample.dispatchDate || "");
-  const [receiveDateText, setReceiveDateText] = useState("");
+  const [dispatchDate, setDispatchDate] = useState(sample.dispatchDate || ""); // <input type="date"> 값(YYYY-MM-DD)
+  const [receiveDate, setReceiveDate] = useState("");
+  // 우측 미리보기의 인사말/하단 안내문구는 클릭해서 직접 수정 가능(contentEditable) — 수정한 내용이 엑셀 다운로드에도 그대로 반영됨
+  const [greetingLines, setGreetingLines] = useState([
+    "◎ 귀사의 무궁한 발전을 진심으로 기원합니다.",
+    "◎ 귀사가 요청하신 샘플비 및 운송료에 대하여, 다음과 같이 제품 인보이스를 보내드립니다.",
+    "◎ 샘플준비는 비용과 시간이 소요됩니다. \n    하지만, 최근 실제 주문과는 무관하게 단순하게 제품비교 및 단순 보유를 위해서 샘플만 요청하시는 사례가 발생하고 있습니다. \n    이로 인해 정작 샘플이 꼭 필요하고 받아야하는 고객분들께서 제 때 샘플을 받아보지 못하여 피해를 보는 사례가 생기고 있어, \n    이런 이유로 부득이하게, 샘플비용과 중국 내 운송료 및 택배비는 고객님께서 부담드리는 점 너그러이 양해 부탁드립니다. \n    청구된 샘플비용은 주문시에 차감하여드립니다.",
+    "◎ 사업자등록증 사본과 이메일주소를 보내주시면, 세금계산서 발행을 하여드립니다.",
+    "◎ 입금을 확인한 후에 샘플이 발송되며, 택배번호는 발송일 다음날 나옵니다. 번호 나오면 보내드립니다.",
+  ]);
+  const [footerExtraLines, setFooterExtraLines] = useState([
+    "4. 당사에 의뢰하여 주시면, 최선을 다하겠습니다.",
+    "5. 사업자등록증 사본과 이메일 주소를 보내주시면 세금계산서를 발행하여 드립니다.",
+  ]);
+  const updateGreeting = (i, text) => setGreetingLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
+  const updateFooter = (i, text) => setFooterExtraLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
 
+  const dispatchDateText = formatKoreanDate(dispatchDate);
+  const receiveDateText = formatKoreanDate(receiveDate);
   const domesticFee = domesticMethod === "항공" ? 11500 : 2500;
   const productAmt = (Number(qty) || 0) * (Number(unitPrice) || 0);
   const shippingAmt = Number(shippingRmbFee) || 0;
@@ -4880,11 +4905,11 @@ function SampleInvoiceModal({ sample, products, onClose }) {
   const vat = Math.round(supplyTotal * 0.1);
   const grandTotal = supplyTotal + vat;
 
-  const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, receiveAddress, dispatchDateText, receiveDateText };
+  const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines };
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "97vw", maxWidth: "1100px", height: "92vh" }} onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "97vw", maxWidth: "1420px", height: "94vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <h2 className="text-base font-bold text-slate-800">📄 샘플비 인보이스 — {sample.clientName}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
@@ -4908,97 +4933,103 @@ function SampleInvoiceModal({ sample, products, onClose }) {
               </div>
             </Field>
             <Field label="받으실분 주소"><input className={inputCls} value={receiveAddress} onChange={(e) => setReceiveAddress(e.target.value)} /></Field>
-            <Field label="택배발송 예정일자"><input className={inputCls} value={dispatchDateText} onChange={(e) => setDispatchDateText(e.target.value)} placeholder="예: 2026년 8월 10일" /></Field>
-            <Field label="택배수령 예정일자"><input className={inputCls} value={receiveDateText} onChange={(e) => setReceiveDateText(e.target.value)} placeholder="예: 2026년 8월 12일" /></Field>
+            <Field label="택배발송 예정일자"><input type="date" className={inputCls} value={dispatchDate} onChange={(e) => setDispatchDate(e.target.value)} /></Field>
+            <Field label="택배수령 예정일자"><input type="date" className={inputCls} value={receiveDate} onChange={(e) => setReceiveDate(e.target.value)} /></Field>
+            <p className="text-[11px] text-slate-400 pt-1">💡 우측 미리보기의 인사말·하단 안내문구는 텍스트를 클릭하면 직접 고쳐 쓸 수 있습니다.</p>
           </div>
 
           {/* 우측: 원본 서식과 동일한 레이아웃의 미리보기(화면 표시 + 인쇄시 그대로 출력) */}
           <div className="p-5 overflow-y-auto bg-slate-50">
-            <div id="sample-invoice-print" className="bg-white mx-auto p-6 text-[11px]" style={{ width: "210mm", minHeight: "297mm", color: "#111827" }}>
-              <div className="text-center text-xl font-bold tracking-widest mb-4 pb-3 border-b-2" style={{ borderColor: "#1E3A8A" }}>SAMPLE INVOICE</div>
-              <div className="grid grid-cols-2 gap-4 mb-3">
+            <div id="sample-invoice-print" className="bg-white mx-auto p-7 text-[12px]" style={{ width: "210mm", minHeight: "297mm", color: "#111827", lineHeight: 1.7 }}>
+              <div className="flex items-center justify-between mb-4 pb-3 border-b-2" style={{ borderColor: "#1E3A8A" }}>
+                <img src={supplierLogo || DEFAULT_LOGO} className="h-11 object-contain" alt="㈜비케이브로" />
+                <div className="text-xl font-bold tracking-widest">SAMPLE INVOICE</div>
+                <div style={{ width: "44px" }} />
+              </div>
+              <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
-                  <div className="mb-1">{clientName} <span className="ml-1">貴下</span></div>
-                  <div className="mb-1">청구금액 : <b>{won(grandTotal)}</b> <span className="text-slate-400">(부가세 포함)</span></div>
+                  <div className="mb-1.5">{clientName} <span className="ml-1">貴下</span></div>
+                  <div className="mb-1.5">청구금액 : <b>{won(grandTotal)}</b> <span className="text-slate-400">(부가세 포함)</span></div>
                   <div>작성일자 : {writeDate} <span className="text-slate-400">(유효기간:30일)</span></div>
                 </div>
-                <table className="border border-slate-300 text-[10px]" style={{ borderCollapse: "collapse" }}>
+                <table className="border border-slate-300 text-[11px]" style={{ borderCollapse: "collapse" }}>
                   <tbody>
-                    <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50 font-semibold" rowSpan={6}>공급자</td><td className="border border-slate-300 px-2 py-1 bg-slate-50">사업자NO</td><td className="border border-slate-300 px-2 py-1" colSpan={2}>452-81-02979</td></tr>
-                    <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">업체명</td><td className="border border-slate-300 px-2 py-1">㈜ 비케이브로</td><td className="border border-slate-300 px-1 py-1 bg-slate-50">대표 백상선</td></tr>
-                    <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">주소</td><td className="border border-slate-300 px-2 py-1" colSpan={2}>경기도 고양시 일산동구 문봉길 44-75</td></tr>
-                    <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">업태</td><td className="border border-slate-300 px-2 py-1">도매업</td><td className="border border-slate-300 px-1 py-1 bg-slate-50">종목 기타무역</td></tr>
-                    <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">전화</td><td className="border border-slate-300 px-2 py-1">031.977.7322</td><td className="border border-slate-300 px-1 py-1 bg-slate-50">팩스 031.977.6322</td></tr>
-                    <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">입금계좌</td><td className="border border-slate-300 px-2 py-1" colSpan={2}>국민은행 024837-04-007281 ㈜비케이브로</td></tr>
+                    <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50 font-semibold" rowSpan={6}>공급자</td><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">사업자NO</td><td className="border border-slate-300 px-2 py-1.5" colSpan={2}>452-81-02979</td></tr>
+                    <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">업체명</td><td className="border border-slate-300 px-2 py-1.5">㈜ 비케이브로</td><td className="border border-slate-300 px-1 py-1.5 bg-slate-50">대표 백상선</td></tr>
+                    <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">주소</td><td className="border border-slate-300 px-2 py-1.5" colSpan={2}>경기도 고양시 일산동구 문봉길 44-75</td></tr>
+                    <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">업태</td><td className="border border-slate-300 px-2 py-1.5">도매업</td><td className="border border-slate-300 px-1 py-1.5 bg-slate-50">종목 기타무역</td></tr>
+                    <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">전화</td><td className="border border-slate-300 px-2 py-1.5">031.977.7322</td><td className="border border-slate-300 px-1 py-1.5 bg-slate-50">팩스 031.977.6322</td></tr>
+                    <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">입금계좌</td><td className="border border-slate-300 px-2 py-1.5" colSpan={2}>국민은행 024837-04-007281 ㈜비케이브로</td></tr>
                   </tbody>
                 </table>
               </div>
-              <p className="leading-relaxed mb-1">◎ 귀사의 무궁한 발전을 진심으로 기원합니다.</p>
-              <p className="leading-relaxed mb-1">◎ 귀사가 요청하신 샘플비 및 운송료에 대하여, 다음과 같이 제품 인보이스를 보내드립니다.</p>
-              <p className="leading-relaxed mb-1 whitespace-pre-line">◎ 샘플준비는 비용과 시간이 소요됩니다.{"\n"}    하지만, 최근 실제 주문과는 무관하게 단순하게 제품비교 및 단순 보유를 위해서 샘플만 요청하시는 사례가 발생하고 있습니다.{"\n"}    이로 인해 정작 샘플이 꼭 필요하고 받아야하는 고객분들께서 제 때 샘플을 받아보지 못하여 피해를 보는 사례가 생기고 있어,{"\n"}    이런 이유로 부득이하게, 샘플비용과 중국 내 운송료 및 택배비는 고객님께서 부담드리는 점 너그러이 양해 부탁드립니다.{"\n"}    청구된 샘플비용은 주문시에 차감하여드립니다.</p>
-              <p className="leading-relaxed mb-1">◎ 사업자등록증 사본과 이메일주소를 보내주시면, 세금계산서 발행을 하여드립니다.</p>
-              <p className="leading-relaxed mb-3">◎ 입금을 확인한 후에 샘플이 발송되며, 택배번호는 발송일 다음날 나옵니다. 번호 나오면 보내드립니다.</p>
+              {greetingLines.map((line, i) => (
+                <p key={i} contentEditable suppressContentEditableWarning onBlur={(e) => updateGreeting(i, e.currentTarget.textContent)}
+                  className="mb-2 whitespace-pre-line rounded px-1 -mx-1 hover:bg-amber-50 focus:bg-amber-50 outline-none" style={{ lineHeight: 1.8 }}>{line}</p>
+              ))}
 
-              <table className="w-full border-collapse border border-slate-400 text-[10px] mb-3">
+              <table className="w-full border-collapse border border-slate-400 text-[11px] mb-4 mt-2">
                 <thead><tr className="bg-slate-100">
-                  <th className="border border-slate-400 px-1 py-1.5 w-8">No</th>
-                  <th className="border border-slate-400 px-1 py-1.5">제품사진</th>
-                  <th className="border border-slate-400 px-1 py-1.5">제품명</th>
-                  <th className="border border-slate-400 px-1 py-1.5">재원</th>
-                  <th className="border border-slate-400 px-1 py-1.5 w-14">주문수량</th>
-                  <th className="border border-slate-400 px-1 py-1.5 w-16">단가(ea)</th>
-                  <th className="border border-slate-400 px-1 py-1.5 w-20">금액(₩)</th>
-                  <th className="border border-slate-400 px-1 py-1.5">비고</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-8">No</th>
+                  <th className="border border-slate-400 px-2 py-2.5">제품사진</th>
+                  <th className="border border-slate-400 px-2 py-2.5">제품명</th>
+                  <th className="border border-slate-400 px-2 py-2.5">재원</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-16">주문수량</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-20">단가(ea)</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-24">금액(₩)</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-20">비고</th>
                 </tr></thead>
                 <tbody>
-                  <tr>
+                  <tr style={{ height: "56px" }}>
                     <td className="border border-slate-400 text-center">1</td>
-                    <td className="border border-slate-400 text-center p-1">{productImage ? <img src={productImage} className="w-12 h-12 object-cover mx-auto" /> : "-"}</td>
-                    <td className="border border-slate-400 px-1">{productName}</td>
-                    <td className="border border-slate-400 px-1">{spec}</td>
+                    <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} className="w-14 h-14 object-cover mx-auto" /> : "-"}</td>
+                    <td className="border border-slate-400 px-2">{productName}</td>
+                    <td className="border border-slate-400 px-2">{spec}</td>
                     <td className="border border-slate-400 text-center">{qty}</td>
-                    <td className="border border-slate-400 text-right px-1">{won(unitPrice)}</td>
-                    <td className="border border-slate-400 text-right px-1">{won(productAmt)}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(unitPrice)}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(productAmt)}</td>
                     <td className="border border-slate-400 text-center">당사부담</td>
                   </tr>
-                  <tr>
+                  <tr style={{ height: "42px" }}>
                     <td className="border border-slate-400 text-center">2</td>
                     <td className="border border-slate-400"></td>
-                    <td className="border border-slate-400 px-1">중국내 운송료</td>
+                    <td className="border border-slate-400 px-2">중국내 운송료</td>
                     <td className="border border-slate-400"></td>
                     <td className="border border-slate-400 text-center">{shippingAmt ? 1 : 0}</td>
-                    <td className="border border-slate-400 text-right px-1">{won(shippingAmt)}</td>
-                    <td className="border border-slate-400 text-right px-1">{won(shippingAmt)}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(shippingAmt)}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(shippingAmt)}</td>
                     <td className="border border-slate-400 text-center">당사부담</td>
                   </tr>
-                  <tr>
+                  <tr style={{ height: "42px" }}>
                     <td className="border border-slate-400 text-center">3</td>
                     <td className="border border-slate-400"></td>
-                    <td className="border border-slate-400 px-1">{domesticMethod === "항공" ? "항공택배비" : "택배비"}</td>
-                    <td className="border border-slate-400 px-1">{domesticMethod === "항공" ? "1KG 미만" : ""}</td>
+                    <td className="border border-slate-400 px-2">{domesticMethod === "항공" ? "항공택배비" : "택배비"}</td>
+                    <td className="border border-slate-400 px-2">{domesticMethod === "항공" ? "1KG 미만" : ""}</td>
                     <td className="border border-slate-400 text-center">1</td>
-                    <td className="border border-slate-400 text-right px-1">{won(domesticFee)}</td>
-                    <td className="border border-slate-400 text-right px-1">{won(domesticFee)}</td>
-                    <td className="border border-slate-400 text-center">{domesticMethod === "항공" ? "급하다고 하면" : "7일을 기다린다고 하면"}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(domesticFee)}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(domesticFee)}</td>
+                    <td className="border border-slate-400 text-center"></td>
                   </tr>
-                  <tr><td className="border border-slate-400 text-center font-semibold" colSpan={6}>합　계</td><td className="border border-slate-400 text-right px-1 font-semibold">{won(supplyTotal)}</td><td className="border border-slate-400"></td></tr>
-                  <tr><td className="border border-slate-400 text-center font-semibold" colSpan={6}>부가가치세</td><td className="border border-slate-400 text-right px-1">{won(vat)}</td><td className="border border-slate-400"></td></tr>
-                  <tr><td className="border border-slate-400 text-center font-bold" colSpan={6}>합계금액</td><td className="border border-slate-400 text-right px-1 font-bold">{won(grandTotal)}</td><td className="border border-slate-400"></td></tr>
+                  <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>합　계</td><td className="border border-slate-400 text-right px-2 font-semibold">{won(supplyTotal)}</td><td className="border border-slate-400"></td></tr>
+                  <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>부가가치세</td><td className="border border-slate-400 text-right px-2">{won(vat)}</td><td className="border border-slate-400"></td></tr>
+                  <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-bold" colSpan={6}>합계금액</td><td className="border border-slate-400 text-right px-2 font-bold">{won(grandTotal)}</td><td className="border border-slate-400"></td></tr>
                 </tbody>
               </table>
 
-              <div className="font-semibold mb-1">◎ 참고사항</div>
-              <p className="mb-0.5">1. 받으실분 주소 : {receiveAddress}</p>
-              <p className="mb-0.5">2. 택배발송 에정일자 : {dispatchDateText}</p>
-              <p className="mb-0.5">3. 택배수령 예정일자 : {receiveDateText} (우체국택배 또는 대한통운)</p>
-              <p className="mb-0.5">4. 당사에 의뢰하여 주시면, 최선을 다하겠습니다.</p>
-              <p className="mb-4">5. 사업자등록증 사본과 이메일 주소를 보내주시면 세금계산서를 발행하여 드립니다.</p>
-              <div className="text-right pr-4">㈜ 비케이브로</div>
+              <div className="font-semibold mb-1.5">◎ 참고사항</div>
+              <p className="mb-1.5">1. 받으실분 주소 : {receiveAddress}</p>
+              <p className="mb-1.5">2. 택배발송 에정일자 : {dispatchDateText}</p>
+              <p className="mb-1.5">3. 택배수령 예정일자 : {receiveDateText} (우체국택배 또는 대한통운)</p>
+              {footerExtraLines.map((line, i) => (
+                <p key={i} contentEditable suppressContentEditableWarning onBlur={(e) => updateFooter(i, e.currentTarget.textContent)}
+                  className="mb-1.5 rounded px-1 -mx-1 hover:bg-amber-50 focus:bg-amber-50 outline-none">{line}</p>
+              ))}
+              <div className="text-right pr-4 mt-3">㈜ 비케이브로</div>
             </div>
           </div>
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
-          <span className="text-[11px] text-slate-400">※ 엑셀 다운로드는 병합·수식·값은 원본서식과 동일하게 재현되지만, 셀 테두리색상 등 세부서식과 제품사진 삽입은 브라우저 라이브러리 한계로 포함되지 않습니다(인쇄/PDF는 사진 포함 그대로 출력됩니다).</span>
+          <span className="text-[11px] text-slate-400">※ 엑셀 다운로드는 병합·수식·값(수정한 문구 포함)은 원본서식과 동일하게 재현되지만, 셀 테두리색상 등 세부서식과 제품사진·로고 삽입은 브라우저 라이브러리 한계로 포함되지 않습니다(인쇄/PDF는 로고·사진 포함 그대로 출력됩니다).</span>
           <div className="flex gap-2 shrink-0 ml-3">
             <button onClick={() => window.print()} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">🖨️ PDF/인쇄</button>
             <button onClick={() => downloadSampleInvoiceXlsx(data)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📊 엑셀 파일 다운로드(.xlsx)</button>
@@ -5009,7 +5040,7 @@ function SampleInvoiceModal({ sample, products, onClose }) {
   );
 }
 
-function SampleCard({ sample, accounts, products, isAdmin, onUpdate, onDelete }) {
+function SampleCard({ sample, accounts, products, supplierLogo, currentUserName, isAdmin, onUpdate, onDelete }) {
   const [showInvoice, setShowInvoice] = useState(false);
   const [showAnnounce, setShowAnnounce] = useState(false);
   const stepIndex = SAMPLE_STATUS_OPTIONS.indexOf(sample.status);
@@ -5018,6 +5049,19 @@ function SampleCard({ sample, accounts, products, isAdmin, onUpdate, onDelete })
     const patch = { status };
     if (dateField && !sample[dateField]) patch[dateField] = todayStr(); // 그 단계로 처음 넘어갈 때 오늘 날짜를 자동으로 채워줌(이후 수정 가능)
     onUpdate(sample, patch);
+  };
+  // 단계별 행(진행일/확인직원)의 입력값 — 아직 [확인]을 안 누른 값은 여기서만 임시로 들고 있다가 확인버튼 클릭시 한번에 반영
+  const [pendingDates, setPendingDates] = useState({});
+  const [pendingConfirmers, setPendingConfirmers] = useState({});
+  const getDate = (field) => (pendingDates[field] != null ? pendingDates[field] : (sample[field] || ""));
+  const getConfirmer = (field) => (pendingConfirmers[field] != null ? pendingConfirmers[field] : (sample[field] || currentUserName || ""));
+  // [확인] 버튼: 그 단계의 진행일+확인직원을 한번에 저장하고, 진행상태(status)도 그 단계로 동기화 → 상단 진행바도 함께 활성화됨
+  const confirmStep = (status) => {
+    const dateField = SAMPLE_STATUS_DATE_FIELD[status];
+    const confirmerField = SAMPLE_STATUS_CONFIRMER_FIELD[status];
+    const dateValue = getDate(dateField) || todayStr();
+    const confirmerValue = getConfirmer(confirmerField) || currentUserName || "";
+    onUpdate(sample, { status, [dateField]: dateValue, [confirmerField]: confirmerValue });
   };
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-4">
@@ -5045,6 +5089,46 @@ function SampleCard({ sample, accounts, products, isAdmin, onUpdate, onDelete })
       </div>
       <div className="text-[11px] text-center text-slate-500 mb-3">현재 단계: <b className="text-[#1E3A8A]">{SAMPLE_STATUS_LABELS[sample.status]}</b></div>
 
+      <div className="border border-slate-200 rounded-lg overflow-hidden mb-3">
+        <table className="w-full text-[11px]">
+          <thead><tr className="bg-slate-50 text-slate-400">
+            <th className="text-left px-2 py-1.5 font-medium">단계</th>
+            <th className="text-left px-2 py-1.5 font-medium">진행일</th>
+            <th className="text-left px-2 py-1.5 font-medium">확인직원</th>
+            <th className="px-2 py-1.5 w-14"></th>
+          </tr></thead>
+          <tbody>
+            {SAMPLE_STATUS_OPTIONS.map((s) => {
+              const dateField = SAMPLE_STATUS_DATE_FIELD[s];
+              const confirmerField = SAMPLE_STATUS_CONFIRMER_FIELD[s];
+              const isCurrent = sample.status === s;
+              const isDone = sample[confirmerField]; // 이 단계에서 [확인]을 한번이라도 눌렀는지
+              return (
+                <tr key={s} className={"border-t border-slate-100 " + (isCurrent ? "bg-[#1E3A8A]/5" : "")}>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    {isDone && <span className="text-emerald-500 mr-1">✓</span>}
+                    {SAMPLE_STATUS_LABELS[s]}
+                    {isCurrent && <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded-full bg-[#1E3A8A] text-white">현재</span>}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input type="date" value={getDate(dateField)} onChange={(e) => setPendingDates((prev) => ({ ...prev, [dateField]: e.target.value }))} className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <select value={getConfirmer(confirmerField)} onChange={(e) => setPendingConfirmers((prev) => ({ ...prev, [confirmerField]: e.target.value }))} className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]">
+                      <option value="">미지정</option>
+                      {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-2 py-1.5 text-center">
+                    <button onClick={() => confirmStep(s)} className="text-[10px] px-2 py-1 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">확인</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
       <div className="grid grid-cols-2 gap-2 mb-3">
         <Field label="담당 직원">
           <select className="w-full px-2 py-1.5 text-xs rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={sample.assignee || ""} onChange={(e) => onUpdate(sample, { assignee: e.target.value })}>
@@ -5060,14 +5144,6 @@ function SampleCard({ sample, accounts, products, isAdmin, onUpdate, onDelete })
           </select>
         </Field>
       </div>
-      <div className="grid grid-cols-2 gap-x-2 gap-y-1.5 mb-3 text-[11px]">
-        {[["requestDate", "요청일"], ["orderDate", "발주일"], ["stockInDate", "입고일"], ["dispatchDate", "발송일"]].map(([field, label]) => (
-          <label key={field} className="flex items-center gap-1.5">
-            <span className="text-slate-400 w-9 shrink-0">{label}</span>
-            <input type="date" value={sample[field] || ""} onChange={(e) => onUpdate(sample, { [field]: e.target.value })} className="flex-1 px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" />
-          </label>
-        ))}
-      </div>
 
       <div className="flex gap-2">
         <button onClick={() => setShowInvoice(true)} className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-medium">📄 샘플비 인보이스 자동 생성</button>
@@ -5075,7 +5151,7 @@ function SampleCard({ sample, accounts, products, isAdmin, onUpdate, onDelete })
         {isAdmin && <button onClick={() => onDelete(sample)} className="text-xs px-2 text-red-400 hover:text-red-600">🗑️</button>}
       </div>
       {showAnnounce && <SampleAnnounceModal onClose={() => setShowAnnounce(false)} />}
-      {showInvoice && <SampleInvoiceModal sample={sample} products={products} onClose={() => setShowInvoice(false)} />}
+      {showInvoice && <SampleInvoiceModal sample={sample} products={products} supplierLogo={supplierLogo} onClose={() => setShowInvoice(false)} />}
     </div>
   );
 }
@@ -5138,7 +5214,7 @@ function SampleStockModal({ stock, isAdmin, onAdd, onUpdate, onDelete, onClose }
   );
 }
 
-function SampleStageView({ samples, accounts, proposals, products, sampleStock, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onDeleteStock }) {
+function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onDeleteStock }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showStockManage, setShowStockManage] = useState(false);
   const [filter, setFilter] = useState("전체");
@@ -5171,7 +5247,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
         <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">해당하는 샘플 진행 건이 없습니다.</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtered.map((s) => <SampleCard key={s.id} sample={s} accounts={accounts} products={products} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} />)}
+          {filtered.map((s) => <SampleCard key={s.id} sample={s} accounts={accounts} products={products} supplierLogo={supplierLogo} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} />)}
         </div>
       )}
 
@@ -7156,7 +7232,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
 
       {view === "pipeline" && activeStep === 4 && (
-        <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} isAdmin={isAdmin}
+        <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} supplierLogo={supplierLogo} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
           onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onDeleteStock={deleteSampleStock} />
       )}
