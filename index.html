@@ -1927,19 +1927,26 @@ const STATUS_COLORS = {
 // 직원 작성 → 대표님 검토/수정 → 최종 승인 → 발송 결재 워크플로우 (제안서 진행상태(STATUS_OPTIONS)와는 별개의 축)
 const REVIEW_STATUS_OPTIONS = ["검토대기", "검토중", "승인완료", "발송완료"];
 // ===== 업무지시 & 소통방 =====
-const TASK_STATUS_OPTIONS = ["지시대기", "조사작성중", "검토요청", "최종완료"];
-const TASK_STATUS_LABELS = { "지시대기": "🔴 지시(대기)", "조사작성중": "🟡 조사/작성 중", "검토요청": "🔵 검토 요청", "최종완료": "🟢 최종 완료" };
+const TASK_STATUS_OPTIONS = ["요청", "진행중", "완료"];
+const TASK_STATUS_LABELS = { "요청": "📥 요청", "진행중": "⏳ 진행중", "완료": "✅ 완료" };
 const TASK_STATUS_COLORS = {
-  "지시대기": "bg-red-50 text-red-600 border-red-200",
-  "조사작성중": "bg-amber-50 text-amber-700 border-amber-200",
-  "검토요청": "bg-blue-50 text-blue-700 border-blue-200",
-  "최종완료": "bg-emerald-50 text-emerald-700 border-emerald-200",
+  "요청": "bg-red-50 text-red-600 border-red-200",
+  "진행중": "bg-amber-50 text-amber-700 border-amber-200",
+  "완료": "bg-emerald-50 text-emerald-700 border-emerald-200",
 };
+const TASK_STATUS_DATE_FIELD = { "요청": "stepRequestDate", "진행중": "stepProgressDate", "완료": "stepCompleteDate" };
+const TASK_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "진행중": "progressConfirmedBy", "완료": "completeConfirmedBy" };
 const TASK_CHANNEL_OPTIONS = ["카카오톡", "카카오채널", "이메일", "전화", "기타"];
 
 // ===== 4단계 · 샘플 진행 =====
 const SAMPLE_STATUS_OPTIONS = ["요청", "발주", "입고", "발송"];
 const SAMPLE_STATUS_LABELS = { "요청": "📥 고객요청", "발주": "🛒 주문발주", "입고": "📦 입고완료", "발송": "🚚 발송완료" };
+const SAMPLE_STATUS_COLORS = {
+  "요청": "bg-red-50 text-red-600 border-red-200",
+  "발주": "bg-amber-50 text-amber-700 border-amber-200",
+  "입고": "bg-blue-50 text-blue-700 border-blue-200",
+  "발송": "bg-emerald-50 text-emerald-700 border-emerald-200",
+};
 const SAMPLE_STATUS_DATE_FIELD = { "요청": "requestDate", "발주": "orderDate", "입고": "stockInDate", "발송": "dispatchDate" };
 const SAMPLE_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "발주": "orderConfirmedBy", "입고": "stockInConfirmedBy", "발송": "dispatchConfirmedBy" };
 const DEFAULT_SAMPLE_SHIPPING_FEES = { "일반": 2500, "항공": 15000 }; // 배송비 설정 모달에서 수정 가능한 기본값
@@ -4448,19 +4455,37 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
 }
 
 /* ===================== 업무 지시 & 소통방 ===================== */
-function TaskCreateModal({ accounts, onClose, onSave }) {
+function TaskCreateModal({ accounts, currentUserName, onClose, onSave }) {
   const staffOptions = (accounts || []).filter((a) => a.role !== "admin");
+  const [requestedBy, setRequestedBy] = useState(currentUserName || "백상선"); // 요청 직원명 — 기본값은 로그인한 사용자, 필요시 수정 가능
   const [clientName, setClientName] = useState("");
   const [assignee, setAssignee] = useState((staffOptions[0] && staffOptions[0].name) || "");
   const [content, setContent] = useState("");
   const [channel, setChannel] = useState(TASK_CHANNEL_OPTIONS[0]);
   const [dueDate, setDueDate] = useState("");
+  const [instructionDate, setInstructionDate] = useState(todayStr()); // 지시 일자(기본값 당일)
+  const [images, setImages] = useState([]); // 참고 이미지 다중첨부(base64 압축본 배열)
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef(null);
   const canSave = clientName.trim() && assignee && content.trim();
+
+  const handleFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith("image/"));
+    for (const f of files) {
+      try {
+        const compressed = await compressImageFile(f, 120 * 1024);
+        setImages((prev) => [...prev, compressed]);
+      } catch (e) { console.error(e); }
+    }
+  };
+  const removeImage = (idx) => setImages((prev) => prev.filter((_, i) => i !== idx));
+
   const save = () => {
     if (!canSave) return;
     onSave({
-      clientName: clientName.trim(), assignee, content: content.trim(), channel, dueDate,
-      status: "지시대기", comments: [], linkedProposalCode: "", linkedProposalClient: "",
+      requestedBy: requestedBy.trim() || currentUserName || "백상선",
+      clientName: clientName.trim(), assignee, content: content.trim(), channel, dueDate, instructionDate,
+      status: "요청", comments: [], images, linkedProposalCode: "", linkedProposalClient: "",
     });
     onClose();
   };
@@ -4472,6 +4497,12 @@ function TaskCreateModal({ accounts, onClose, onSave }) {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
         <div className="p-6 space-y-3 max-h-[70vh] overflow-y-auto">
+          <Field label="요청 직원명" hint="기본값: 로그인한 사용자">
+            <select className={inputCls} value={requestedBy} onChange={(e) => setRequestedBy(e.target.value)}>
+              {!accounts.some((a) => a.name === requestedBy) && requestedBy && <option value={requestedBy}>{requestedBy}</option>}
+              {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+            </select>
+          </Field>
           <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: 비저블유스" /></Field>
           <Field label="담당 직원">
             <select className={inputCls} value={assignee} onChange={(e) => setAssignee(e.target.value)}>
@@ -4486,8 +4517,32 @@ function TaskCreateModal({ accounts, onClose, onSave }) {
                 {TASK_CHANNEL_OPTIONS.map((c) => <option key={c}>{c}</option>)}
               </select>
             </Field>
-            <Field label="마감 희망일"><input type="date" className={inputCls} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
+            <Field label="지시 일자"><input type="date" className={inputCls} value={instructionDate} onChange={(e) => setInstructionDate(e.target.value)} /></Field>
           </div>
+          <Field label="마감 희망일"><input type="date" className={inputCls} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
+
+          <Field label="🖼️ 참고 이미지 첨부 (여러 장 가능)">
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }}
+              onClick={() => fileRef.current && fileRef.current.click()}
+              className={"border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors " + (dragOver ? "border-[#1E3A8A] bg-[#1E3A8A]/5" : "border-slate-200 hover:bg-slate-50")}
+            >
+              <p className="text-xs text-slate-400">클릭하거나 이미지를 이 영역에 끌어다 놓으세요 (여러 장 동시 첨부 가능)</p>
+              <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+            </div>
+            {images.length > 0 && (
+              <div className="grid grid-cols-4 gap-2 mt-2">
+                {images.map((img, i) => (
+                  <div key={i} className="relative group">
+                    <img src={img} className="w-full h-16 object-cover rounded-lg border border-slate-200" />
+                    <button onClick={() => removeImage(i)} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs leading-5 opacity-90 hover:opacity-100">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Field>
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
@@ -4498,7 +4553,7 @@ function TaskCreateModal({ accounts, onClose, onSave }) {
   );
 }
 
-function TaskCard({ task, isAdmin, currentUserName, proposals, onUpdateStatus, onAddComment, onLinkProposal, onDelete }) {
+function TaskCard({ task, isAdmin, currentUserName, accounts, proposals, onUpdate, onAddComment, onLinkProposal, onDelete }) {
   const [commentText, setCommentText] = useState("");
   const [linking, setLinking] = useState(false);
   const submitComment = () => {
@@ -4506,22 +4561,106 @@ function TaskCard({ task, isAdmin, currentUserName, proposals, onUpdateStatus, o
     onAddComment(task, commentText.trim());
     setCommentText("");
   };
+  // ===== 샘플 진행과 동일한 단계바 + [단계|진행일|확인직원|확인] 테이블 로직 =====
+  const stepIndex = TASK_STATUS_OPTIONS.indexOf(task.status || "요청");
+  const setTaskStatus = (status) => {
+    const dateField = TASK_STATUS_DATE_FIELD[status];
+    const patch = { status };
+    if (dateField && !task[dateField]) patch[dateField] = todayStr();
+    onUpdate(task, patch);
+  };
+  const [pendingDates, setPendingDates] = useState({});
+  const [pendingConfirmers, setPendingConfirmers] = useState({});
+  const getDate = (field) => (pendingDates[field] != null ? pendingDates[field] : (task[field] || ""));
+  const getConfirmer = (field) => (pendingConfirmers[field] != null ? pendingConfirmers[field] : (task[field] || currentUserName || "백상선"));
+  const confirmTaskStep = (status) => {
+    const dateField = TASK_STATUS_DATE_FIELD[status];
+    const confirmerField = TASK_STATUS_CONFIRMER_FIELD[status];
+    const dateValue = getDate(dateField) || todayStr();
+    const confirmerValue = getConfirmer(confirmerField) || currentUserName || "백상선";
+    onUpdate(task, { status, [dateField]: dateValue, [confirmerField]: confirmerValue });
+  };
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-4">
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="min-w-0">
           <div className="text-sm font-bold text-slate-800 truncate">{task.clientName}</div>
-          <div className="text-xs text-slate-400 mt-0.5">👤 담당: {task.assignee} · 📞 {task.channel}{task.dueDate ? ` · ⏰ 마감 ${task.dueDate}` : ""}</div>
+          <div className="text-xs text-slate-400 mt-0.5">
+            {task.requestedBy ? `요청자: ${task.requestedBy} ➔ 담당자: ${task.assignee}` : `👤 담당: ${task.assignee}`} · 📞 {task.channel}
+            {task.instructionDate ? ` · 📅 지시일 ${task.instructionDate}` : ""}
+            {task.dueDate ? ` · ⏰ 마감 ${task.dueDate}` : ""}
+          </div>
         </div>
-        <select
-          value={task.status}
-          onChange={(e) => onUpdateStatus(task, e.target.value)}
-          className={"text-[11px] px-2 py-1 rounded-lg border font-semibold shrink-0 " + (TASK_STATUS_COLORS[task.status] || "")}
-        >
-          {TASK_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>)}
-        </select>
       </div>
       <p className="text-xs text-slate-600 whitespace-pre-line mb-3 pb-3 border-b border-slate-100">{task.content}</p>
+
+      {/* 3단계 진행바 — 샘플 진행 카드와 동일한 구조, 클릭시 즉시 이동 */}
+      <div className="flex items-center gap-1 mb-2">
+        {TASK_STATUS_OPTIONS.map((s, i) => (
+          <React.Fragment key={s}>
+            <button onClick={() => setTaskStatus(s)} title={TASK_STATUS_LABELS[s]} className={"flex-1 text-[11px] px-1 py-2 rounded-lg font-bold text-center whitespace-nowrap " + (i <= stepIndex ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-400")}>
+              {TASK_STATUS_LABELS[s]}
+            </button>
+            {i < TASK_STATUS_OPTIONS.length - 1 && <div className={"w-1.5 h-0.5 shrink-0 " + (i < stepIndex ? "bg-[#1E3A8A]" : "bg-slate-200")} />}
+          </React.Fragment>
+        ))}
+      </div>
+      <div className="text-[11px] text-center text-slate-500 mb-2">현재 단계: <b className="text-[#1E3A8A]">{TASK_STATUS_LABELS[task.status] || task.status}</b></div>
+
+      {/* 단계별 [단계|진행일|확인직원|확인] 테이블 — 샘플 진행과 동일 구조. 확인완료된 단계는 확인직원이 🔒로 잠기고 수정 불가 */}
+      <div className="border border-slate-200 rounded-lg overflow-hidden mb-3">
+        <table className="w-full text-[11px]">
+          <thead><tr className="bg-slate-50 text-slate-400">
+            <th className="text-left px-2 py-1.5 font-medium">단계</th>
+            <th className="text-left px-2 py-1.5 font-medium">진행일</th>
+            <th className="text-left px-2 py-1.5 font-medium">확인직원</th>
+            <th className="px-2 py-1.5 w-14"></th>
+          </tr></thead>
+          <tbody>
+            {TASK_STATUS_OPTIONS.map((s) => {
+              const dateField = TASK_STATUS_DATE_FIELD[s];
+              const confirmerField = TASK_STATUS_CONFIRMER_FIELD[s];
+              const isCurrent = task.status === s;
+              const isDone = task[confirmerField];
+              return (
+                <tr key={s} className={"border-t border-slate-100 " + (isCurrent ? "bg-[#1E3A8A]/5" : "")}>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    {isDone && <span className="text-emerald-500 mr-1">✓</span>}
+                    {TASK_STATUS_LABELS[s]}
+                    {isCurrent && <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded-full bg-[#1E3A8A] text-white">현재</span>}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input type="date" value={getDate(dateField)} onChange={(e) => setPendingDates((prev) => ({ ...prev, [dateField]: e.target.value }))} className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {isDone ? (
+                      <span className="inline-flex items-center gap-1 w-full px-1.5 py-1 rounded border border-slate-100 bg-slate-50 text-slate-600" title="확인 완료 — 이후 변경 불가">
+                        🔒 {task[confirmerField]}
+                      </span>
+                    ) : (
+                      <select value={getConfirmer(confirmerField)} onChange={(e) => setPendingConfirmers((prev) => ({ ...prev, [confirmerField]: e.target.value }))} className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]">
+                        <option value="">미지정</option>
+                        {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                      </select>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-center">
+                    <button onClick={() => confirmTaskStep(s)} className="text-[10px] px-2 py-1 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">확인</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {(task.images || []).length > 0 && (
+        <div className="grid grid-cols-4 gap-1.5 mb-3">
+          {task.images.map((img, i) => (
+            <ZoomableImage key={i} src={img} alt={`참고이미지 ${i + 1}`} className="w-full h-14 object-cover rounded-lg border border-slate-200" />
+          ))}
+        </div>
+      )}
 
       <div className="mb-3">
         {task.linkedProposalCode ? (
@@ -4546,20 +4685,24 @@ function TaskCard({ task, isAdmin, currentUserName, proposals, onUpdateStatus, o
         )}
       </div>
 
-      <div className="text-[11px] font-semibold text-slate-500 mb-1.5">💬 소통 메모</div>
-      <div className="space-y-1.5 mb-2 max-h-32 overflow-y-auto">
-        {(task.comments || []).length === 0 && <p className="text-[11px] text-slate-300">아직 남긴 메모가 없습니다.</p>}
-        {(task.comments || []).map((c) => (
-          <div key={c.id} className="text-[11px] bg-slate-50 rounded-lg px-2.5 py-1.5">
-            <span className="font-semibold text-slate-600">{c.author}</span>
-            <span className="text-slate-400"> · {c.createdAt}</span>
-            <div className="text-slate-700 whitespace-pre-line">{c.text}</div>
-          </div>
-        ))}
+      <div className="text-[11px] font-semibold text-slate-500 mb-1.5">💬 업무 소통 & 채팅</div>
+      <div className="space-y-1.5 mb-2 max-h-48 overflow-y-auto pr-0.5">
+        {(task.comments || []).length === 0 && <p className="text-[11px] text-slate-300">아직 대화가 없습니다. 첫 메시지를 남겨보세요.</p>}
+        {(task.comments || []).map((c) => {
+          const mine = c.author === currentUserName;
+          return (
+            <div key={c.id} className={"flex " + (mine ? "justify-end" : "justify-start")}>
+              <div className={"max-w-[80%] rounded-2xl px-3 py-1.5 text-[11px] " + (mine ? "bg-[#1E3A8A] text-white rounded-br-sm" : "bg-slate-100 text-slate-700 rounded-bl-sm")}>
+                <div className={"font-semibold mb-0.5 " + (mine ? "text-white/80" : "text-slate-500")}>{c.author} <span className="font-normal opacity-70">· {c.createdAt}</span></div>
+                <div className="whitespace-pre-line">{c.text}</div>
+              </div>
+            </div>
+          );
+        })}
       </div>
       <div className="flex gap-1.5">
-        <input value={commentText} onChange={(e) => setCommentText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitComment()} placeholder="메모/원가/진행상황 남기기..." className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
-        <button onClick={submitComment} className="text-xs px-3 py-1.5 rounded-lg bg-slate-700 text-white hover:opacity-90 whitespace-nowrap">등록</button>
+        <input value={commentText} onChange={(e) => setCommentText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitComment()} placeholder="예: 내일까지 완료하겠습니다 / 공장 견적 확인 필요..." className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+        <button onClick={submitComment} className="text-xs px-3 py-1.5 rounded-lg bg-slate-700 text-white hover:opacity-90 whitespace-nowrap">전송</button>
       </div>
       {isAdmin && (
         <div className="text-right mt-2">
@@ -4570,16 +4713,10 @@ function TaskCard({ task, isAdmin, currentUserName, proposals, onUpdateStatus, o
   );
 }
 
-function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserName, onBack, onCreate, onUpdateStatus, onAddComment, onLinkProposal, onDelete }) {
+function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserName, onBack, onCreate, onUpdate, onAddComment, onLinkProposal, onDelete }) {
   const [showCreate, setShowCreate] = useState(false);
-  const [filter, setFilter] = useState("전체"); // 전체 | 대기중 | 진행중 | 완료
-  const filtered = (tasks || []).filter((t) => {
-    if (filter === "전체") return true;
-    if (filter === "대기중") return t.status === "지시대기";
-    if (filter === "진행중") return t.status === "조사작성중" || t.status === "검토요청";
-    if (filter === "완료") return t.status === "최종완료";
-    return true;
-  });
+  const [filter, setFilter] = useState("전체"); // 전체 | 요청 | 진행중 | 완료
+  const filtered = (tasks || []).filter((t) => filter === "전체" || t.status === filter);
   return (
     <main className="max-w-7xl mx-auto px-6 py-8">
       <div className="flex items-center justify-between mb-6">
@@ -4591,8 +4728,8 @@ function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserNa
       </div>
 
       <div className="flex gap-1.5 mb-5">
-        {["전체", "대기중", "진행중", "완료"].map((f) => (
-          <button key={f} onClick={() => setFilter(f)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (filter === f ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>{f}</button>
+        {["전체", ...TASK_STATUS_OPTIONS].map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (filter === f ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>{f === "전체" ? "전체" : TASK_STATUS_LABELS[f]}</button>
         ))}
       </div>
 
@@ -4601,13 +4738,13 @@ function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserNa
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {filtered.map((t) => (
-            <TaskCard key={t.id} task={t} isAdmin={isAdmin} currentUserName={currentUserName} proposals={proposals}
-              onUpdateStatus={onUpdateStatus} onAddComment={onAddComment} onLinkProposal={onLinkProposal} onDelete={onDelete} />
+            <TaskCard key={t.id} task={t} isAdmin={isAdmin} currentUserName={currentUserName} accounts={accounts} proposals={proposals}
+              onUpdate={onUpdate} onAddComment={onAddComment} onLinkProposal={onLinkProposal} onDelete={onDelete} />
           ))}
         </div>
       )}
 
-      {showCreate && <TaskCreateModal accounts={accounts} onClose={() => setShowCreate(false)} onSave={onCreate} />}
+      {showCreate && <TaskCreateModal accounts={accounts} currentUserName={currentUserName} onClose={() => setShowCreate(false)} onSave={onCreate} />}
     </main>
   );
 }
@@ -4876,30 +5013,33 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
   const linkedProposal = (proposals || []).find((p) => String(p.id) === String(sample.linkedProposalId));
   const proposalItem = linkedProposal && (linkedProposal.items || []).find((it) => it.productName === sample.productName);
   const fallbackImage = (matchedProduct && matchedProduct.image) || (proposalItem && proposalItem.image) || "";
-  const [clientName, setClientName] = useState(sample.clientName || "");
-  const [writeDate, setWriteDate] = useState(todayStr());
-  const [productImage, setProductImage] = useState(fallbackImage);
-  const [productName, setProductName] = useState(sample.productName || "");
-  const [spec, setSpec] = useState((matchedProduct && matchedProduct.specSize) || (proposalItem && proposalItem.specSize) || "");
-  const [qty, setQty] = useState(sample.invoiceQty || 1);
-  const [unitPrice, setUnitPrice] = useState((matchedProduct && matchedProduct.lastUnitPrice) || 0);
-  const [shippingRmbFee, setShippingRmbFee] = useState(0);
-  const [domesticMethod, setDomesticMethod] = useState(sample.shippingMethod || "일반");
-  const [receiveAddress, setReceiveAddress] = useState(sample.receiveAddress || "");
-  const [dispatchDate, setDispatchDate] = useState(sample.dispatchDate || ""); // <input type="date"> 값(YYYY-MM-DD)
-  const [receiveDate, setReceiveDate] = useState("");
+  // 예전에 "💾 수정후 저장"으로 저장해둔 내용(invoiceDraft)이 있으면 그걸 최우선으로 복원 — 다시 열었을 때 수정한 그대로 이어서 볼 수 있다.
+  const draft = sample.invoiceDraft || {};
+  const [clientName, setClientName] = useState(draft.clientName || sample.clientName || "");
+  const [writeDate, setWriteDate] = useState(draft.writeDate || todayStr());
+  const [productImage, setProductImage] = useState(draft.productImage || fallbackImage);
+  const [productName, setProductName] = useState(draft.productName || sample.productName || "");
+  const [spec, setSpec] = useState(draft.spec || (matchedProduct && matchedProduct.specSize) || (proposalItem && proposalItem.specSize) || "");
+  const [qty, setQty] = useState(draft.qty || sample.invoiceQty || 1);
+  const [unitPrice, setUnitPrice] = useState(draft.unitPrice != null ? draft.unitPrice : (matchedProduct && matchedProduct.lastUnitPrice) || 0);
+  const [shippingRmbFee, setShippingRmbFee] = useState(draft.shippingRmbFee || 0);
+  const [domesticMethod, setDomesticMethod] = useState(draft.domesticMethod || sample.shippingMethod || "일반");
+  const [receiveAddress, setReceiveAddress] = useState(draft.receiveAddress || sample.receiveAddress || "");
+  const [dispatchDate, setDispatchDate] = useState(draft.dispatchDate || sample.dispatchDate || ""); // <input type="date"> 값(YYYY-MM-DD)
+  const [receiveDate, setReceiveDate] = useState(draft.receiveDate || "");
   // 우측 미리보기의 인사말/하단 안내문구는 클릭해서 직접 수정 가능(contentEditable) — 수정한 내용이 엑셀 다운로드에도 그대로 반영됨
-  const [greetingLines, setGreetingLines] = useState([
+  const [greetingLines, setGreetingLines] = useState(draft.greetingLines || [
     "◎ 귀사의 무궁한 발전을 진심으로 기원합니다.",
     "◎ 귀사가 요청하신 샘플비 및 운송료에 대하여, 다음과 같이 제품 인보이스를 보내드립니다.",
     "◎ 샘플준비는 비용과 시간이 소요됩니다. \n    하지만, 최근 실제 주문과는 무관하게 단순하게 제품비교 및 단순 보유를 위해서 샘플만 요청하시는 사례가 발생하고 있습니다. \n    이로 인해 정작 샘플이 꼭 필요하고 받아야하는 고객분들께서 제 때 샘플을 받아보지 못하여 피해를 보는 사례가 생기고 있어, \n    이런 이유로 부득이하게, 샘플비용과 중국 내 운송료 및 택배비는 고객님께서 부담드리는 점 너그러이 양해 부탁드립니다. \n    청구된 샘플비용은 주문시에 차감하여드립니다.",
     "◎ 사업자등록증 사본과 이메일주소를 보내주시면, 세금계산서 발행을 하여드립니다.",
     "◎ 입금을 확인한 후에 샘플이 발송되며, 택배번호는 발송일 다음날 나옵니다. 번호 나오면 보내드립니다.",
   ]);
-  const [footerExtraLines, setFooterExtraLines] = useState([
+  const [footerExtraLines, setFooterExtraLines] = useState(draft.footerExtraLines || [
     "4. 당사에 의뢰하여 주시면, 최선을 다하겠습니다.",
     "5. 사업자등록증 사본과 이메일 주소를 보내주시면 세금계산서를 발행하여 드립니다.",
   ]);
+  const [saved, setSaved] = useState(false);
   const updateGreeting = (i, text) => setGreetingLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
   const updateFooter = (i, text) => setFooterExtraLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
 
@@ -4914,9 +5054,17 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
 
   const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines, shippingFees: fees };
 
-  // 인쇄/엑셀 다운로드 시점에 청구금액·수령주소·수량을 샘플 레코드에 같이 저장 — 샘플 목록 리스트의 "청구금액" 컬럼에 바로 반영된다.
+  // 좌측 입력값 + 미리보기에서 직접 고친 문구(인사말/하단안내)까지 전부 샘플 레코드에 저장 — 다음에 다시 열거나
+  // 엑셀/PDF로 출력할 때도 이 수정본이 그대로 반영된다. 청구금액/수령주소/수량은 목록 리스트 컬럼에도 바로 쓰인다.
   const persistToSample = () => {
-    if (onUpdate) onUpdate(sample, { invoiceAmount: grandTotal, receiveAddress, invoiceQty: Number(qty) || 0 });
+    if (!onUpdate) return;
+    const invoiceDraft = { clientName, writeDate, productImage, productName, spec, qty: Number(qty) || 0, unitPrice: Number(unitPrice) || 0, shippingRmbFee: Number(shippingRmbFee) || 0, domesticMethod, receiveAddress, dispatchDate, receiveDate, greetingLines, footerExtraLines };
+    onUpdate(sample, { invoiceAmount: grandTotal, receiveAddress, invoiceQty: Number(qty) || 0, invoiceDraft });
+  };
+  const saveAndFlash = () => {
+    persistToSample();
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
   };
 
   return (
@@ -4940,8 +5088,8 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
             <Field label="중국내 운송료(원)"><input type="number" className={inputCls} value={shippingRmbFee} onChange={(e) => setShippingRmbFee(e.target.value)} /></Field>
             <Field label="국내 배송방식">
               <div className="flex gap-2">
-                <button type="button" onClick={() => setDomesticMethod("일반")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "일반" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>일반 (2,500원)</button>
-                <button type="button" onClick={() => setDomesticMethod("항공")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "항공" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>항공 (11,500원)</button>
+                <button type="button" onClick={() => setDomesticMethod("일반")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "일반" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>일반 ({fees["일반"].toLocaleString("ko-KR")}원)</button>
+                <button type="button" onClick={() => setDomesticMethod("항공")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "항공" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>항공 ({fees["항공"].toLocaleString("ko-KR")}원)</button>
               </div>
             </Field>
             <Field label="받으실분 주소"><input className={inputCls} value={receiveAddress} onChange={(e) => setReceiveAddress(e.target.value)} /></Field>
@@ -5043,6 +5191,7 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
           <span className="text-[11px] text-slate-400">※ 엑셀 다운로드는 병합·수식·값(수정한 문구 포함)은 원본서식과 동일하게 재현되지만, 셀 테두리색상 등 세부서식과 제품사진·로고 삽입은 브라우저 라이브러리 한계로 포함되지 않습니다(인쇄/PDF는 로고·사진 포함 그대로 출력됩니다).</span>
           <div className="flex gap-2 shrink-0 ml-3">
+            {onUpdate && <button onClick={saveAndFlash} className="px-4 py-2 rounded-lg border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{saved ? "✅ 저장됨" : "💾 수정후 저장"}</button>}
             <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">🖨️ PDF/인쇄</button>
             <button onClick={() => { persistToSample(); downloadSampleInvoiceXlsx(data); }} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📊 엑셀 파일 다운로드(.xlsx)</button>
           </div>
@@ -5080,10 +5229,16 @@ function ShippingFeeSettingsModal({ shippingFees, onSave, onClose }) {
   );
 }
 
-function SampleCard({ sample, accounts, products, proposals, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete }) {
+function SampleCard({ sample, accounts, products, proposals, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete, onAddMemo, onDeleteMemo }) {
   const [showInvoice, setShowInvoice] = useState(false);
   const [showAnnounce, setShowAnnounce] = useState(false);
   const [showFeeSettings, setShowFeeSettings] = useState(false);
+  const [memoText, setMemoText] = useState("");
+  const submitMemo = () => {
+    if (!memoText.trim() || !onAddMemo) return;
+    onAddMemo(sample, memoText.trim());
+    setMemoText("");
+  };
   const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
   const stepIndex = SAMPLE_STATUS_OPTIONS.indexOf(sample.status);
   const setStatus = (status) => {
@@ -5156,10 +5311,16 @@ function SampleCard({ sample, accounts, products, proposals, supplierLogo, shipp
                     <input type="date" value={getDate(dateField)} onChange={(e) => setPendingDates((prev) => ({ ...prev, [dateField]: e.target.value }))} className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" />
                   </td>
                   <td className="px-2 py-1.5">
-                    <select value={getConfirmer(confirmerField)} onChange={(e) => setPendingConfirmers((prev) => ({ ...prev, [confirmerField]: e.target.value }))} className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]">
-                      <option value="">미지정</option>
-                      {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
-                    </select>
+                    {isDone ? (
+                      <span className="inline-flex items-center gap-1 w-full px-1.5 py-1 rounded border border-slate-100 bg-slate-50 text-slate-600" title="확인 완료 — 이후 변경 불가">
+                        🔒 {sample[confirmerField]}
+                      </span>
+                    ) : (
+                      <select value={getConfirmer(confirmerField)} onChange={(e) => setPendingConfirmers((prev) => ({ ...prev, [confirmerField]: e.target.value }))} className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]">
+                        <option value="">미지정</option>
+                        {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                      </select>
+                    )}
                   </td>
                   <td className="px-2 py-1.5 text-center">
                     <button onClick={() => confirmStep(s)} className="text-[10px] px-2 py-1 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">확인</button>
@@ -5192,6 +5353,35 @@ function SampleCard({ sample, accounts, products, proposals, supplierLogo, shipp
         <button onClick={() => setShowAnnounce(true)} className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium">💬 고객 안내문 생성</button>
         {isAdmin && <button onClick={() => onDelete(sample)} className="text-xs px-2 text-red-400 hover:text-red-600">🗑️</button>}
       </div>
+
+      {/* 💬 업무 특이사항 및 소통 메모 — 작성자/작성일시 자동기록되는 타임라인 */}
+      <div className="mt-4 pt-3 border-t border-slate-100">
+        <div className="text-[11px] font-semibold text-slate-500 mb-1.5">💬 업무 특이사항 및 소통 메모</div>
+        <div className="flex gap-1.5 mb-2">
+          <input
+            value={memoText}
+            onChange={(e) => setMemoText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submitMemo()}
+            placeholder="직원들과 공유할 특이사항을 입력하세요 (예: 현지 공장 발주 완료, 항공 운송장번호 입력 등)"
+            className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]"
+          />
+          <button onClick={submitMemo} className="text-xs px-3 py-1.5 rounded-lg bg-slate-700 text-white hover:opacity-90 whitespace-nowrap">등록</button>
+        </div>
+        <div className="space-y-1.5 max-h-40 overflow-y-auto">
+          {(sample.memos || []).length === 0 && <p className="text-[11px] text-slate-300">등록된 특이사항이 없습니다.</p>}
+          {(sample.memos || []).slice().reverse().map((m) => (
+            <div key={m.id} className="flex items-start justify-between gap-2 text-[11px] bg-slate-50 rounded-lg px-2.5 py-1.5">
+              <div>
+                <span className="font-semibold text-slate-600">{m.author}</span>
+                <span className="text-slate-400"> · {m.createdAt}</span>
+                <div className="text-slate-700 whitespace-pre-line">{m.text}</div>
+              </div>
+              {onDeleteMemo && <button onClick={() => onDeleteMemo(sample, m.id)} className="text-slate-300 hover:text-red-500 shrink-0" title="삭제">✕</button>}
+            </div>
+          ))}
+        </div>
+      </div>
+
       {showAnnounce && <SampleAnnounceModal shippingFees={fees} onClose={() => setShowAnnounce(false)} />}
       {showInvoice && <SampleInvoiceModal sample={sample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={fees} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />}
       {showFeeSettings && <ShippingFeeSettingsModal shippingFees={fees} onSave={(f) => onSaveShippingFees && onSaveShippingFees(f)} onClose={() => setShowFeeSettings(false)} />}
@@ -5303,13 +5493,18 @@ function SampleDetailModal({ onClose, children }) {
   );
 }
 
-function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onDeleteStock }) {
+function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onDeleteStock, onAddMemo, onDeleteMemo }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showStockManage, setShowStockManage] = useState(false);
   const [filter, setFilter] = useState("전체");
-  const [detailSample, setDetailSample] = useState(null); // 리스트 행 클릭시 상세 인보이스/진행상황을 보여줄 샘플
+  const [detailSample, setDetailSample] = useState(null); // "📋" 버튼 클릭시 진행상황(4단계 확인 테이블)을 보여줄 샘플
+  const [invoiceSample, setInvoiceSample] = useState(null); // 행 클릭시 샘플비 인보이스를 바로 보여줄 샘플
   const filtered = (samples || []).filter((s) => filter === "전체" || s.status === filter);
   const toggleFlag = (e, s, field) => { e.stopPropagation(); onUpdate(s, { [field]: !s[field] }); };
+  const handleDeleteRow = (e, s) => {
+    e.stopPropagation();
+    onDelete(s); // deleteSample(App레벨)이 자체적으로 confirm을 띄운 뒤 삭제 처리(카드뷰/상세모달의 삭제버튼과 동일 로직 공유)
+  };
   return (
     <main className="max-w-7xl mx-auto px-6 py-8">
       <div className="bg-white rounded-xl border border-slate-200 p-5 mb-6">
@@ -5346,25 +5541,34 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
               <th className="text-right px-3 py-3 font-medium">수량</th>
               <th className="text-left px-3 py-3 font-medium">받을주소</th>
               <th className="text-left px-3 py-3 font-medium">배송방식</th>
+              <th className="text-center px-3 py-3 font-medium">진행 단계</th>
               <th className="text-center px-3 py-3 font-medium">고객확인</th>
               <th className="text-right px-3 py-3 font-medium">청구금액</th>
               <th className="text-center px-3 py-3 font-medium">입금확인</th>
+              <th className="text-center px-3 py-3 font-medium">관리</th>
             </tr></thead>
             <tbody>
               {filtered.map((s, idx) => (
-                <tr key={s.id} onClick={() => setDetailSample(s)} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
+                <tr key={s.id} onClick={() => setInvoiceSample(s)} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
                   <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">{s.requestDate || "-"}</td>
                   <td className="px-3 py-3 font-medium" style={{ color: "#111827" }}>{s.clientName}</td>
                   <td className="px-3 py-3 text-slate-600 max-w-[220px] truncate">{s.productName}</td>
                   <td className="px-3 py-3 text-right text-slate-600">{s.invoiceQty || "-"}</td>
                   <td className="px-3 py-3 text-slate-500 max-w-[160px] truncate">{s.receiveAddress || "-"}</td>
                   <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
+                  <td className="px-3 py-3 text-center whitespace-nowrap">
+                    <span className={"inline-block text-[10px] px-2 py-1 rounded-full font-semibold border " + (SAMPLE_STATUS_COLORS[s.status] || "bg-slate-50 text-slate-500 border-slate-200")}>{SAMPLE_STATUS_LABELS[s.status] || s.status}</span>
+                  </td>
                   <td className="px-3 py-3 text-center" onClick={(e) => toggleFlag(e, s, "customerConfirmed")}>
                     <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.customerConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
                   </td>
                   <td className="px-3 py-3 text-right font-semibold" style={{ color: "#111827" }}>{s.invoiceAmount ? won(s.invoiceAmount) : "-"}</td>
                   <td className="px-3 py-3 text-center" onClick={(e) => toggleFlag(e, s, "paymentConfirmed")}>
                     <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.paymentConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
+                  </td>
+                  <td className="px-3 py-3 text-center whitespace-nowrap">
+                    <button onClick={(e) => { e.stopPropagation(); setDetailSample(s); }} title="진행상황 보기" className="text-slate-400 hover:text-[#1E3A8A] mr-2">📋</button>
+                    {isAdmin && <button onClick={(e) => handleDeleteRow(e, s)} title="삭제" className="text-red-400 hover:text-red-600">🗑️</button>}
                   </td>
                 </tr>
               ))}
@@ -5375,9 +5579,12 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
 
       {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} onClose={() => setShowCreate(false)} onSave={onCreate} />}
       {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
+      {invoiceSample && (
+        <SampleInvoiceModal sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} onUpdate={onUpdate} onClose={() => setInvoiceSample(null)} />
+      )}
       {detailSample && (
         <SampleDetailModal onClose={() => setDetailSample(null)}>
-          <SampleCard sample={detailSample} accounts={accounts} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={(s) => { onDelete(s); setDetailSample(null); }} />
+          <SampleCard sample={detailSample} accounts={accounts} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={(s) => { onDelete(s); setDetailSample(null); }} onAddMemo={onAddMemo} onDeleteMemo={onDeleteMemo} />
         </SampleDetailModal>
       )}
     </main>
@@ -6012,9 +6219,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setTaskList((prev) => [local, ...prev]);
     try { await fsAdd(COLLECTIONS.tasks, rec); setToast("업무 지시를 등록했습니다."); } catch (e) { console.error(e); }
   };
-  const updateTaskStatus = async (task, status) => {
-    setTaskList((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t)));
-    try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, { status }); } catch (e) { console.error(e); }
+  const updateTask = async (task, patch) => {
+    setTaskList((prev) => prev.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
+    try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, patch); } catch (e) { console.error(e); }
   };
   const addTaskComment = async (task, text) => {
     const authorName = (roleUser && roleUser.displayName) || "알 수 없음";
@@ -6048,9 +6255,22 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsUpdate(COLLECTIONS.samples, sample.id, patch); } catch (e) { console.error(e); }
   };
   const deleteSample = async (sample) => {
-    if (!window.confirm(`"${sample.clientName} - ${sample.productName}" 샘플 진행 건을 삭제할까요?`)) return;
+    if (!window.confirm("해당 샘플 요청 항목을 삭제하시겠습니까?")) return;
     setSampleList((prev) => prev.filter((s) => s.id !== sample.id));
     try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsDelete(COLLECTIONS.samples, sample.id); } catch (e) { console.error(e); }
+  };
+  // 샘플 진행건 특이사항/소통 메모 — 작성자+작성일시 자동기록, 배열로 누적
+  const addSampleMemo = async (sample, text) => {
+    const authorName = (roleUser && roleUser.displayName) || "백상선";
+    const memo = { id: Date.now() + Math.random(), author: authorName, text, createdAt: nowDateTimeStr() };
+    const nextMemos = [...(sample.memos || []), memo];
+    setSampleList((prev) => prev.map((s) => (s.id === sample.id ? { ...s, memos: nextMemos } : s)));
+    try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsUpdate(COLLECTIONS.samples, sample.id, { memos: nextMemos }); } catch (e) { console.error(e); }
+  };
+  const deleteSampleMemo = async (sample, memoId) => {
+    const nextMemos = (sample.memos || []).filter((m) => m.id !== memoId);
+    setSampleList((prev) => prev.map((s) => (s.id === sample.id ? { ...s, memos: nextMemos } : s)));
+    try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsUpdate(COLLECTIONS.samples, sample.id, { memos: nextMemos }); } catch (e) { console.error(e); }
   };
 
   // ===== 한국 본사 샘플 재고 현황 =====
@@ -6918,7 +7138,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           tasks={taskList} accounts={accounts} proposals={proposalList} isAdmin={isAdmin}
           currentUserName={(roleUser && roleUser.displayName) || ""}
           onBack={() => setView("pipeline")}
-          onCreate={addTaskAssignment} onUpdateStatus={updateTaskStatus} onAddComment={addTaskComment}
+          onCreate={addTaskAssignment} onUpdate={updateTask} onAddComment={addTaskComment}
           onLinkProposal={linkTaskProposal} onDelete={deleteTaskAssignment}
         />
       )}
@@ -7371,7 +7591,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
 
       {view === "pipeline" && activeStep === 4 && (
-        <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin}
+        <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
           onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onDeleteStock={deleteSampleStock} />
       )}
