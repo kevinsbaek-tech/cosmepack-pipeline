@@ -1256,8 +1256,8 @@ function smartProductSearch(products, query) {
   const scored = [];
   (products || []).forEach((p) => {
     const name = (p.name || "").toLowerCase();
-    // 검색범위: 제품명 + 규격/재질 + SKU + 비고/사양(K/C 양쪽)까지 전부 포함
-    const haystack = [p.name, p.specSize, p.material, p.sku, p.notes, p.proposalNotesK, p.productionNotesC, p.otherOptionK]
+    // 검색범위: 제품명 + 카테고리 + 재질/규격 + 공장명 + SKU + 비고/사양(K/C 양쪽)까지 전부 포함
+    const haystack = [p.name, p.category, p.specSize, p.material, p.factory, p.sku, p.notes, p.proposalNotesK, p.productionNotesC, p.otherOptionK]
       .filter(Boolean).join(" ").toLowerCase();
     const allMatch = keywords.every((k) => haystack.includes(k)); // AND 조건 — 키워드 전부 포함돼야 결과에 노출
     if (!allMatch) return;
@@ -4869,19 +4869,23 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
   );
 }
 
-function SampleInvoiceModal({ sample, products, supplierLogo, shippingFees, onClose }) {
+function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippingFees, onUpdate, onClose }) {
   const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
   const matchedProduct = (products || []).find((p) => p.name === sample.productName);
+  // 제품DB에 사진이 없으면, 이 샘플에 연결된 제안서의 품목 사진을 대신 끌어온다(제안서에 실제로 첨부됐던 사진이라 더 정확한 경우가 많음)
+  const linkedProposal = (proposals || []).find((p) => String(p.id) === String(sample.linkedProposalId));
+  const proposalItem = linkedProposal && (linkedProposal.items || []).find((it) => it.productName === sample.productName);
+  const fallbackImage = (matchedProduct && matchedProduct.image) || (proposalItem && proposalItem.image) || "";
   const [clientName, setClientName] = useState(sample.clientName || "");
   const [writeDate, setWriteDate] = useState(todayStr());
-  const [productImage, setProductImage] = useState((matchedProduct && matchedProduct.image) || "");
+  const [productImage, setProductImage] = useState(fallbackImage);
   const [productName, setProductName] = useState(sample.productName || "");
-  const [spec, setSpec] = useState((matchedProduct && matchedProduct.specSize) || "");
-  const [qty, setQty] = useState(1);
+  const [spec, setSpec] = useState((matchedProduct && matchedProduct.specSize) || (proposalItem && proposalItem.specSize) || "");
+  const [qty, setQty] = useState(sample.invoiceQty || 1);
   const [unitPrice, setUnitPrice] = useState((matchedProduct && matchedProduct.lastUnitPrice) || 0);
   const [shippingRmbFee, setShippingRmbFee] = useState(0);
   const [domesticMethod, setDomesticMethod] = useState(sample.shippingMethod || "일반");
-  const [receiveAddress, setReceiveAddress] = useState("");
+  const [receiveAddress, setReceiveAddress] = useState(sample.receiveAddress || "");
   const [dispatchDate, setDispatchDate] = useState(sample.dispatchDate || ""); // <input type="date"> 값(YYYY-MM-DD)
   const [receiveDate, setReceiveDate] = useState("");
   // 우측 미리보기의 인사말/하단 안내문구는 클릭해서 직접 수정 가능(contentEditable) — 수정한 내용이 엑셀 다운로드에도 그대로 반영됨
@@ -4909,6 +4913,11 @@ function SampleInvoiceModal({ sample, products, supplierLogo, shippingFees, onCl
   const grandTotal = supplyTotal + vat;
 
   const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines, shippingFees: fees };
+
+  // 인쇄/엑셀 다운로드 시점에 청구금액·수령주소·수량을 샘플 레코드에 같이 저장 — 샘플 목록 리스트의 "청구금액" 컬럼에 바로 반영된다.
+  const persistToSample = () => {
+    if (onUpdate) onUpdate(sample, { invoiceAmount: grandTotal, receiveAddress, invoiceQty: Number(qty) || 0 });
+  };
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -5034,8 +5043,8 @@ function SampleInvoiceModal({ sample, products, supplierLogo, shippingFees, onCl
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
           <span className="text-[11px] text-slate-400">※ 엑셀 다운로드는 병합·수식·값(수정한 문구 포함)은 원본서식과 동일하게 재현되지만, 셀 테두리색상 등 세부서식과 제품사진·로고 삽입은 브라우저 라이브러리 한계로 포함되지 않습니다(인쇄/PDF는 로고·사진 포함 그대로 출력됩니다).</span>
           <div className="flex gap-2 shrink-0 ml-3">
-            <button onClick={() => window.print()} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">🖨️ PDF/인쇄</button>
-            <button onClick={() => downloadSampleInvoiceXlsx(data)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📊 엑셀 파일 다운로드(.xlsx)</button>
+            <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">🖨️ PDF/인쇄</button>
+            <button onClick={() => { persistToSample(); downloadSampleInvoiceXlsx(data); }} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📊 엑셀 파일 다운로드(.xlsx)</button>
           </div>
         </div>
       </div>
@@ -5071,7 +5080,7 @@ function ShippingFeeSettingsModal({ shippingFees, onSave, onClose }) {
   );
 }
 
-function SampleCard({ sample, accounts, products, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete }) {
+function SampleCard({ sample, accounts, products, proposals, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete }) {
   const [showInvoice, setShowInvoice] = useState(false);
   const [showAnnounce, setShowAnnounce] = useState(false);
   const [showFeeSettings, setShowFeeSettings] = useState(false);
@@ -5184,7 +5193,7 @@ function SampleCard({ sample, accounts, products, supplierLogo, shippingFees, on
         {isAdmin && <button onClick={() => onDelete(sample)} className="text-xs px-2 text-red-400 hover:text-red-600">🗑️</button>}
       </div>
       {showAnnounce && <SampleAnnounceModal shippingFees={fees} onClose={() => setShowAnnounce(false)} />}
-      {showInvoice && <SampleInvoiceModal sample={sample} products={products} supplierLogo={supplierLogo} shippingFees={fees} onClose={() => setShowInvoice(false)} />}
+      {showInvoice && <SampleInvoiceModal sample={sample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={fees} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />}
       {showFeeSettings && <ShippingFeeSettingsModal shippingFees={fees} onSave={(f) => onSaveShippingFees && onSaveShippingFees(f)} onClose={() => setShowFeeSettings(false)} />}
     </div>
   );
@@ -5208,7 +5217,7 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete,
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "95vw", maxWidth: "700px", height: "80vh" }} onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "95vw", maxWidth: "980px", height: "80vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <h2 className="text-base font-bold text-slate-800">📦 한국 본사 샘플 재고 현황</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
@@ -5216,7 +5225,7 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete,
         <div className="p-5 overflow-y-auto flex-1">
           {isAdmin && (
             <div className="flex gap-2 mb-4 pb-4 border-b border-slate-100">
-              <div className="relative flex-1">
+              <div className="relative" style={{ flex: "2 1 0%" }}>
                 <input
                   value={newName}
                   onChange={(e) => { setNewName(e.target.value); setShowSuggestions(true); }}
@@ -5233,7 +5242,7 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete,
                           {p.image ? <img src={p.image} className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="text-xs font-medium text-slate-800 truncate">{p.name}</div>
+                          <div className="text-xs font-medium text-slate-800" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>{p.name}</div>
                           <div className="text-[10px] text-slate-400 truncate">{p.specSize || "규격 미상"}</div>
                         </div>
                         {p.category && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#1E3A8A]/10 text-[#1E3A8A] font-medium shrink-0 whitespace-nowrap">{p.category}</span>}
@@ -5280,11 +5289,27 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete,
   );
 }
 
+// 리스트 행을 클릭하면 기존 SampleCard(진행바+단계별확인+인보이스/안내문 버튼 전부)를 모달 형태로 감싸서 보여준다.
+function SampleDetailModal({ onClose, children }) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-40 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-md overflow-y-auto" style={{ maxHeight: "92vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-end px-3 pt-3">
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="px-4 pb-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onDeleteStock }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showStockManage, setShowStockManage] = useState(false);
   const [filter, setFilter] = useState("전체");
+  const [detailSample, setDetailSample] = useState(null); // 리스트 행 클릭시 상세 인보이스/진행상황을 보여줄 샘플
   const filtered = (samples || []).filter((s) => filter === "전체" || s.status === filter);
+  const toggleFlag = (e, s, field) => { e.stopPropagation(); onUpdate(s, { [field]: !s[field] }); };
   return (
     <main className="max-w-7xl mx-auto px-6 py-8">
       <div className="bg-white rounded-xl border border-slate-200 p-5 mb-6">
@@ -5292,7 +5317,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
           <span className="text-2xl">🧪</span>
           <div>
             <h2 className="text-base font-bold text-slate-800">4단계 · 샘플 진행</h2>
-            <p className="text-xs text-slate-500">재고 위치(국내/중국발주)에 따라 발송 경로를 구분하고, 요청→발주→입고→발송 4단계로 진행 상황을 관리합니다.</p>
+            <p className="text-xs text-slate-500">재고 위치(국내/중국발주)에 따라 발송 경로를 구분하고, 요청→발주→입고→발송 4단계로 진행 상황을 관리합니다. 목록의 행을 클릭하면 자세한 인보이스·진행 내용을 확인할 수 있습니다.</p>
           </div>
         </div>
       </div>
@@ -5312,13 +5337,49 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
       {filtered.length === 0 ? (
         <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">해당하는 샘플 진행 건이 없습니다.</div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtered.map((s) => <SampleCard key={s.id} sample={s} accounts={accounts} products={products} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} />)}
+        <div className="bg-white border border-slate-300 shadow-sm rounded-xl overflow-hidden overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
+              <th className="text-left px-3 py-3 font-medium">요청일자</th>
+              <th className="text-left px-3 py-3 font-medium">업체명</th>
+              <th className="text-left px-3 py-3 font-medium">제품명</th>
+              <th className="text-right px-3 py-3 font-medium">수량</th>
+              <th className="text-left px-3 py-3 font-medium">받을주소</th>
+              <th className="text-left px-3 py-3 font-medium">배송방식</th>
+              <th className="text-center px-3 py-3 font-medium">고객확인</th>
+              <th className="text-right px-3 py-3 font-medium">청구금액</th>
+              <th className="text-center px-3 py-3 font-medium">입금확인</th>
+            </tr></thead>
+            <tbody>
+              {filtered.map((s, idx) => (
+                <tr key={s.id} onClick={() => setDetailSample(s)} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
+                  <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">{s.requestDate || "-"}</td>
+                  <td className="px-3 py-3 font-medium" style={{ color: "#111827" }}>{s.clientName}</td>
+                  <td className="px-3 py-3 text-slate-600 max-w-[220px] truncate">{s.productName}</td>
+                  <td className="px-3 py-3 text-right text-slate-600">{s.invoiceQty || "-"}</td>
+                  <td className="px-3 py-3 text-slate-500 max-w-[160px] truncate">{s.receiveAddress || "-"}</td>
+                  <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
+                  <td className="px-3 py-3 text-center" onClick={(e) => toggleFlag(e, s, "customerConfirmed")}>
+                    <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.customerConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
+                  </td>
+                  <td className="px-3 py-3 text-right font-semibold" style={{ color: "#111827" }}>{s.invoiceAmount ? won(s.invoiceAmount) : "-"}</td>
+                  <td className="px-3 py-3 text-center" onClick={(e) => toggleFlag(e, s, "paymentConfirmed")}>
+                    <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.paymentConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
       {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} onClose={() => setShowCreate(false)} onSave={onCreate} />}
       {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
+      {detailSample && (
+        <SampleDetailModal onClose={() => setDetailSample(null)}>
+          <SampleCard sample={detailSample} accounts={accounts} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={(s) => { onDelete(s); setDetailSample(null); }} />
+        </SampleDetailModal>
+      )}
     </main>
   );
 }
