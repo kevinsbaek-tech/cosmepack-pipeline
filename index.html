@@ -1250,15 +1250,18 @@ function sortByKey(list, sortKey, getName, getDate, getProposalCount) {
 
 // "가격조사 > 기존 제품 DB에서 불러오기" 검색 — 쉼표/공백으로 구분된 여러 키워드를 모두 만족(AND)하는 제품만 추리고,
 // 제품명 앞부분에 가까이 일치할수록/더 많은 필드에서 일치할수록 높은 점수를 매겨 유사도순으로 정렬한다.
+// 검색어/제품명 양쪽에서 대괄호([ ])를 제거해 정규화 — "[코스메팩] 라미튜브..." 같은 접두어가 붙은 제품명도
+// "코스메팩", "튜브" 같은 키워드로 정상 검색되도록 하기 위함(대괄호가 부분일치를 방해하는 케이스 방지)
+const stripBrackets = (s) => String(s || "").replace(/\[|\]/g, "");
 function smartProductSearch(products, query) {
-  const keywords = String(query || "").split(/[,\s]+/).map((k) => k.trim().toLowerCase()).filter(Boolean);
+  const keywords = stripBrackets(query).split(/[,\s]+/).map((k) => k.trim().toLowerCase()).filter(Boolean);
   if (keywords.length === 0) return (products || []).slice(0, 8);
   const scored = [];
   (products || []).forEach((p) => {
-    const name = (p.name || "").toLowerCase();
-    // 검색범위: 제품명 + 카테고리 + 재질/규격 + 공장명 + SKU + 비고/사양(K/C 양쪽)까지 전부 포함
-    const haystack = [p.name, p.category, p.specSize, p.material, p.factory, p.sku, p.notes, p.proposalNotesK, p.productionNotesC, p.otherOptionK]
-      .filter(Boolean).join(" ").toLowerCase();
+    const name = stripBrackets(p.name || "").toLowerCase();
+    // 검색범위: 제품명 + 카테고리 + 재질/규격 + 공장명 + SKU + 비고/사양(K/C 양쪽)까지 전부 포함(전부 대괄호 정규화된 상태로 비교)
+    const haystack = stripBrackets([p.name, p.category, p.specSize, p.material, p.factory, p.sku, p.notes, p.proposalNotesK, p.productionNotesC, p.otherOptionK]
+      .filter(Boolean).join(" ")).toLowerCase();
     const allMatch = keywords.every((k) => haystack.includes(k)); // AND 조건 — 키워드 전부 포함돼야 결과에 노출
     if (!allMatch) return;
     let score = 0;
@@ -1950,6 +1953,10 @@ const SAMPLE_STATUS_COLORS = {
 const SAMPLE_STATUS_DATE_FIELD = { "요청": "requestDate", "발주": "orderDate", "입고": "stockInDate", "발송": "dispatchDate" };
 const SAMPLE_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "발주": "orderConfirmedBy", "입고": "stockInConfirmedBy", "발송": "dispatchConfirmedBy" };
 const DEFAULT_SAMPLE_SHIPPING_FEES = { "일반": 2500, "항공": 15000 }; // 배송비 설정 모달에서 수정 가능한 기본값
+const DEFAULT_SAMPLE_SHIPPING_FEE_NOTES = {
+  "일반": "일반 국내택배비 2,500원, 입금확인 후 7일 소요",
+  "항공": "항공특송료 15,000원, 급송 (2~3일 소요)",
+};
 const REVIEW_STATUS_LABELS = {
   "검토대기": "📝 검토대기",
   "검토중": "✏️ 검토/수정중",
@@ -4510,7 +4517,7 @@ function TaskCreateModal({ accounts, currentUserName, onClose, onSave }) {
               {staffOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
             </select>
           </Field>
-          <Field label="요청 제품 및 조사 내용"><textarea className={inputCls} rows={4} value={content} onChange={(e) => setContent(e.target.value)} placeholder="예: OO브랜드 크림용기 50g 견적 조사, 원터치캡 옵션 포함" /></Field>
+          <Field label="요청 제품 및 조사 내용"><textarea className={inputCls} rows={6} style={{ minHeight: "120px" }} value={content} onChange={(e) => setContent(e.target.value)} placeholder="예: OO브랜드 크림용기 50g 견적 조사, 원터치캡 옵션 포함" /></Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="문의 채널">
               <select className={inputCls} value={channel} onChange={(e) => setChannel(e.target.value)}>
@@ -4592,7 +4599,7 @@ function TaskCard({ task, isAdmin, currentUserName, accounts, proposals, onUpdat
           </div>
         </div>
       </div>
-      <p className="text-xs text-slate-600 whitespace-pre-line mb-3 pb-3 border-b border-slate-100">{task.content}</p>
+      <p className="text-xs text-slate-600 mb-3 pb-3 border-b border-slate-100" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", height: "auto", minHeight: "auto" }}>{task.content}</p>
 
       {/* 3단계 진행바 — 샘플 진행 카드와 동일한 구조, 클릭시 즉시 이동 */}
       <div className="flex items-center gap-1 mb-2">
@@ -4716,7 +4723,15 @@ function TaskCard({ task, isAdmin, currentUserName, accounts, proposals, onUpdat
 function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserName, onBack, onCreate, onUpdate, onAddComment, onLinkProposal, onDelete }) {
   const [showCreate, setShowCreate] = useState(false);
   const [filter, setFilter] = useState("전체"); // 전체 | 요청 | 진행중 | 완료
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 20;
+  const [detailTask, setDetailTask] = useState(null); // 행 클릭시 상세(단계관리+이미지+채팅) 모달을 보여줄 업무건
   const filtered = (tasks || []).filter((t) => filter === "전체" || t.status === filter);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pagedFiltered = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [filter]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
+  const handleDeleteRow = (e, t) => { e.stopPropagation(); onDelete(t); };
   return (
     <main className="max-w-7xl mx-auto px-6 py-8">
       <div className="flex items-center justify-between mb-6">
@@ -4736,15 +4751,48 @@ function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserNa
       {filtered.length === 0 ? (
         <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">해당하는 업무 지시가 없습니다.</div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtered.map((t) => (
-            <TaskCard key={t.id} task={t} isAdmin={isAdmin} currentUserName={currentUserName} accounts={accounts} proposals={proposals}
-              onUpdate={onUpdate} onAddComment={onAddComment} onLinkProposal={onLinkProposal} onDelete={onDelete} />
-          ))}
+        <div className="bg-white border border-slate-300 shadow-sm rounded-xl overflow-hidden overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
+              <th className="text-left px-3 py-3 font-medium">지시일자</th>
+              <th className="text-left px-3 py-3 font-medium">고객사명</th>
+              <th className="text-left px-3 py-3 font-medium">요청자</th>
+              <th className="text-left px-3 py-3 font-medium">담당자</th>
+              <th className="text-left px-3 py-3 font-medium">요청 제품 및 조사 내용</th>
+              <th className="text-left px-3 py-3 font-medium">마감 희망일</th>
+              <th className="text-center px-3 py-3 font-medium">진행 단계</th>
+              <th className="text-center px-3 py-3 font-medium">관리</th>
+            </tr></thead>
+            <tbody>
+              {pagedFiltered.map((t, idx) => (
+                <tr key={t.id} onClick={() => setDetailTask(t)} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 align-top " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
+                  <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">{t.instructionDate || "-"}</td>
+                  <td className="px-3 py-3 font-medium whitespace-nowrap" style={{ color: "#111827" }}>{t.clientName}</td>
+                  <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{t.requestedBy || "-"}</td>
+                  <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{t.assignee}</td>
+                  <td className="px-3 py-3 text-slate-600 min-w-[240px]" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{t.content}</td>
+                  <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">{t.dueDate || "-"}</td>
+                  <td className="px-3 py-3 text-center whitespace-nowrap">
+                    <span className={"inline-block text-[10px] px-2 py-1 rounded-full font-semibold border " + (TASK_STATUS_COLORS[t.status] || "bg-slate-50 text-slate-500 border-slate-200")}>{TASK_STATUS_LABELS[t.status] || t.status}</span>
+                  </td>
+                  <td className="px-3 py-3 text-center whitespace-nowrap">
+                    {isAdmin && <button onClick={(e) => handleDeleteRow(e, t)} title="삭제" className="text-red-400 hover:text-red-600">🗑️</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
+      {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
 
       {showCreate && <TaskCreateModal accounts={accounts} currentUserName={currentUserName} onClose={() => setShowCreate(false)} onSave={onCreate} />}
+      {detailTask && (
+        <SampleDetailModal onClose={() => setDetailTask(null)}>
+          <TaskCard task={detailTask} isAdmin={isAdmin} currentUserName={currentUserName} accounts={accounts} proposals={proposals}
+            onUpdate={onUpdate} onAddComment={onAddComment} onLinkProposal={onLinkProposal} onDelete={(t) => { onDelete(t); setDetailTask(null); }} />
+        </SampleDetailModal>
+      )}
     </main>
   );
 }
@@ -4797,8 +4845,8 @@ function buildSampleInvoiceSheetData(data) {
   set("B16", 1); set("C16", data.productImage ? "(사진 별도 첨부)" : ""); set("E16", data.productName || ""); set("G16", data.spec || ""); set("I16", Number(data.qty) || 0); set("K16", Number(data.unitPrice) || 0); set("L16", { f: "I16*K16" }); set("M16", "당사부담");
   set("B17", 2); set("E17", "중국내 운송료"); set("I17", data.shippingRmbFee ? 1 : 0); set("K17", Number(data.shippingRmbFee) || 0); set("L17", { f: "I17*K17" }); set("M17", "당사부담");
   const feesForXlsx = data.shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
-  set("B18", 3); set("E18", "택배비"); set("G18", " "); set("I18", data.domesticMethod === "일반" ? 1 : 0); set("K18", feesForXlsx["일반"]); set("L18", { f: "I18*K18" }); set("M18", "");
-  set("B19", 3); set("E19", "항공택배비"); set("G19", "1KG 미만"); set("I19", data.domesticMethod === "항공" ? 1 : 0); set("K19", feesForXlsx["항공"]); set("L19", { f: "I19*K19" }); set("M19", "");
+  set("B18", 3); set("E18", "택배비"); set("G18", " "); set("I18", data.domesticMethod === "일반" ? 1 : 0); set("K18", feesForXlsx["일반"]); set("L18", { f: "I18*K18" }); set("M18", data.domesticMethod === "일반" ? (data.domesticRemark || "") : "");
+  set("B19", 3); set("E19", "항공택배비"); set("G19", "1KG 미만"); set("I19", data.domesticMethod === "항공" ? 1 : 0); set("K19", feesForXlsx["항공"]); set("L19", { f: "I19*K19" }); set("M19", data.domesticMethod === "항공" ? (data.domesticRemark || "") : "");
   set("B20", "합   계"); set("L20", { f: "SUM(L16:L19)" });
   set("B21", "부가가치세"); set("L21", { f: "L20*0.1" });
   set("B22", "합계금액"); set("L22", { f: "L20+L21" });
@@ -4922,7 +4970,8 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
   const [stockLocation, setStockLocation] = useState("korea");
   const [assignee, setAssignee] = useState((assigneeOptions[0] && assigneeOptions[0].name) || "");
   const [requestDate, setRequestDate] = useState(todayStr());
-  const [pickedStock, setPickedStock] = useState(null); // 한국재고에서 선택한 항목(있으면 등록시 1개 차감)
+  const [pickedStock, setPickedStock] = useState(null); // 한국재고에서 선택한 항목(있으면 등록시 신청수량만큼 차감)
+  const [stockQty, setStockQty] = useState(1); // 본사 재고에서 출고할 신청 수량
   const [showStockPicker, setShowStockPicker] = useState(false);
 
   // 제안서를 선택하면 고객사명/요청제품(품목목록)/담당직원을 자동으로 채워준다.
@@ -4938,13 +4987,23 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
   };
 
   const canSave = clientName.trim() && productName.trim();
-  const save = () => {
+  const save = async () => {
     if (!canSave) return;
-    onSave({
+    if (stockLocation === "korea" && !pickedStock) {
+      alert("한국 본사 재고에서 출고할 샘플 제품을 선택해 주세요.");
+      return;
+    }
+    if (pickedStock && (Number(stockQty) || 0) > (Number(pickedStock.quantity) || 0)) {
+      alert(`현재 보유 재고(${pickedStock.quantity}개)를 초과하여 신청할 수 없습니다.`);
+      return;
+    }
+    await onSave({
       clientName: clientName.trim(), productName: productName.trim(), stockLocation, assignee,
       status: "요청", requestDate, orderDate: "", stockInDate: "", dispatchDate: "", shippingMethod: "", notes: "",
       linkedProposalId: linkedProposalId || "",
-      stockItemId: pickedStock ? pickedStock.id : null, // App의 addSample이 이 값을 보고 재고를 1개 차감
+      stockItemId: pickedStock ? pickedStock.id : null, // App의 addSample이 이 값을 보고 재고를 신청수량만큼 차감
+      stockQty: pickedStock ? (Number(stockQty) || 1) : null,
+      ...(pickedStock ? { invoiceQty: Number(stockQty) || 1 } : {}), // 샘플비 인보이스 기본 수량에도 동일하게 반영(Firestore엔 undefined를 못 넣으므로 조건부로만 포함)
     });
     onClose();
   };
@@ -4952,7 +5011,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="text-base font-bold text-slate-800">🧪 신규 샘플 등록</h2>
+          <h2 className="text-base font-bold text-slate-800">🧪 신규 샘플 발송 등록</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
         <div className="p-6 space-y-3">
@@ -4979,9 +5038,32 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
             </div>
           </Field>
           {stockLocation === "korea" && (
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setShowStockPicker(true)} className="text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium whitespace-nowrap">📦 한국 샘플 재고 현황 보기/선택</button>
-              {pickedStock && <span className="text-xs text-emerald-600">✅ "{pickedStock.productName}" 선택됨 — 등록시 재고 1개 차감</span>}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setShowStockPicker(true)} className="text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium whitespace-nowrap">📦 한국 샘플 재고 현황 보기/선택</button>
+                {!pickedStock && <span className="text-xs text-red-500">* 필수 — 출고할 재고를 선택해주세요</span>}
+              </div>
+              {pickedStock && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-emerald-600 flex-1">✅ "{pickedStock.productName}" 선택됨 (보유 {pickedStock.quantity}개) — 등록시 재고 차감</span>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0">
+                    수량
+                    <input
+                      type="number" min="1" max={pickedStock.quantity} value={stockQty}
+                      onChange={(e) => {
+                        const v = Number(e.target.value) || 1;
+                        if (v > pickedStock.quantity) {
+                          alert(`현재 보유 재고(${pickedStock.quantity}개)를 초과하여 신청할 수 없습니다.`);
+                          setStockQty(pickedStock.quantity);
+                        } else {
+                          setStockQty(v < 1 ? 1 : v);
+                        }
+                      }}
+                      className="w-16 px-2 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]"
+                    />
+                  </label>
+                </div>
+              )}
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
@@ -4995,7 +5077,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
           </div>
         </div>
         {showStockPicker && (
-          <StockPickerModal stock={sampleStock} onClose={() => setShowStockPicker(false)} onPick={(s) => { setPickedStock(s); setProductName(s.productName); setShowStockPicker(false); }} />
+          <StockPickerModal stock={sampleStock} onClose={() => setShowStockPicker(false)} onPick={(s) => { setPickedStock(s); setProductName(s.productName); setStockQty(1); setShowStockPicker(false); }} />
         )}
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
@@ -5006,7 +5088,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
   );
 }
 
-function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippingFees, onUpdate, onClose }) {
+function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippingFees, shippingFeeNotes, onUpdate, onClose }) {
   const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
   const matchedProduct = (products || []).find((p) => p.name === sample.productName);
   // 제품DB에 사진이 없으면, 이 샘플에 연결된 제안서의 품목 사진을 대신 끌어온다(제안서에 실제로 첨부됐던 사진이라 더 정확한 경우가 많음)
@@ -5027,6 +5109,10 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
   const [receiveAddress, setReceiveAddress] = useState(draft.receiveAddress || sample.receiveAddress || "");
   const [dispatchDate, setDispatchDate] = useState(draft.dispatchDate || sample.dispatchDate || ""); // <input type="date"> 값(YYYY-MM-DD)
   const [receiveDate, setReceiveDate] = useState(draft.receiveDate || "");
+  const feeNotes = shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES;
+  // No.3 배송비 항목의 "비고" — 배송방식(일반/항공)에 설정된 안내문구가 기본값으로 자동 채워지고, 직접 수정도 가능
+  const [domesticRemark, setDomesticRemark] = useState(draft.domesticRemark != null ? draft.domesticRemark : (feeNotes[draft.domesticMethod || sample.shippingMethod || "일반"] || ""));
+  const changeDomesticMethod = (m) => { setDomesticMethod(m); setDomesticRemark(feeNotes[m] || ""); };
   // 우측 미리보기의 인사말/하단 안내문구는 클릭해서 직접 수정 가능(contentEditable) — 수정한 내용이 엑셀 다운로드에도 그대로 반영됨
   const [greetingLines, setGreetingLines] = useState(draft.greetingLines || [
     "◎ 귀사의 무궁한 발전을 진심으로 기원합니다.",
@@ -5052,13 +5138,13 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
   const vat = Math.round(supplyTotal * 0.1);
   const grandTotal = supplyTotal + vat;
 
-  const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines, shippingFees: fees };
+  const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, domesticRemark, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines, shippingFees: fees };
 
   // 좌측 입력값 + 미리보기에서 직접 고친 문구(인사말/하단안내)까지 전부 샘플 레코드에 저장 — 다음에 다시 열거나
   // 엑셀/PDF로 출력할 때도 이 수정본이 그대로 반영된다. 청구금액/수령주소/수량은 목록 리스트 컬럼에도 바로 쓰인다.
   const persistToSample = () => {
     if (!onUpdate) return;
-    const invoiceDraft = { clientName, writeDate, productImage, productName, spec, qty: Number(qty) || 0, unitPrice: Number(unitPrice) || 0, shippingRmbFee: Number(shippingRmbFee) || 0, domesticMethod, receiveAddress, dispatchDate, receiveDate, greetingLines, footerExtraLines };
+    const invoiceDraft = { clientName, writeDate, productImage, productName, spec, qty: Number(qty) || 0, unitPrice: Number(unitPrice) || 0, shippingRmbFee: Number(shippingRmbFee) || 0, domesticMethod, domesticRemark, receiveAddress, dispatchDate, receiveDate, greetingLines, footerExtraLines };
     onUpdate(sample, { invoiceAmount: grandTotal, receiveAddress, invoiceQty: Number(qty) || 0, invoiceDraft });
   };
   const saveAndFlash = () => {
@@ -5088,8 +5174,8 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
             <Field label="중국내 운송료(원)"><input type="number" className={inputCls} value={shippingRmbFee} onChange={(e) => setShippingRmbFee(e.target.value)} /></Field>
             <Field label="국내 배송방식">
               <div className="flex gap-2">
-                <button type="button" onClick={() => setDomesticMethod("일반")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "일반" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>일반 ({fees["일반"].toLocaleString("ko-KR")}원)</button>
-                <button type="button" onClick={() => setDomesticMethod("항공")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "항공" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>항공 ({fees["항공"].toLocaleString("ko-KR")}원)</button>
+                <button type="button" onClick={() => changeDomesticMethod("일반")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "일반" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>일반 ({fees["일반"].toLocaleString("ko-KR")}원)</button>
+                <button type="button" onClick={() => changeDomesticMethod("항공")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "항공" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>항공 ({fees["항공"].toLocaleString("ko-KR")}원)</button>
               </div>
             </Field>
             <Field label="받으실분 주소"><input className={inputCls} value={receiveAddress} onChange={(e) => setReceiveAddress(e.target.value)} /></Field>
@@ -5168,7 +5254,9 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
                     <td className="border border-slate-400 text-center">1</td>
                     <td className="border border-slate-400 text-right px-2">{won(domesticFee)}</td>
                     <td className="border border-slate-400 text-right px-2">{won(domesticFee)}</td>
-                    <td className="border border-slate-400 text-center"></td>
+                    <td className="border border-slate-400 p-1">
+                      <input value={domesticRemark} onChange={(e) => setDomesticRemark(e.target.value)} className="w-full text-[10px] px-1 py-0.5 outline-none text-center" placeholder="비고 안내문구" />
+                    </td>
                   </tr>
                   <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>합　계</td><td className="border border-slate-400 text-right px-2 font-semibold">{won(supplyTotal)}</td><td className="border border-slate-400"></td></tr>
                   <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>부가가치세</td><td className="border border-slate-400 text-right px-2">{won(vat)}</td><td className="border border-slate-400"></td></tr>
@@ -5201,24 +5289,34 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
   );
 }
 
-function ShippingFeeSettingsModal({ shippingFees, onSave, onClose }) {
+function ShippingFeeSettingsModal({ shippingFees, shippingFeeNotes, onSave, onClose }) {
   const [normalFee, setNormalFee] = useState((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)["일반"]);
   const [airFee, setAirFee] = useState((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)["항공"]);
+  const [normalNote, setNormalNote] = useState((shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES)["일반"]);
+  const [airNote, setAirNote] = useState((shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES)["항공"]);
   const save = () => {
-    onSave({ "일반": Number(normalFee) || 0, "항공": Number(airFee) || 0 });
+    onSave({ "일반": Number(normalFee) || 0, "항공": Number(airFee) || 0 }, { "일반": normalNote, "항공": airNote });
     onClose();
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[70] p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-800">⚙️ 배송비 설정</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
-        <div className="p-6 space-y-3">
-          <p className="text-xs text-slate-500">여기서 설정한 금액이 샘플 카드의 배송방식 드롭다운, 고객 안내문, 샘플비 인보이스 단가에 모두 동일하게 반영됩니다.</p>
-          <Field label="일반 국내택배비 기본값(원)"><input type="number" className={inputCls} value={normalFee} onChange={(e) => setNormalFee(e.target.value)} /></Field>
-          <Field label="항공특송료 기본값(원)"><input type="number" className={inputCls} value={airFee} onChange={(e) => setAirFee(e.target.value)} /></Field>
+        <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+          <p className="text-xs text-slate-500">여기서 설정한 금액이 샘플 카드의 배송방식 드롭다운, 고객 안내문, 샘플비 인보이스 단가에 모두 동일하게 반영됩니다. 비고 안내문구는 인보이스 품목 No 3(배송비)의 비고 칸에 자동으로 채워집니다.</p>
+          <div className="p-3 rounded-lg bg-slate-50 space-y-2">
+            <div className="text-xs font-semibold text-slate-600">일반 택배</div>
+            <Field label="기본 금액(원)"><input type="number" className={inputCls} value={normalFee} onChange={(e) => setNormalFee(e.target.value)} /></Field>
+            <Field label="비고 안내문구"><input className={inputCls} value={normalNote} onChange={(e) => setNormalNote(e.target.value)} placeholder="예: 일반 국내택배비 2,500원, 입금확인 후 7일 소요" /></Field>
+          </div>
+          <div className="p-3 rounded-lg bg-slate-50 space-y-2">
+            <div className="text-xs font-semibold text-slate-600">항공 특송</div>
+            <Field label="기본 금액(원)"><input type="number" className={inputCls} value={airFee} onChange={(e) => setAirFee(e.target.value)} /></Field>
+            <Field label="비고 안내문구"><input className={inputCls} value={airNote} onChange={(e) => setAirNote(e.target.value)} placeholder="예: 항공특송료 15,000원, 급송 (2~3일 소요)" /></Field>
+          </div>
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
@@ -5229,10 +5327,10 @@ function ShippingFeeSettingsModal({ shippingFees, onSave, onClose }) {
   );
 }
 
-function SampleCard({ sample, accounts, products, proposals, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete, onAddMemo, onDeleteMemo }) {
+function SampleCard({ sample, accounts, products, proposals, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete, onAddMemo, onDeleteMemo }) {
   const [showInvoice, setShowInvoice] = useState(false);
   const [showAnnounce, setShowAnnounce] = useState(false);
-  const [showFeeSettings, setShowFeeSettings] = useState(false);
+
   const [memoText, setMemoText] = useState("");
   const submitMemo = () => {
     if (!memoText.trim() || !onAddMemo) return;
@@ -5339,7 +5437,7 @@ function SampleCard({ sample, accounts, products, proposals, supplierLogo, shipp
             {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
           </select>
         </Field>
-        <Field label={<span className="flex items-center justify-between">배송방식(참고) <button type="button" onClick={() => setShowFeeSettings(true)} className="text-[10px] text-slate-400 hover:text-[#1E3A8A]" title="배송비 설정">⚙️ 설정</button></span>}>
+        <Field label="배송방식(참고)">
           <select className="w-full px-2 py-1.5 text-xs rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={sample.shippingMethod || ""} onChange={(e) => onUpdate(sample, { shippingMethod: e.target.value })}>
             <option value="">미선택</option>
             <option value="일반">일반배송({fees["일반"].toLocaleString("ko-KR")}원)</option>
@@ -5383,17 +5481,19 @@ function SampleCard({ sample, accounts, products, proposals, supplierLogo, shipp
       </div>
 
       {showAnnounce && <SampleAnnounceModal shippingFees={fees} onClose={() => setShowAnnounce(false)} />}
-      {showInvoice && <SampleInvoiceModal sample={sample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={fees} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />}
-      {showFeeSettings && <ShippingFeeSettingsModal shippingFees={fees} onSave={(f) => onSaveShippingFees && onSaveShippingFees(f)} onClose={() => setShowFeeSettings(false)} />}
+      {showInvoice && <SampleInvoiceModal sample={sample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={fees} shippingFeeNotes={shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />}
+
     </div>
   );
 }
 
-function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete, onClose }) {
+function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onSaveEdits, onDelete, onClose }) {
   const [newName, setNewName] = useState("");
   const [newQty, setNewQty] = useState(1);
   const [newLocation, setNewLocation] = useState("본사 창고");
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [edits, setEdits] = useState({}); // { [재고id]: {productName?, quantity?, location?} } — [💾수정저장] 누르기 전까지의 임시 수정본
+  const [saved, setSaved] = useState(false);
   // 제품 관리 DB에서 실시간 검색(다중키워드+유사도순 정렬은 기존 smartProductSearch 재사용) — 최대 6개만 노출
   const suggestions = newName.trim() ? smartProductSearch(products, newName).slice(0, 6) : [];
   const pickSuggestion = (p) => {
@@ -5404,6 +5504,14 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete,
     if (!newName.trim()) return;
     onAdd({ productName: newName.trim(), quantity: Number(newQty) || 0, location: newLocation.trim() || "본사 창고" });
     setNewName(""); setNewQty(1);
+  };
+  const getVal = (s, field) => (edits[s.id] && edits[s.id][field] !== undefined ? edits[s.id][field] : s[field]);
+  const setEditField = (id, field, value) => setEdits((prev) => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+  const saveEdits = async () => {
+    await onSaveEdits(edits);
+    setEdits({});
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -5457,15 +5565,15 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete,
               <tbody>
                 {(stock || []).length === 0 && <tr><td colSpan={4} className="text-center text-slate-400 py-8">등록된 재고가 없습니다.</td></tr>}
                 {(stock || []).map((s) => (
-                  <tr key={s.id} className="border-t border-slate-100">
+                  <tr key={s.id} className={"border-t border-slate-100 " + (edits[s.id] ? "bg-amber-50/50" : "")}>
                     <td className="px-3 py-1.5">
-                      {isAdmin ? <input className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={s.productName} onChange={(e) => onUpdate(s, { productName: e.target.value })} /> : s.productName}
+                      {isAdmin ? <input className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "productName")} onChange={(e) => setEditField(s.id, "productName", e.target.value)} /> : s.productName}
                     </td>
                     <td className="px-3 py-1.5 text-right">
-                      {isAdmin ? <input type="number" className="w-20 text-right px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={s.quantity} onChange={(e) => onUpdate(s, { quantity: Number(e.target.value) || 0 })} /> : <span className="font-semibold">{s.quantity}</span>}
+                      {isAdmin ? <input type="number" className="w-20 text-right px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "quantity")} onChange={(e) => setEditField(s.id, "quantity", Number(e.target.value) || 0)} /> : <span className="font-semibold">{s.quantity}</span>}
                     </td>
                     <td className="px-3 py-1.5">
-                      {isAdmin ? <input className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={s.location || ""} onChange={(e) => onUpdate(s, { location: e.target.value })} /> : (s.location || "-")}
+                      {isAdmin ? <input className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "location") || ""} onChange={(e) => setEditField(s.id, "location", e.target.value)} /> : (s.location || "-")}
                     </td>
                     {isAdmin && <td className="px-3 py-1.5 text-center"><button onClick={() => onDelete(s)} className="text-red-400 hover:text-red-600">🗑️</button></td>}
                   </tr>
@@ -5474,6 +5582,12 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onDelete,
             </table>
           </div>
         </div>
+        {isAdmin && (
+          <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
+            {Object.keys(edits).length > 0 && <span className="text-[11px] text-amber-600 mr-auto">수정된 항목 {Object.keys(edits).length}건 — 저장 전입니다</span>}
+            <button onClick={saveEdits} disabled={Object.keys(edits).length === 0} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">{saved ? "✅ 저장됨" : "💾 수정 저장"}</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -5493,13 +5607,25 @@ function SampleDetailModal({ onClose, children }) {
   );
 }
 
-function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, shippingFees, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onDeleteStock, onAddMemo, onDeleteMemo }) {
+function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onSaveStockEdits, onDeleteStock, onAddMemo, onDeleteMemo }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showStockManage, setShowStockManage] = useState(false);
+  const [showFeeSettings, setShowFeeSettings] = useState(false);
   const [filter, setFilter] = useState("전체");
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 20;
   const [detailSample, setDetailSample] = useState(null); // "📋" 버튼 클릭시 진행상황(4단계 확인 테이블)을 보여줄 샘플
-  const [invoiceSample, setInvoiceSample] = useState(null); // 행 클릭시 샘플비 인보이스를 바로 보여줄 샘플
+  const [invoiceSample, setInvoiceSample] = useState(null); // 행 클릭시(또는 등록 직후) 샘플비 인보이스를 바로 보여줄 샘플
+  // 신규 샘플 발송 등록이 끝나면(재고차감 포함) 그 샘플 정보가 자동 반영된 인보이스 작성 모달을 연속으로 연다.
+  const handleCreateSample = async (rec) => {
+    const created = await onCreate(rec);
+    if (created) setInvoiceSample(created);
+  };
   const filtered = (samples || []).filter((s) => filter === "전체" || s.status === filter);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pagedFiltered = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [filter]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
   const toggleFlag = (e, s, field) => { e.stopPropagation(); onUpdate(s, { [field]: !s[field] }); };
   const handleDeleteRow = (e, s) => {
     e.stopPropagation();
@@ -5525,7 +5651,8 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
         </div>
         <div className="flex gap-2">
           <button onClick={() => setShowStockManage(true)} className="px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] text-sm font-medium hover:bg-[#1E3A8A]/5 whitespace-nowrap">📦 샘플관리</button>
-          <button onClick={() => setShowCreate(true)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 샘플 등록</button>
+          <button onClick={() => setShowFeeSettings(true)} className="px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] text-sm font-medium hover:bg-[#1E3A8A]/5 whitespace-nowrap">⚙️ 배송비 설정</button>
+          <button onClick={() => setShowCreate(true)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 샘플 발송 등록</button>
         </div>
       </div>
 
@@ -5548,7 +5675,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
               <th className="text-center px-3 py-3 font-medium">관리</th>
             </tr></thead>
             <tbody>
-              {filtered.map((s, idx) => (
+              {pagedFiltered.map((s, idx) => (
                 <tr key={s.id} onClick={() => setInvoiceSample(s)} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
                   <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">{s.requestDate || "-"}</td>
                   <td className="px-3 py-3 font-medium" style={{ color: "#111827" }}>{s.clientName}</td>
@@ -5576,15 +5703,24 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
           </table>
         </div>
       )}
+      {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
 
-      {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} onClose={() => setShowCreate(false)} onSave={onCreate} />}
-      {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
+      {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} onClose={() => setShowCreate(false)} onSave={handleCreateSample} />}
+      {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onSaveEdits={onSaveStockEdits} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
+      {showFeeSettings && (
+        <ShippingFeeSettingsModal
+          shippingFees={shippingFees}
+          shippingFeeNotes={shippingFeeNotes}
+          onSave={(f, n) => onSaveShippingFees && onSaveShippingFees(f, n)}
+          onClose={() => setShowFeeSettings(false)}
+        />
+      )}
       {invoiceSample && (
-        <SampleInvoiceModal sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} onUpdate={onUpdate} onClose={() => setInvoiceSample(null)} />
+        <SampleInvoiceModal sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setInvoiceSample(null)} />
       )}
       {detailSample && (
         <SampleDetailModal onClose={() => setDetailSample(null)}>
-          <SampleCard sample={detailSample} accounts={accounts} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={(s) => { onDelete(s); setDetailSample(null); }} onAddMemo={onAddMemo} onDeleteMemo={onDeleteMemo} />
+          <SampleCard sample={detailSample} accounts={accounts} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={(s) => { onDelete(s); setDetailSample(null); }} onAddMemo={onAddMemo} onDeleteMemo={onDeleteMemo} />
         </SampleDetailModal>
       )}
     </main>
@@ -5607,6 +5743,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [difficultyMargins, setDifficultyMargins] = useState(() => (loadPricingSettingsCache() || {}).difficultyMargins || DEFAULT_DIFFICULTY_MARGINS);
   const [finishingOptions, setFinishingOptions] = useState(() => (loadPricingSettingsCache() || {}).finishingOptions || {}); // { [카테고리]: [{id,name,rmbPrice,krwPrice}] }
   const [shippingFees, setShippingFees] = useState(() => (loadPricingSettingsCache() || {}).shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES); // 샘플 국내택배비/항공특송료 설정
+  const [shippingFeeNotes, setShippingFeeNotes] = useState(() => (loadPricingSettingsCache() || {}).shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES); // 배송비별 비고 안내문구(인보이스 No3 비고란에 자동반영)
   const [clientsList, setClientsList] = useState([]);
   const [exRate, setExRate] = useState(() => {
     try {
@@ -5678,21 +5815,23 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       if (data.supplierLogo) setSupplierLogo(data.supplierLogo);
       if (data.finishingOptions) setFinishingOptions(data.finishingOptions);
       if (data.shippingFees) setShippingFees(data.shippingFees);
+      if (data.shippingFeeNotes) setShippingFeeNotes(data.shippingFeeNotes);
     }).catch((e) => console.error("기준정보 불러오기 실패:", e));
   }, []);
 
   // "저장하고 닫기" 버튼 — 기준정보 7종을 localStorage + Firestore에 함께 저장(다음 접속에도 유지, 다른 기기와도 동기화)
   const saveSettingsConfig = async () => {
-    const payload = { logistics, marginTable, customsRates, difficultyMargins, supplierLogo, finishingOptions, shippingFees, savedAt: nowDateTimeStr() };
+    const payload = { logistics, marginTable, customsRates, difficultyMargins, supplierLogo, finishingOptions, shippingFees, shippingFeeNotes, savedAt: nowDateTimeStr() };
     try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); } catch (e) { console.error(e); }
     try { if (FIREBASE_ENABLED && db) await db.collection(COLLECTIONS.settings).doc("pricingConfig").set(payload); } catch (e) { console.error(e); }
   };
 
   // 배송비 설정만 별도로 즉시 저장(⚙️ 배송비 설정 모달에서 사용) — 다른 기준정보 항목은 건드리지 않고 배송비만 갱신
-  const saveShippingFees = async (fees) => {
+  const saveShippingFees = async (fees, notes) => {
     setShippingFees(fees);
+    setShippingFeeNotes(notes);
     const cache = loadPricingSettingsCache() || {};
-    const payload = { ...cache, logistics, marginTable, customsRates, difficultyMargins, supplierLogo, finishingOptions, shippingFees: fees, savedAt: nowDateTimeStr() };
+    const payload = { ...cache, logistics, marginTable, customsRates, difficultyMargins, supplierLogo, finishingOptions, shippingFees: fees, shippingFeeNotes: notes, savedAt: nowDateTimeStr() };
     try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); } catch (e) { console.error(e); }
     try { if (FIREBASE_ENABLED && db) await db.collection(COLLECTIONS.settings).doc("pricingConfig").set(payload); } catch (e) { console.error(e); }
     setToast("배송비 설정을 저장했습니다.");
@@ -6222,6 +6361,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const updateTask = async (task, patch) => {
     setTaskList((prev) => prev.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
     try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, patch); } catch (e) { console.error(e); }
+    setToast("✅ 수정사항이 저장되었습니다.");
   };
   const addTaskComment = async (task, text) => {
     const authorName = (roleUser && roleUser.displayName) || "알 수 없음";
@@ -6243,16 +6383,34 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
   // ===== 4단계 · 샘플 진행 =====
   const addSample = async (rec) => {
-    const { stockItemId, ...sampleRec } = rec;
+    const { stockItemId, stockQty, ...sampleRec } = rec;
     const local = { id: Date.now() + Math.random(), ...sampleRec };
     setSampleList((prev) => [local, ...prev]);
     try { await fsAdd(COLLECTIONS.samples, sampleRec); } catch (e) { console.error(e); }
-    if (stockItemId) await decrementSampleStock(stockItemId); // 한국 재고에서 선택했으면 1개 자동 차감(Outbound)
-    setToast("샘플 진행 건을 등록했습니다." + (stockItemId ? " (재고 1개 차감됨)" : ""));
+    if (stockItemId) await decrementSampleStock(stockItemId, stockQty || 1); // 한국 재고에서 선택했으면 신청수량만큼 자동 차감(Outbound)
+    setToast("샘플 진행 건을 등록했습니다." + (stockItemId ? ` (재고 ${stockQty || 1}개 차감됨)` : ""));
+    return local; // 방금 생성된 샘플 정보를 반환 — 등록 직후 샘플비 인보이스를 연속으로 여는 데 사용
   };
   const updateSample = async (sample, patch) => {
     setSampleList((prev) => prev.map((s) => (s.id === sample.id ? { ...s, ...patch } : s)));
     try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsUpdate(COLLECTIONS.samples, sample.id, patch); } catch (e) { console.error(e); }
+    // "발송완료" 단계로 처음 전환되는 순간 한국 본사 재고에서 신청수량만큼 자동 차감(같은 샘플이 재확인되어도 중복차감 안되도록 stockDeducted 플래그로 방지)
+    if (patch.status === "발송" && sample.stockLocation === "korea" && !sample.stockDeducted) {
+      const stockItem = sampleStockList.find((si) => si.productName === sample.productName);
+      const needQty = Number(sample.invoiceQty) || 1;
+      if (stockItem) {
+        const currentQty = Number(stockItem.quantity) || 0;
+        if (currentQty < needQty) {
+          alert(`보유 재고가 부족합니다 (현재 재고: ${currentQty}개)`);
+        } else {
+          const nextQty = currentQty - needQty;
+          await updateSampleStock(stockItem, { quantity: nextQty });
+          setSampleList((prev) => prev.map((s) => (s.id === sample.id ? { ...s, stockDeducted: true } : s)));
+          try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsUpdate(COLLECTIONS.samples, sample.id, { stockDeducted: true }); } catch (e) { console.error(e); }
+          setToast(`✅ 재고 ${needQty}개가 차감되었습니다. (남은 재고: ${nextQty}개)`);
+        }
+      }
+    }
   };
   const deleteSample = async (sample) => {
     if (!window.confirm("해당 샘플 요청 항목을 삭제하시겠습니까?")) return;
@@ -6283,16 +6441,26 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setSampleStockList((prev) => prev.map((s) => (s.id === item.id ? { ...s, ...patch } : s)));
     try { if (FIREBASE_ENABLED && typeof item.id === "string") await fsUpdate(COLLECTIONS.sampleStock, item.id, patch); } catch (e) { console.error(e); }
   };
+  // 재고관리 모달의 "💾 수정 저장" 버튼용 — 여러 행의 임시 수정본(edits)을 한번에 커밋
+  const saveSampleStockEdits = async (edits) => {
+    const ids = Object.keys(edits || {});
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      const item = sampleStockList.find((s) => String(s.id) === id);
+      if (item) await updateSampleStock(item, edits[id]);
+    }
+    setToast("✅ 재고 정보가 수정되었습니다.");
+  };
   const deleteSampleStock = async (item) => {
     if (!window.confirm(`"${item.productName}" 재고 항목을 삭제할까요?`)) return;
     setSampleStockList((prev) => prev.filter((s) => s.id !== item.id));
     try { if (FIREBASE_ENABLED && typeof item.id === "string") await fsDelete(COLLECTIONS.sampleStock, item.id); } catch (e) { console.error(e); }
   };
   // 샘플 등록시 선택한 재고를 1개 차감(음수 방지)
-  const decrementSampleStock = async (stockItemId) => {
+  const decrementSampleStock = async (stockItemId, qty) => {
     const item = sampleStockList.find((s) => s.id === stockItemId);
     if (!item) return;
-    const nextQty = Math.max(0, (Number(item.quantity) || 0) - 1);
+    const nextQty = Math.max(0, (Number(item.quantity) || 0) - (Number(qty) || 1));
     await updateSampleStock(item, { quantity: nextQty });
   };
 
@@ -7591,9 +7759,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
 
       {view === "pipeline" && activeStep === 4 && (
-        <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} supplierLogo={supplierLogo} shippingFees={shippingFees} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
+        <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
-          onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onDeleteStock={deleteSampleStock} />
+          onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onSaveStockEdits={saveSampleStockEdits} onDeleteStock={deleteSampleStock} />
       )}
 
       {view === "pipeline" && activeStep === 5 && (
