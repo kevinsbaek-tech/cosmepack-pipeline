@@ -3132,6 +3132,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
   const [page, setPage] = useState(1);
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
+  const [keyClientFilter, setKeyClientFilter] = useState(false); // true면 ⭐주거래업체만 모아보기
   const PAGE_SIZE = 20;
 
   // 업체명이 동일한 중복 레코드를 하나로 병합 — 대표 카드는 먼저 등록된 값을 기준으로 하되 비어있는 필드는 나중 레코드 값으로 보강,
@@ -3152,6 +3153,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
           difficulty: existing.difficulty || c.difficulty,
           note: existing.note || c.note,
           source: existing.source || c.source,
+          isKeyClient: existing.isKeyClient || c.isKeyClient,
           _mergedIds: [...existing._mergedIds, c.id],
         });
       }
@@ -3160,14 +3162,17 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
   }, [clients]);
 
   const filtered = useMemo(() => {
-    const base = mergedClients.filter((c) => !search.trim() || (c.name || "").toLowerCase().includes(search.trim().toLowerCase()) || (c.contact || "").toLowerCase().includes(search.trim().toLowerCase()));
+    const base = mergedClients.filter((c) => {
+      if (keyClientFilter && !c.isKeyClient) return false;
+      return !search.trim() || (c.name || "").toLowerCase().includes(search.trim().toLowerCase()) || (c.contact || "").toLowerCase().includes(search.trim().toLowerCase());
+    });
     return sortByKey(base, sortKey, (c) => c.name, (c) => c.createdAt);
-  }, [mergedClients, search, sortKey]);
+  }, [mergedClients, search, sortKey, keyClientFilter]);
 
-  useEffect(() => { setPage(1); }, [search, sortKey]);
+  useEffect(() => { setPage(1); }, [search, sortKey, keyClientFilter]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pagedClients = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { setSelectedIds([]); }, [page, search, sortKey]);
+  useEffect(() => { setSelectedIds([]); }, [page, search, sortKey, keyClientFilter]);
   const allPagedSelected = pagedClients.length > 0 && pagedClients.every((c) => selectedIds.includes(c.id));
   const toggleSelectAll = () => setSelectedIds(allPagedSelected ? [] : pagedClients.map((c) => c.id));
   const toggleSelectOne = (id) => setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
@@ -3201,6 +3206,10 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
         </div>
       </div>
 
+      <div className="flex gap-1.5 mb-3">
+        <button onClick={() => setKeyClientFilter(false)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (!keyClientFilter ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>전체 업체</button>
+        <button onClick={() => setKeyClientFilter(true)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (keyClientFilter ? "bg-amber-400 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>⭐ 주거래업체</button>
+      </div>
       <input
         value={search} onChange={(e) => setSearch(e.target.value)}
         placeholder="🔍 업체명 또는 담당자 검색"
@@ -3221,6 +3230,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-slate-800 text-sm text-left">{c.name}</span>
                     <span className={"text-[10px] px-2 py-0.5 rounded-full font-medium " + DIFFICULTY_BADGE_STYLE[difficulty]}>{difficulty}</span>
+                    {c.isKeyClient && <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">⭐ 주거래</span>}
                     {c._mergedIds && c._mergedIds.length > 1 && <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500" title="중복 등록된 동일 업체명을 하나로 병합해 표시 중">🔗 중복 {c._mergedIds.length}건 병합</span>}
                   </div>
                   <div className="text-xs text-slate-500 mt-0.5 text-left">{c.contact && `담당 ${c.contact} · `}{c.channel} · 견적이력 {history.length}건</div>
@@ -3228,6 +3238,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="text-xs text-slate-400">{openClient === c.id ? "접기 ▲" : "펼치기 ▼"}</span>
+                  <span onClick={(e) => { e.stopPropagation(); onUpdate(c.id, { isKeyClient: !c.isKeyClient }); }} title={c.isKeyClient ? "주거래업체 해제" : "주거래업체로 지정"} className={"text-xs cursor-pointer " + (c.isKeyClient ? "text-amber-500 hover:text-amber-600" : "text-slate-300 hover:text-amber-400")}>{c.isKeyClient ? "⭐ 주거래" : "☆ 주거래지정"}</span>
                   <span onClick={(e) => { e.stopPropagation(); setEditingClient(c); }} className="text-xs text-slate-500 hover:text-[#1E3A8A]">✏️ 수정</span>
                   {isAdmin && <span onClick={(e) => { e.stopPropagation(); onDelete(c); }} className="text-xs text-red-400 hover:text-red-600">삭제</span>}
                 </div>
@@ -3409,11 +3420,12 @@ function FactoryDetailModal({ factory, onClose }) {
   );
 }
 
-function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete, onImportFromProducts, onOpenProduct, onBulkDelete, isAdmin }) {
+function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete, onImportFromProducts, onOpenProduct, onBulkDelete, onToggleKeyFactory, isAdmin }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
+  const [keyFactoryFilter, setKeyFactoryFilter] = useState(false); // true면 ⭐주거래공장만 모아보기
   const PAGE_SIZE = 20;
   const [formFactory, setFormFactory] = useState(null); // null=닫힘, {}=신규, {id,...}=수정
   const [viewingFactory, setViewingFactory] = useState(null);
@@ -3421,16 +3433,17 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
 
   const filtered = useMemo(() => {
     const base = factories.filter((f) => {
+      if (keyFactoryFilter && !f.isKeyFactory) return false;
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
       return (f.name || "").toLowerCase().includes(q) || (f.mainProducts || "").toLowerCase().includes(q);
     });
     return sortByKey(base, sortKey, (f) => f.name, (f) => f.createdAt);
-  }, [factories, search, sortKey]);
+  }, [factories, search, sortKey, keyFactoryFilter]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { setPage(1); }, [search, sortKey]);
-  useEffect(() => { setSelectedIds([]); }, [page, search, sortKey]);
+  useEffect(() => { setPage(1); }, [search, sortKey, keyFactoryFilter]);
+  useEffect(() => { setSelectedIds([]); }, [page, search, sortKey, keyFactoryFilter]);
   const allPagedSelected = paged.length > 0 && paged.every((f) => selectedIds.includes(f.id));
   const toggleSelectAll = () => setSelectedIds(allPagedSelected ? [] : paged.map((f) => f.id));
   const toggleSelectOne = (id) => setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
@@ -3489,6 +3502,10 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
         </div>
       </div>
 
+      <div className="flex gap-1.5 mb-3">
+        <button onClick={() => setKeyFactoryFilter(false)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (!keyFactoryFilter ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>전체 공장</button>
+        <button onClick={() => setKeyFactoryFilter(true)} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (keyFactoryFilter ? "bg-amber-400 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>⭐ 주거래공장</button>
+      </div>
       <input
         value={search} onChange={(e) => setSearch(e.target.value)}
         placeholder="🔍 공장명 또는 주요 품목으로 검색"
@@ -3516,7 +3533,10 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
                 <tr key={f.id} className={"border-t border-slate-100 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
                   {onBulkDelete && <td className="px-2 py-3 text-center"><input type="checkbox" checked={selectedIds.includes(f.id)} onChange={() => toggleSelectOne(f.id)} /></td>}
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <button onClick={() => setViewingFactoryDetail(f)} className="font-semibold hover:text-[#1E3A8A] hover:underline text-left" style={{ color: "#111827" }}>{f.name}</button>
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => setViewingFactoryDetail(f)} className="font-semibold hover:text-[#1E3A8A] hover:underline text-left" style={{ color: "#111827" }}>{f.name}</button>
+                      {f.isKeyFactory && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 shrink-0">⭐ 주거래</span>}
+                    </div>
                   </td>
                   <td className="px-4 py-3" style={{ color: "#1E293B" }}>{f.wechatGroup || <span className="text-slate-400">-</span>}</td>
                   <td className="px-4 py-3" style={{ color: "#1E293B" }}>{f.contact || <span className="text-slate-400">-</span>}</td>
@@ -3537,6 +3557,9 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
                     </button>
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {onToggleKeyFactory && (
+                      <button onClick={() => onToggleKeyFactory(f)} title={f.isKeyFactory ? "주거래공장 해제" : "주거래공장으로 지정"} className={"text-xs px-2 py-1 mr-2 " + (f.isKeyFactory ? "text-amber-500 hover:text-amber-600" : "text-slate-300 hover:text-amber-400")}>{f.isKeyFactory ? "⭐ 주거래" : "☆ 주거래지정"}</button>
+                    )}
                     <button onClick={() => setFormFactory(f)} className="text-xs px-2 py-1 text-slate-500 hover:text-[#1E3A8A] mr-2">✏️ 수정</button>
                     {isAdmin && <button onClick={() => onDelete(f)} className="text-xs px-2 py-1 text-red-400 hover:text-red-600">🗑️ 삭제</button>}
                   </td>
@@ -6161,6 +6184,13 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setFactoriesList((prev) => [f, ...prev]);
     try { await fsAdd(COLLECTIONS.factories, f); } catch (e) { console.error(e); }
   };
+  // ⭐ 주거래공장 지정/해제 — 지정 전용 토스트 문구를 위해 updateFactoryRecord와 별도 함수로 분리
+  const toggleKeyFactory = async (f) => {
+    const nextVal = !f.isKeyFactory;
+    setFactoriesList((prev) => prev.map((x) => (x.id === f.id ? { ...x, isKeyFactory: nextVal } : x)));
+    try { if (FIREBASE_ENABLED && typeof f.id === "string") await fsUpdate(COLLECTIONS.factories, f.id, { isKeyFactory: nextVal }); } catch (e) { console.error(e); }
+    setToast("✅ 주거래공장 설정이 변경되었습니다.");
+  };
   const updateFactoryRecord = async (id, patch) => {
     const oldFactory = factoriesList.find((f) => f.id === id);
     setFactoriesList((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
@@ -7460,7 +7490,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <ExcelArchiveView archive={excelArchiveList} onBack={() => setView("pipeline")} onUpload={uploadExcelToArchive} onUploadZip={uploadZipToArchive} onApplyAll={applyAllExcelToPipeline} onDelete={deleteExcelArchiveItem} onApply={applyExcelToPipeline} onResetExcelData={resetExcelUploadedData} onDeleteAllUploaded={deleteAllUploadedProductData} onDedupe={dedupeExcelArchive} onBulkDelete={bulkDeleteExcelArchive} />
       )}
       {view === "factories" && (
-        <FactoriesView factories={factoriesList} products={productsList} onBack={() => setView("pipeline")} onAdd={addFactoryRecord} onUpdate={updateFactoryRecord} onDelete={deleteFactoryRecord} onImportFromProducts={importFactoriesFromProducts} onBulkDelete={bulkDeleteFactories} isAdmin={isAdmin}
+        <FactoriesView factories={factoriesList} products={productsList} onBack={() => setView("pipeline")} onAdd={addFactoryRecord} onUpdate={updateFactoryRecord} onDelete={deleteFactoryRecord} onImportFromProducts={importFactoriesFromProducts} onBulkDelete={bulkDeleteFactories} onToggleKeyFactory={toggleKeyFactory} isAdmin={isAdmin}
           onOpenProduct={(p) => { setProductToView(p); setView("products"); }} />
       )}
       {view === "products" && (
