@@ -3522,9 +3522,9 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
             <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
               {onBulkDelete && <th className="text-center px-2 py-3 font-medium w-10"><input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /></th>}
               <th className="text-left px-4 py-3 font-medium w-64">중국 공장명</th>
-              <th className="text-left px-4 py-3 font-medium w-28">위챗 그룹방</th>
+              <th className="text-left px-4 py-3 font-medium w-72">위챗 그룹방</th>
               <th className="text-left px-4 py-3 font-medium w-40">연락처</th>
-              <th className="text-left px-4 py-3 font-medium w-56">주요 생산 품목</th>
+              <th className="text-left px-4 py-3 font-medium w-36">주요 생산 품목</th>
               <th className="text-left px-4 py-3 font-medium w-24">생산 제품 (연동)</th>
               <th className="text-right px-4 py-3 font-medium">작업</th>
             </tr></thead>
@@ -3538,7 +3538,7 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
                       {f.isKeyFactory && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 shrink-0">⭐ 주거래</span>}
                     </div>
                   </td>
-                  <td className="px-4 py-3" style={{ color: "#1E293B" }}>{f.wechatGroup || <span className="text-slate-400">-</span>}</td>
+                  <td className="px-4 py-3 whitespace-nowrap" style={{ color: "#1E293B" }}>{f.wechatGroup || <span className="text-slate-400">-</span>}</td>
                   <td className="px-4 py-3" style={{ color: "#1E293B" }}>{f.contact || <span className="text-slate-400">-</span>}</td>
                   <td className="px-4 py-3">
                     <div className="text-left" style={{ color: "#1E293B" }}>{f.mainProducts || <span className="text-slate-400">-</span>}</div>
@@ -3546,8 +3546,8 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
                       const info = dominantCategoryFor(f);
                       if (!info) return <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-400 mt-1 inline-block">연결 제품 없음</span>;
                       const label = info.distinctCategories > 1
-                        ? `대표: ${info.topCategory} (${info.topCount}개) · 외 ${info.distinctCategories - 1}개 카테고리 (총 ${info.totalProducts}개 제품)`
-                        : `주력 카테고리: ${info.topCategory} (${info.totalProducts}개)`;
+                        ? `${info.topCategory} (${info.topCount}개) · 외 ${info.distinctCategories - 1}개 카테고리 (총 ${info.totalProducts}개 제품)`
+                        : `${info.topCategory} (${info.totalProducts}개)`;
                       return <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-[#1D4ED8] mt-1 inline-block whitespace-normal text-left">{label}</span>;
                     })()}
                   </td>
@@ -6161,14 +6161,36 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setClientsList((prev) => [c, ...prev]);
     try { await fsAdd(COLLECTIONS.clients, c); } catch (e) { console.error(e); }
   };
+  // 업체 수정은 원래부터 고유 id 기준으로 동작(이름 기준 매칭 아님) — 다만 상호(name)가 바뀌었을 때
+  // 그 업체를 참조하던 제안서/샘플의 clientName은 그대로 옛 이름에 남아있어서, 업체 상세뷰의 견적이력이 끊겨 보이고
+  // 나중에 옛 이름으로 제안서가 또 저장되면 업체가 중복 생성되는 문제가 있었음 — 그래서 상호변경시 연관 데이터를 함께 동기화(Cascade Update)한다.
   const updateClientRecord = async (id, patch) => {
+    const oldClient = clientsList.find((c) => c.id === id);
     setClientsList((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
     try {
       if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(COLLECTIONS.clients, id, patch);
-      setToast("업체 정보가 수정되었습니다.");
     } catch (e) {
       console.error(e);
       setToast("Firestore 수정 중 오류가 발생했습니다. (화면에는 반영됨)");
+      return;
+    }
+
+    if (patch.name && oldClient && patch.name.trim() && patch.name !== oldClient.name) {
+      const oldName = oldClient.name;
+      const newName = patch.name;
+      const affectedProposals = proposalList.filter((p) => p.clientName === oldName);
+      const affectedSamples = sampleList.filter((s) => s.clientName === oldName);
+      setProposalList((prev) => prev.map((p) => (p.clientName === oldName ? { ...p, clientName: newName } : p)));
+      setSampleList((prev) => prev.map((s) => (s.clientName === oldName ? { ...s, clientName: newName } : s)));
+      for (const p of affectedProposals) {
+        try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.proposals, p.id, { clientName: newName }); } catch (e) { console.error(e); }
+      }
+      for (const s of affectedSamples) {
+        try { if (FIREBASE_ENABLED && typeof s.id === "string") await fsUpdate(COLLECTIONS.samples, s.id, { clientName: newName }); } catch (e) { console.error(e); }
+      }
+      setToast("✅ 업체 상호 및 연관 제안서 데이터가 정상적으로 동기화 수정되었습니다.");
+    } else {
+      setToast("업체 정보가 수정되었습니다.");
     }
   };
   const deleteClientRecord = async (c) => {
@@ -7369,9 +7391,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           <div className="flex items-center gap-1.5 flex-wrap">
             {[
               { key: "tasks", label: "📋 업무지시" },
-              { key: "products", label: "📦 제품 관리" },
               { key: "proposals", label: "📄 제안서 목록" },
               { key: "excel", label: "📂 엑셀 보관함" },
+              { key: "products", label: "📦 제품 관리" },
               { key: "clients", label: "🏢 업체 관리" },
               { key: "factories", label: "🏭 공장 관리" },
             ].map((m) => (
