@@ -1252,7 +1252,9 @@ function sortByKey(list, sortKey, getName, getDate, getProposalCount) {
 // 제품명 앞부분에 가까이 일치할수록/더 많은 필드에서 일치할수록 높은 점수를 매겨 유사도순으로 정렬한다.
 // 검색어/제품명 양쪽에서 대괄호([ ])를 제거해 정규화 — "[코스메팩] 라미튜브..." 같은 접두어가 붙은 제품명도
 // "코스메팩", "튜브" 같은 키워드로 정상 검색되도록 하기 위함(대괄호가 부분일치를 방해하는 케이스 방지)
-const stripBrackets = (s) => String(s || "").replace(/\[|\]/g, "");
+// 검색어/제품명 양쪽에서 대괄호·소괄호·슬래시·하이픈을 제거해 정규화 — "[코스메팩]", "(선크림)", "PE/PP" 같은
+// 특수문자가 섞인 제품명도 "코스메팩", "선크림", "PE" 같은 키워드로 정상 검색되도록 하기 위함
+const stripBrackets = (s) => String(s || "").replace(/[\[\]\(\)\/-]/g, "");
 function smartProductSearch(products, query) {
   const keywords = stripBrackets(query).split(/[,\s]+/).map((k) => k.trim().toLowerCase()).filter(Boolean);
   if (keywords.length === 0) return (products || []).slice(0, 8);
@@ -1293,6 +1295,13 @@ function findBoxHeroMatch(excelProduct, allProducts) {
   const nameKey = normalizeMatchKey(excelProduct.name) + "|" + normalizeMatchKey(excelProduct.specSize);
   const byName = candidates.find((p) => (normalizeMatchKey(p.name) + "|" + normalizeMatchKey(p.specSize)) === nameKey);
   return byName || null;
+}
+
+// 제안서 연결 드롭다운/라벨 공통 포맷: "[제안번호] 업체명 — 주요제품명 (재원/규격)"
+function proposalOptionLabel(p) {
+  const item = (p.items || [])[0];
+  const productPart = item ? `${item.productName || ""}${item.specSize ? ` (${item.specSize})` : ""}`.trim() : "";
+  return `[${p.code}] ${p.clientName}` + (productPart ? ` — ${productPart}` : "");
 }
 
 function getLinkedProposals(product, proposals) {
@@ -4139,12 +4148,8 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
   const PAGE_SIZE = 20;
 
   const filtered = useMemo(() => {
-    const base = products.filter((p) => {
-      if (categoryFilter !== "전체" && p.category !== categoryFilter) return false;
-      if (!search.trim()) return true;
-      const q = search.trim().toLowerCase();
-      return (p.name || "").toLowerCase().includes(q) || (p.factory || "").toLowerCase().includes(q);
-    });
+    const categoryScoped = categoryFilter !== "전체" ? products.filter((p) => p.category === categoryFilter) : products;
+    const base = search.trim() ? smartProductSearch(categoryScoped, search) : categoryScoped;
     return sortByKey(base, sortKey, (p) => p.name, (p) => p.createdAt, (p) => getLinkedProposals(p, proposals).length);
   }, [products, categoryFilter, search, sortKey, proposals]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -4672,7 +4677,7 @@ function TaskCard({ task, isAdmin, currentUserName, accounts, proposals, onUpdat
       <div className="mb-3">
         {task.linkedProposalCode ? (
           <div className="text-xs px-2.5 py-1.5 rounded-lg bg-[#1E3A8A]/5 text-[#1E3A8A] flex items-center justify-between">
-            <span>📄 연결된 제안서: {task.linkedProposalCode} ({task.linkedProposalClient})</span>
+            <span>📄 연결된 제안서: [{task.linkedProposalCode}] {task.linkedProposalClient}{task.linkedProposalProduct ? ` — ${task.linkedProposalProduct}` : ""}</span>
             <button onClick={() => setLinking(true)} className="underline text-[11px] shrink-0 ml-2">변경</button>
           </div>
         ) : (
@@ -4687,7 +4692,7 @@ function TaskCard({ task, isAdmin, currentUserName, accounts, proposals, onUpdat
             className="mt-2 w-full text-xs px-2 py-1.5 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]"
           >
             <option value="">제안서 선택...</option>
-            {(proposals || []).slice(0, 100).map((p) => <option key={p.id} value={p.id}>{p.code} · {p.clientName}</option>)}
+            {(proposals || []).slice(0, 100).map((p) => <option key={p.id} value={p.id}>{proposalOptionLabel(p)}</option>)}
           </select>
         )}
       </div>
@@ -5018,7 +5023,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
           <Field label="📄 발송된 제안서 선택" hint="선택하면 고객사명/요청제품/담당직원이 자동으로 채워집니다">
             <select className={inputCls} value={linkedProposalId} onChange={(e) => applyProposal(e.target.value)}>
               <option value="">(선택 안 함 — 직접 입력)</option>
-              {(proposals || []).slice(0, 200).map((p) => <option key={p.id} value={p.id}>{p.code} · {p.clientName}</option>)}
+              {(proposals || []).slice(0, 200).map((p) => <option key={p.id} value={p.id}>{proposalOptionLabel(p)}</option>)}
             </select>
           </Field>
           <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
@@ -6371,7 +6376,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, { comments: nextComments }); } catch (e) { console.error(e); }
   };
   const linkTaskProposal = async (task, proposal) => {
-    const patch = { linkedProposalId: String(proposal.id), linkedProposalCode: proposal.code, linkedProposalClient: proposal.clientName };
+    const firstItem = (proposal.items || [])[0];
+    const patch = { linkedProposalId: String(proposal.id), linkedProposalCode: proposal.code, linkedProposalClient: proposal.clientName, linkedProposalProduct: (firstItem && firstItem.productName) || "" };
     setTaskList((prev) => prev.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
     try { if (FIREBASE_ENABLED && typeof task.id === "string") await fsUpdate(COLLECTIONS.tasks, task.id, patch); } catch (e) { console.error(e); }
   };
