@@ -3900,6 +3900,16 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
   const [factory, setFactory] = useState(product.factory || "");
   const [factoryLink, setFactoryLink] = useState(product.factoryLink || "");
   const [wechatGroup, setWechatGroup] = useState(product.wechatGroup || "");
+  const [showFactorySuggest, setShowFactorySuggest] = useState(false);
+  const [showWechatSuggest, setShowWechatSuggest] = useState(false);
+  // 공장명/위챗방명/제품URL 3개 필드는 어느 쪽에서 골라도 나머지가 함께 채워지는 양방향 연동 — DB에 없는 값은 그대로 직접입력 유지(유연성 보존)
+  const applyFactory = (f) => {
+    setFactory(f.name || "");
+    if (f.wechatGroup) setWechatGroup(f.wechatGroup);
+    if (f.websiteUrl) setFactoryLink(f.websiteUrl);
+    setShowFactorySuggest(false);
+    setShowWechatSuggest(false);
+  };
   const [factoryPriceNote, setFactoryPriceNote] = useState(product.factoryPriceNote || "");
   const [containerPrintPriceC, setContainerPrintPriceC] = useState(product.containerPrintPriceC || "");
   const [containerFinishPriceC, setContainerFinishPriceC] = useState(product.containerFinishPriceC || "");
@@ -4018,13 +4028,58 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
           {tab === "factory" && (
             <div className="mt-4 space-y-5">
               <div className="grid grid-cols-3 gap-4">
-                <Field label="중국공장명" hint="공장 관리 DB와 연동">
-                  <input className={inputCls} list="factory-name-options" value={factory} onChange={(e) => setFactory(e.target.value)} placeholder="공장 목록에서 선택 또는 직접 입력" />
-                  <datalist id="factory-name-options">
-                    {factories.map((f) => <option key={f.id} value={f.name} />)}
-                  </datalist>
+                <Field label="중국공장명" hint="공장 관리 DB와 연동, 선택 시 위챗방/URL 자동입력">
+                  <div className="relative">
+                    <input
+                      className={inputCls} value={factory}
+                      onChange={(e) => { setFactory(e.target.value); setShowFactorySuggest(true); }}
+                      onFocus={() => setShowFactorySuggest(true)}
+                      onBlur={() => setTimeout(() => setShowFactorySuggest(false), 150)}
+                      placeholder="공장 목록에서 검색 또는 직접 입력"
+                    />
+                    {showFactorySuggest && factory.trim() && (() => {
+                      const q = factory.trim().toLowerCase();
+                      const matches = factories.filter((f) => (f.name || "").toLowerCase().includes(q)).slice(0, 8);
+                      if (matches.length === 0) return null;
+                      return (
+                        <div className="absolute z-50 left-0 top-full mt-1 w-full max-h-56 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                          {matches.map((f) => (
+                            <button key={f.id} type="button" onMouseDown={() => applyFactory(f)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 border-b border-slate-50 last:border-0">
+                              <div className="font-medium text-slate-700">{f.name}</div>
+                              {f.wechatGroup && <div className="text-[10px] text-slate-400">💬 {f.wechatGroup}</div>}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </Field>
-                <TextField label="위쳇단체방이름" value={wechatGroup} onChange={setWechatGroup} />
+                <Field label="위쳇단체방이름" hint="선택 시 공장명/URL 자동입력">
+                  <div className="relative">
+                    <input
+                      className={inputCls} value={wechatGroup}
+                      onChange={(e) => { setWechatGroup(e.target.value); setShowWechatSuggest(true); }}
+                      onFocus={() => setShowWechatSuggest(true)}
+                      onBlur={() => setTimeout(() => setShowWechatSuggest(false), 150)}
+                      placeholder="위챗 단체방명 검색 또는 직접 입력"
+                    />
+                    {showWechatSuggest && wechatGroup.trim() && (() => {
+                      const q = wechatGroup.trim().toLowerCase();
+                      const matches = factories.filter((f) => (f.wechatGroup || "").toLowerCase().includes(q)).slice(0, 8);
+                      if (matches.length === 0) return null;
+                      return (
+                        <div className="absolute z-50 left-0 top-full mt-1 w-full max-h-56 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                          {matches.map((f) => (
+                            <button key={f.id} type="button" onMouseDown={() => applyFactory(f)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 border-b border-slate-50 last:border-0">
+                              <div className="font-medium text-slate-700">{f.wechatGroup}</div>
+                              <div className="text-[10px] text-slate-400">🏭 {f.name}</div>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </Field>
                 <TextField label="제품URL (1688 등)" value={factoryLink} onChange={setFactoryLink} mono />
               </div>
 
@@ -4399,7 +4454,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
           {isAdmin && onAutoMergeBoxHero && <button onClick={onAutoMergeBoxHero} title="SKU/바코드가 없는 엑셀 유입 제품을 박스히어로 제품과 자동으로(안되면 수동으로) 병합합니다" className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 whitespace-nowrap">🔗 박스히어로 제품 병합</button>}
-          {isAdmin && onBulkUpdateFactoryInfo && <button onClick={() => setShowBatchFactoryUpdate(true)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">⚙️ 공장/위챗 정보 일괄 변경</button>}
+          {false && isAdmin && onBulkUpdateFactoryInfo && <button onClick={() => setShowBatchFactoryUpdate(true)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">⚙️ 공장/위챗 정보 일괄 변경</button>}
         </div>
         {onBulkDelete && (
           <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-100">
