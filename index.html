@@ -4123,12 +4123,59 @@ function ProductProposalsModal({ product, proposals, onClose, onOpenProposal }) 
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, isAdmin, initialViewProduct, onConsumeInitialView }) {
+const BATCH_FACTORY_UPDATE_CATEGORIES = ["PE튜브(5겹)", "PE튜브(2겹)", "라미튜브", "드로퍼튜브", "기능성튜브"];
+function BatchFactoryUpdateModal({ products, onRun, onClose }) {
+  const [checkedCategories, setCheckedCategories] = useState([...BATCH_FACTORY_UPDATE_CATEGORIES]);
+  const [factoryName, setFactoryName] = useState("广州侨垒包装科技有限公司");
+  const [wechatGroup, setWechatGroup] = useState("广州 튜브용기 N0453 侨垒- 嘉泰BKB");
+  const toggleCategory = (c) => setCheckedCategories((prev) => prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]);
+  const targetCount = (products || []).filter((p) => checkedCategories.includes(p.category)).length;
+  const run = () => {
+    if (checkedCategories.length === 0) { alert("대상 카테고리를 1개 이상 선택해주세요."); return; }
+    if (!factoryName.trim() || !wechatGroup.trim()) { alert("공장명과 위챗 단체방명을 입력해주세요."); return; }
+    if (!window.confirm(`선택한 카테고리(${checkedCategories.join(", ")})에 해당하는 제품 ${targetCount}개의 공장명/위챗방명을 일괄 변경할까요?`)) return;
+    onRun(checkedCategories, factoryName.trim(), wechatGroup.trim());
+    onClose();
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">⚙️ 공장/위챗 정보 일괄 변경</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-4">
+          <Field label="대상 카테고리">
+            <div className="flex flex-wrap gap-2">
+              {BATCH_FACTORY_UPDATE_CATEGORIES.map((c) => (
+                <label key={c} className={"flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border cursor-pointer " + (checkedCategories.includes(c) ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>
+                  <input type="checkbox" checked={checkedCategories.includes(c)} onChange={() => toggleCategory(c)} className="hidden" />
+                  {c}
+                </label>
+              ))}
+            </div>
+          </Field>
+          <Field label="변경할 공장명"><input className={inputCls} value={factoryName} onChange={(e) => setFactoryName(e.target.value)} /></Field>
+          <Field label="변경할 위챗 단체방명"><input className={inputCls} value={wechatGroup} onChange={(e) => setWechatGroup(e.target.value)} /></Field>
+          <p className="text-xs text-slate-500">선택된 카테고리에 해당하는 제품 <b className="text-[#1E3A8A]">{targetCount}개</b>가 변경 대상입니다.</p>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
+          <button onClick={run} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">일괄 변경 실행</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, isAdmin, initialViewProduct, onConsumeInitialView }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
   const [viewMode, setViewMode] = useState("list"); // list | card
   const [editingProduct, setEditingProduct] = useState(null);
+  const [isDuplicateFlow, setIsDuplicateFlow] = useState(false); // 지금 열려있는 편집모달이 "제품 복사"로 열린 것인지 추적(저장시 토스트 문구 분기용)
+  const [showBatchFactoryUpdate, setShowBatchFactoryUpdate] = useState(false);
   const [viewingProduct, setViewingProduct] = useState(null);
   const [viewingProductProposals, setViewingProductProposals] = useState(null);
   const [viewingSimilarProduct, setViewingSimilarProduct] = useState(null);
@@ -4163,8 +4210,24 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
 
   // 신규 등록/수정 모두 동일한 대형 모달(ProductEditModal)을 사용 — id 유무로 등록/수정 분기
   const handleSaveProduct = (id, patch) => {
-    if (id) { onUpdate(id, patch); } else { onAdd({ id: Date.now() + Math.random(), ...patch }); }
+    if (id) {
+      onUpdate(id, patch);
+    } else if (isDuplicateFlow && onAddDuplicate) {
+      onAddDuplicate({ id: Date.now() + Math.random(), ...patch }); // 복사플로우는 전용 토스트("복사되어 등록되었습니다")를 띄우는 별도 저장함수로
+    } else {
+      onAdd({ id: Date.now() + Math.random(), ...patch });
+    }
     setEditingProduct(null);
+    setIsDuplicateFlow(false);
+  };
+
+  // "📋 제품 복사": 원본의 이미지/카테고리/규격/재질/연동공장/가격정보를 그대로 복제한 채 편집모달을 바로 연다.
+  // 제품명엔 "(복사본)"을 붙이고, SKU는 중복방지를 위해 새 랜덤값으로 새로 발급하며, id/생성일/제안서연결이력(이 복사본과는 무관)은 제외한다.
+  const duplicateProduct = (p) => {
+    const { id, createdAt, proposalIds, proposalCount, ...rest } = p;
+    const newSku = "SKU-" + Math.random().toString(36).slice(2, 10).toUpperCase();
+    setIsDuplicateFlow(true);
+    setEditingProduct({ ...rest, name: `${p.name} (복사본)`, sku: newSku });
   };
 
   // SKU-XXXXXXXX 토큰 추출은 전역 extractSkuToken() 재사용 (App레벨 ZIP 업로드와 동일 로직 공유)
@@ -4295,9 +4358,12 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
       {editingProduct !== null && (
         <ProductEditModal
           product={editingProduct} factories={factories}
-          onClose={() => setEditingProduct(null)}
+          onClose={() => { setEditingProduct(null); setIsDuplicateFlow(false); }}
           onSave={handleSaveProduct}
         />
+      )}
+      {showBatchFactoryUpdate && (
+        <BatchFactoryUpdateModal products={products} onRun={onBulkUpdateFactoryInfo} onClose={() => setShowBatchFactoryUpdate(false)} />
       )}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg font-bold text-slate-800">📦 제품(아이템) 관리</h2>
@@ -4329,10 +4395,11 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
             <button onClick={() => setViewMode("list")} title="리스트 뷰" className={"px-3 py-1.5 rounded-md text-sm " + (viewMode === "list" ? "bg-[#1E3A8A] text-white" : "text-slate-500 hover:bg-slate-50")}>📋</button>
             <button onClick={() => setViewMode("card")} title="카드 뷰" className={"px-3 py-1.5 rounded-md text-sm " + (viewMode === "card" ? "bg-[#1E3A8A] text-white" : "text-slate-500 hover:bg-slate-50")}>🎴</button>
           </div>
-          <button onClick={() => setEditingProduct({})} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
+          <button onClick={() => { setEditingProduct({}); setIsDuplicateFlow(false); }} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
           {isAdmin && onAutoMergeBoxHero && <button onClick={onAutoMergeBoxHero} title="SKU/바코드가 없는 엑셀 유입 제품을 박스히어로 제품과 자동으로(안되면 수동으로) 병합합니다" className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 whitespace-nowrap">🔗 박스히어로 제품 병합</button>}
+          {isAdmin && onBulkUpdateFactoryInfo && <button onClick={() => setShowBatchFactoryUpdate(true)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">⚙️ 공장/위챗 정보 일괄 변경</button>}
         </div>
         {onBulkDelete && (
           <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-100">
@@ -4413,8 +4480,9 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex flex-col gap-1 items-stretch">
-                      <div className="grid grid-cols-2 gap-1">
-                        <button onClick={() => setEditingProduct(p)} className="text-[11px] leading-tight px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-center">✏️ 수정</button>
+                      <div className="grid grid-cols-3 gap-1">
+                        <button onClick={() => { setEditingProduct(p); setIsDuplicateFlow(false); }} className="text-[11px] leading-tight px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-center">✏️ 수정</button>
+                        <button onClick={() => duplicateProduct(p)} className="text-[11px] leading-tight px-2 py-1 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 text-center">📋 복사</button>
                         <button onClick={() => onDelete(p)} className="text-[11px] leading-tight px-2 py-1 rounded-lg border border-red-100 text-red-500 hover:bg-red-50 text-center">🗑️ 삭제</button>
                       </div>
                       <div className="grid grid-cols-2 gap-1">
@@ -4452,7 +4520,8 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
                 {p.factory && <div className="text-xs mt-0.5" style={{ color: "#1e293b" }}>🏭 {p.factory}{p.wechatGroup ? ` · 💬 ${p.wechatGroup}` : ""}</div>}
               </div>
               <div className="flex flex-col gap-1 shrink-0">
-                <button onClick={() => setEditingProduct(p)} className="text-xs text-slate-500 hover:underline whitespace-nowrap">✏️ 수정</button>
+                <button onClick={() => { setEditingProduct(p); setIsDuplicateFlow(false); }} className="text-xs text-slate-500 hover:underline whitespace-nowrap">✏️ 수정</button>
+                <button onClick={() => duplicateProduct(p)} className="text-xs text-[#1E3A8A] hover:underline whitespace-nowrap">📋 복사</button>
                 {onUseInSourcing && <button onClick={() => onUseInSourcing(p)} className="text-xs text-[#1E3A8A] hover:underline whitespace-nowrap">🔍 사용</button>}
                 <button onClick={() => setViewingSimilarProduct(p)} className="text-xs text-amber-700 hover:underline whitespace-nowrap">🔍 옵션분석</button>
                 <button onClick={() => onDelete(p)} className="text-xs text-red-400 hover:text-red-600">삭제</button>
@@ -5874,6 +5943,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [extraOptions, setExtraOptions] = useState([]);
   const [marginOverride, setMarginOverride] = useState(null);
   const [marginClientName, setMarginClientName] = useState("");
+  const [marginClientSearch, setMarginClientSearch] = useState(""); // 고객사 자동완성 검색창 입력값
+  const [showMarginClientSuggestions, setShowMarginClientSuggestions] = useState(false);
 
   useEffect(() => { setCustomsRate(customsRates[category] ?? 0); }, [category]);
   useEffect(() => { setMarginOverride(null); setSelectedFinishingIds([]); setSelectedFinishingQty({}); setGuideSelectedIds([]); setGuideTexts({}); }, [category]);
@@ -6816,6 +6887,20 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setProductsList((prev) => [rec, ...prev]);
     try { await fsAdd(COLLECTIONS.products, rec); setToast("제품이 등록되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다."); }
   };
+  const addDuplicatedProductRecord = async (rec) => {
+    setProductsList((prev) => [rec, ...prev]);
+    try { await fsAdd(COLLECTIONS.products, rec); setToast("✅ 제품이 성공적으로 복사되어 등록되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다."); }
+  };
+  // 선택한 카테고리들에 해당하는 제품 전체의 공장명/위챗단체방명을 일괄 변경
+  const bulkUpdateFactoryInfo = async (categories, factoryName, wechatGroup) => {
+    const targets = productsList.filter((p) => categories.includes(p.category));
+    const patch = { factory: factoryName, wechatGroup };
+    setProductsList((prev) => prev.map((p) => (categories.includes(p.category) ? { ...p, ...patch } : p)));
+    for (const p of targets) {
+      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, patch); } catch (e) { console.error(e); }
+    }
+    setToast(`✅ 총 ${targets.length}개 제품의 공장명 및 위챗 정보가 변경되었습니다.`);
+  };
 
   const updateProductRecord = async (id, patch) => {
     setProductsList((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -7326,7 +7411,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       {view === "products" && (
         <ProductsView
           products={productsList} factories={factoriesList} proposals={proposalList} onBack={() => setView("pipeline")}
-          onDelete={deleteProductRecord} onAdd={addProductRecord} onBulkAdd={bulkAddProducts}
+          onDelete={deleteProductRecord} onAdd={addProductRecord} onAddDuplicate={addDuplicatedProductRecord} onBulkUpdateFactoryInfo={bulkUpdateFactoryInfo} onBulkAdd={bulkAddProducts}
           onUpdate={updateProductRecord} onDedupe={dedupeProducts} onAutoAssignCategories={autoAssignCategories} onStripBrandPrefix={stripBrandPrefixFromNames}
           onUseInSourcing={(p) => { setProductToPick(p); setView("pipeline"); setActiveStep(1); }}
           onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })}
@@ -7383,10 +7468,42 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                   <Field label="위챗 그룹방"><input className={inputCls} value={itemWechatGroup} onChange={(e) => setItemWechatGroup(e.target.value)} placeholder="위챗 단체방명" /></Field>
                 </div>
                 <Field label="고객사 선택" hint="선택 시 업체 난이도 마진 차등율이 자동 반영됩니다">
-                  <select className={inputCls} value={marginClientName} onChange={(e) => setMarginClientName(e.target.value)}>
-                    <option value="">선택 안 함 (기준 마진율 그대로)</option>
-                    {clientsList.map((c) => <option key={c.id} value={c.name}>{c.name} ({c.difficulty || "표준"})</option>)}
-                  </select>
+                  <div className="relative">
+                    <input
+                      className={inputCls}
+                      value={marginClientSearch}
+                      onChange={(e) => { setMarginClientSearch(e.target.value); setShowMarginClientSuggestions(true); if (!e.target.value.trim()) setMarginClientName(""); }}
+                      onFocus={() => setShowMarginClientSuggestions(true)}
+                      onBlur={() => setTimeout(() => setShowMarginClientSuggestions(false), 150)}
+                      placeholder="고객사명 일부를 입력해 검색 (예: 미소, 코스)"
+                    />
+                    {showMarginClientSuggestions && (() => {
+                      const q = marginClientSearch.trim().toLowerCase();
+                      const matches = q ? clientsList.filter((c) => (c.name || "").toLowerCase().includes(q)) : clientsList;
+                      return (
+                        <div className="absolute z-50 left-0 top-full mt-1 w-full max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                          <button
+                            type="button"
+                            onMouseDown={() => { setMarginClientName(""); setMarginClientSearch(""); setShowMarginClientSuggestions(false); }}
+                            className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 border-b border-slate-50"
+                          >
+                            선택 안 함 (기준 마진율 그대로)
+                          </button>
+                          {matches.length === 0 && <p className="px-3 py-2 text-xs text-slate-300">일치하는 고객사가 없습니다.</p>}
+                          {matches.map((c) => (
+                            <button
+                              key={c.id} type="button"
+                              onMouseDown={() => { setMarginClientName(c.name); setMarginClientSearch(c.name); setShowMarginClientSuggestions(false); }}
+                              className="w-full flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50 text-left border-b border-slate-50 last:border-0"
+                            >
+                              <span className="text-slate-700">{c.name}</span>
+                              <span className={"text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 " + DIFFICULTY_BADGE_STYLE[c.difficulty || "표준"]}>{c.difficulty || "표준"}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
                   {marginClientName && (() => {
                     const d = (clientsList.find((c) => c.name === marginClientName) || {}).difficulty || "표준";
                     const adj = difficultyMargins[d] || 0;
