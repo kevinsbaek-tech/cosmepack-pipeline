@@ -3134,7 +3134,46 @@ function ClientFormModal({ client, onClose, onSave }) {
   );
 }
 
-function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, onOpenProposal, onBulkDelete, isAdmin }) {
+// 범용 "선택 항목 병합" 모달 — 공장병합(FactoryMergeModal)과 동일한 패턴을 제품/업체에도 재사용
+function GenericMergeModal({ title, items, getLabel, getSubLabel, confirmText, onRun, onClose }) {
+  const [primaryId, setPrimaryId] = useState(items[0] && items[0].id);
+  const run = () => {
+    if (!primaryId) return;
+    if (!window.confirm(confirmText)) return;
+    onRun(items, primaryId);
+    onClose();
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">{title}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-3">
+          <p className="text-xs text-slate-500">대표 항목으로 사용할 1개를 선택해주세요. 나머지는 삭제되고, 연결된 데이터는 전부 대표 항목으로 옮겨집니다.</p>
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {items.map((it) => (
+              <label key={it.id} className={"flex items-center gap-2.5 px-3 py-2.5 rounded-lg border cursor-pointer " + (primaryId === it.id ? "border-[#1E3A8A] bg-[#1E3A8A]/5" : "border-slate-200")}>
+                <input type="radio" name="primaryMergeItem" checked={primaryId === it.id} onChange={() => setPrimaryId(it.id)} />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-800 truncate">{getLabel(it)}</div>
+                  {getSubLabel && <div className="text-xs text-slate-400 truncate">{getSubLabel(it)}</div>}
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
+          <button onClick={run} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">병합 실행</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, onOpenProposal, onBulkDelete, onMergeClients, isAdmin }) {
   const [openClient, setOpenClient] = useState(null);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -3143,6 +3182,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
   const [keyClientFilter, setKeyClientFilter] = useState(false); // true면 ⭐주거래업체만 모아보기
+  const [showClientMergeModal, setShowClientMergeModal] = useState(false);
   const PAGE_SIZE = 20;
 
   // 업체명이 동일한 중복 레코드를 하나로 병합 — 대표 카드는 먼저 등록된 값을 기준으로 하되 비어있는 필드는 나중 레코드 값으로 보강,
@@ -3191,6 +3231,17 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
     <main className="max-w-6xl mx-auto px-6 py-8">
       {showForm && <ClientFormModal onClose={() => setShowForm(false)} onSave={(id, c) => { onAdd(c); setShowForm(false); }} />}
       {editingClient && <ClientFormModal client={editingClient} onClose={() => setEditingClient(null)} onSave={(id, patch) => { onUpdate(id, patch); setEditingClient(null); }} />}
+      {showClientMergeModal && onMergeClients && (
+        <GenericMergeModal
+          title="🔗 선택 업체 병합"
+          items={mergedClients.filter((c) => selectedIds.includes(c.id))}
+          getLabel={(c) => c.name}
+          getSubLabel={(c) => `${c.channel || ""} · 견적이력 ${proposals.filter((p) => p.clientName === c.name).length}건`}
+          confirmText={`선택한 ${selectedIds.length}개 업체를 대표 고객사 1개로 병합할까요? 나머지 업체는 삭제되고, 관련 제안서/샘플 데이터는 전부 대표 고객사로 이전됩니다.`}
+          onRun={async (items, primaryId) => { await onMergeClients(items, primaryId); setSelectedIds([]); }}
+          onClose={() => setShowClientMergeModal(false)}
+        />
+      )}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg font-bold text-slate-800">🏢 업체(고객사) 관리</h2>
         <div className="flex gap-2 items-center flex-wrap">
@@ -3209,6 +3260,16 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
               >
                 🗑️ 선택 삭제 ({selectedIds.length}개)
               </button>
+              {onMergeClients && (
+                <button
+                  onClick={() => setShowClientMergeModal(true)}
+                  disabled={selectedIds.length < 2}
+                  title={selectedIds.length < 2 ? "병합하려면 업체를 2개 이상 선택해주세요" : ""}
+                  className="text-xs px-3 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  🔗 선택 업체 병합 ({selectedIds.length}개)
+                </button>
+              )}
             </React.Fragment>
           )}
           <button onClick={() => setShowForm(true)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 업체 등록</button>
@@ -4312,7 +4373,7 @@ function BatchFactoryUpdateModal({ products, onRun, onClose }) {
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, isAdmin, initialViewProduct, onConsumeInitialView }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -4320,6 +4381,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
   const [editingProduct, setEditingProduct] = useState(null);
   const [isDuplicateFlow, setIsDuplicateFlow] = useState(false); // 지금 열려있는 편집모달이 "제품 복사"로 열린 것인지 추적(저장시 토스트 문구 분기용)
   const [showBatchFactoryUpdate, setShowBatchFactoryUpdate] = useState(false);
+  const [showProductMergeModal, setShowProductMergeModal] = useState(false);
   const [viewingProduct, setViewingProduct] = useState(null);
   const [viewingProductProposals, setViewingProductProposals] = useState(null);
   const [viewingSimilarProduct, setViewingSimilarProduct] = useState(null);
@@ -4509,6 +4571,17 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
       {showBatchFactoryUpdate && (
         <BatchFactoryUpdateModal products={products} onRun={onBulkUpdateFactoryInfo} onClose={() => setShowBatchFactoryUpdate(false)} />
       )}
+      {showProductMergeModal && onMergeProducts && (
+        <GenericMergeModal
+          title="🔗 선택 제품 병합"
+          items={products.filter((p) => selectedIds.includes(p.id))}
+          getLabel={(p) => p.name}
+          getSubLabel={(p) => `${p.category || "카테고리 미지정"} · 연결 제안서 ${getLinkedProposals(p, proposals).length}건`}
+          confirmText={`선택한 ${selectedIds.length}개 제품을 대표 제품 1개로 병합할까요? 나머지 제품은 삭제되고, 연결된 제안서/샘플 데이터는 전부 대표 제품으로 이전됩니다.`}
+          onRun={async (items, primaryId) => { await onMergeProducts(items, primaryId); setSelectedIds([]); }}
+          onClose={() => setShowProductMergeModal(false)}
+        />
+      )}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg font-bold text-slate-800">📦 제품(아이템) 관리</h2>
         <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
@@ -4542,6 +4615,16 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           <button onClick={() => { setEditingProduct({}); setIsDuplicateFlow(false); }} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
+          {isAdmin && (
+            <button
+              onClick={() => setShowProductMergeModal(true)}
+              disabled={selectedIds.length < 2}
+              title={selectedIds.length < 2 ? "병합하려면 제품을 2개 이상 선택해주세요" : ""}
+              className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            >
+              🔗 선택 제품 병합 ({selectedIds.length}개)
+            </button>
+          )}
           {isAdmin && onAutoMergeBoxHero && <button onClick={onAutoMergeBoxHero} title="SKU/바코드가 없는 엑셀 유입 제품을 박스히어로 제품과 자동으로(안되면 수동으로) 병합합니다" className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 whitespace-nowrap">🔗 박스히어로 제품 병합</button>}
           {false && isAdmin && onBulkUpdateFactoryInfo && <button onClick={() => setShowBatchFactoryUpdate(true)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">⚙️ 공장/위챗 정보 일괄 변경</button>}
         </div>
@@ -6306,6 +6389,61 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
     setToast("✅ 선택한 공장이 대표 공장으로 성공적으로 병합 연동되었습니다.");
   };
+  // 선택한 제품들을 대표 제품 1개로 병합 — 서브제품이 갖고있던 proposalIds(제안서 연결이력)를 합산하고,
+  // 서브제품명을 참조하던 샘플의 productName도 대표제품명으로 이전한 뒤 서브제품은 삭제한다.
+  const mergeProducts = async (selectedProducts, primaryId) => {
+    const primary = selectedProducts.find((p) => p.id === primaryId);
+    const subs = selectedProducts.filter((p) => p.id !== primaryId);
+    if (!primary || subs.length === 0) return;
+
+    // 1) 제안서 연결이력(proposalIds) 합산
+    const mergedProposalIds = [...new Set([...(primary.proposalIds || []), ...subs.flatMap((p) => p.proposalIds || [])])];
+    const patch = { proposalIds: mergedProposalIds, proposalCount: mergedProposalIds.length };
+    setProductsList((prev) => prev.map((p) => (p.id === primaryId ? { ...p, ...patch } : p)).filter((p) => !subs.some((s) => s.id === p.id)));
+    try { if (FIREBASE_ENABLED && typeof primaryId === "string") await fsUpdate(COLLECTIONS.products, primaryId, patch); } catch (e) { console.error(e); }
+
+    // 2) 서브제품명을 참조하던 샘플의 productName을 대표제품명으로 cascade
+    const subNames = subs.map((p) => p.name);
+    const affectedSamples = sampleList.filter((s) => subNames.includes(s.productName));
+    setSampleList((prev) => prev.map((s) => (subNames.includes(s.productName) ? { ...s, productName: primary.name } : s)));
+    for (const s of affectedSamples) {
+      try { if (FIREBASE_ENABLED && typeof s.id === "string") await fsUpdate(COLLECTIONS.samples, s.id, { productName: primary.name }); } catch (e) { console.error(e); }
+    }
+
+    // 3) 서브제품 레코드 삭제
+    for (const p of subs) {
+      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsDelete(COLLECTIONS.products, p.id); } catch (e) { console.error(e); }
+    }
+
+    setToast("✅ 선택한 제품이 대표 제품으로 병합되었습니다.");
+  };
+  // 선택한 업체들을 대표 고객사 1개로 병합 — 서브업체명을 참조하던 제안서/샘플의 clientName을 대표업체명으로 이전(Cascade)하고
+  // 서브업체(동일명 자동병합된 카드라면 그 밑의 원본 레코드까지 전부)는 삭제한다.
+  const mergeClients = async (selectedClients, primaryId) => {
+    const primary = selectedClients.find((c) => c.id === primaryId);
+    const subs = selectedClients.filter((c) => c.id !== primaryId);
+    if (!primary || subs.length === 0) return;
+    const subNames = subs.map((c) => c.name);
+
+    const affectedProposals = proposalList.filter((p) => subNames.includes(p.clientName));
+    const affectedSamples = sampleList.filter((s) => subNames.includes(s.clientName));
+    setProposalList((prev) => prev.map((p) => (subNames.includes(p.clientName) ? { ...p, clientName: primary.name } : p)));
+    setSampleList((prev) => prev.map((s) => (subNames.includes(s.clientName) ? { ...s, clientName: primary.name } : s)));
+    for (const p of affectedProposals) {
+      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.proposals, p.id, { clientName: primary.name }); } catch (e) { console.error(e); }
+    }
+    for (const s of affectedSamples) {
+      try { if (FIREBASE_ENABLED && typeof s.id === "string") await fsUpdate(COLLECTIONS.samples, s.id, { clientName: primary.name }); } catch (e) { console.error(e); }
+    }
+
+    const allSubIds = subs.flatMap((c) => (c._mergedIds && c._mergedIds.length > 0) ? c._mergedIds : [c.id]);
+    setClientsList((prev) => prev.filter((c) => !allSubIds.includes(c.id)));
+    for (const id of allSubIds) {
+      try { if (FIREBASE_ENABLED && typeof id === "string") await fsDelete(COLLECTIONS.clients, id); } catch (e) { console.error(e); }
+    }
+
+    setToast("✅ 선택한 업체가 대표 고객사로 병합 연동되었습니다.");
+  };
   const updateFactoryRecord = async (id, patch) => {
     const oldFactory = factoriesList.find((f) => f.id === id);
     setFactoriesList((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
@@ -7590,7 +7728,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         />
       )}
       {view === "clients" && (
-        <ClientsView clients={clientsList} proposals={proposalList} onBack={() => setView("pipeline")} onAdd={addClientRecord} onUpdate={updateClientRecord} onDelete={deleteClientRecord} onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })} onBulkDelete={bulkDeleteClients} isAdmin={isAdmin} />
+        <ClientsView clients={clientsList} proposals={proposalList} onBack={() => setView("pipeline")} onAdd={addClientRecord} onUpdate={updateClientRecord} onDelete={deleteClientRecord} onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })} onBulkDelete={bulkDeleteClients} onMergeClients={mergeClients} isAdmin={isAdmin} />
       )}
       {view === "tasks" && (
         <TaskAssignmentView
@@ -7611,7 +7749,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       {view === "products" && (
         <ProductsView
           products={productsList} factories={factoriesList} proposals={proposalList} onBack={() => setView("pipeline")}
-          onDelete={deleteProductRecord} onAdd={addProductRecord} onAddDuplicate={addDuplicatedProductRecord} onBulkUpdateFactoryInfo={bulkUpdateFactoryInfo} onBulkAdd={bulkAddProducts}
+          onDelete={deleteProductRecord} onAdd={addProductRecord} onAddDuplicate={addDuplicatedProductRecord} onBulkUpdateFactoryInfo={bulkUpdateFactoryInfo} onMergeProducts={mergeProducts} onBulkAdd={bulkAddProducts}
           onUpdate={updateProductRecord} onDedupe={dedupeProducts} onAutoAssignCategories={autoAssignCategories} onStripBrandPrefix={stripBrandPrefixFromNames}
           onUseInSourcing={(p) => { setProductToPick(p); setView("pipeline"); setActiveStep(1); }}
           onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })}
