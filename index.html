@@ -4615,16 +4615,14 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           <button onClick={() => { setEditingProduct({}); setIsDuplicateFlow(false); }} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
-          {isAdmin && (
-            <button
-              onClick={() => setShowProductMergeModal(true)}
-              disabled={selectedIds.length < 2}
-              title={selectedIds.length < 2 ? "병합하려면 제품을 2개 이상 선택해주세요" : ""}
-              className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-            >
-              🔗 선택 제품 병합 ({selectedIds.length}개)
-            </button>
-          )}
+          <button
+            onClick={() => setShowProductMergeModal(true)}
+            disabled={selectedIds.length < 2}
+            title={selectedIds.length < 2 ? "병합하려면 제품을 2개 이상 선택해주세요" : ""}
+            className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            🔗 선택 제품 병합 ({selectedIds.length}개)
+          </button>
           {isAdmin && onAutoMergeBoxHero && <button onClick={onAutoMergeBoxHero} title="SKU/바코드가 없는 엑셀 유입 제품을 박스히어로 제품과 자동으로(안되면 수동으로) 병합합니다" className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 whitespace-nowrap">🔗 박스히어로 제품 병합</button>}
           {false && isAdmin && onBulkUpdateFactoryInfo && <button onClick={() => setShowBatchFactoryUpdate(true)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">⚙️ 공장/위챗 정보 일괄 변경</button>}
         </div>
