@@ -20,6 +20,7 @@
   .pre-line { white-space: pre-line; }
   @keyframes calcTooltipFadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
   .calc-tooltip { animation: calcTooltipFadeIn 0.15s ease-out; }
+  .pdf-supplier-table td { word-break: break-all; overflow-wrap: break-word; }
 </style>
 </head>
 <body>
@@ -2415,7 +2416,7 @@ function PdfPreview({ open, onClose, data, supplierLogo }) {
               </span>
             </div>
           </div>
-          <table className="text-xs border border-slate-300" style={{ color: DARK, width: "48%" }}><tbody>
+          <table className="pdf-supplier-table text-xs border border-slate-300" style={{ color: DARK, width: "48%", tableLayout: "fixed" }}><tbody>
             <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50 whitespace-nowrap">사업자번호</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.bizNo} onChange={(v) => setSupplier({ ...supplier, bizNo: v })} className="w-full" /></td></tr>
             <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">업체명</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.company} onChange={(v) => setSupplier({ ...supplier, company: v })} className="w-full" /></td><td className="border border-slate-300 px-2 py-1 bg-slate-50">대표</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.ceo} onChange={(v) => setSupplier({ ...supplier, ceo: v })} className="w-16" />&nbsp;(인)</td></tr>
             <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">주소</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.address} onChange={(v) => setSupplier({ ...supplier, address: v })} className="w-full" /></td></tr>
@@ -2577,7 +2578,8 @@ function SourcingCard({ item, checked, onToggle, onSend, onEdit, onDelete }) {
   );
 }
 
-function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSendBulk, products, pickedProduct, onConsumePicked }) {
+function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSendBulk, products, pickedProduct, onConsumePicked, currentUserName }) {
+  const [sourcingFilter, setSourcingFilter] = useState("mine"); // mine=내 조사건(기본) | others=직원 조사건 | all=전체 조사건
   const [editingSourcingItem, setEditingSourcingItem] = useState(null);
   const [image, setImage] = useState("");
   const [name, setName] = useState("");
@@ -2668,14 +2670,20 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
   };
 
   const toggle = (id) => setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  const allChecked = items.length > 0 && selected.length === items.length;
-  const toggleAll = () => setSelected(allChecked ? [] : items.map((i) => i.id));
+  const filteredItems = useMemo(() => items.filter((it) => {
+    if (sourcingFilter === "mine") return it.createdBy === currentUserName;
+    if (sourcingFilter === "others") return it.createdBy && it.createdBy !== currentUserName;
+    return true;
+  }), [items, sourcingFilter, currentUserName]);
+  const allChecked = filteredItems.length > 0 && selected.length === filteredItems.length;
+  const toggleAll = () => setSelected(allChecked ? [] : filteredItems.map((i) => i.id));
   const sendSelected = () => {
-    const chosen = items.filter((i) => selected.includes(i.id));
+    const chosen = filteredItems.filter((i) => selected.includes(i.id));
     if (chosen.length === 0) return;
     onSendBulk(chosen);
     setSelected([]);
   };
+  useEffect(() => { setSelected([]); }, [sourcingFilter]);
 
   return (
     <main className="max-w-7xl mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -2792,10 +2800,16 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
 
       <div className="space-y-4">
         <div className="flex items-center justify-between px-1">
-          <span className="text-xs font-semibold text-slate-400 tracking-wide">등록된 가격조사 목록 ({items.length}건)</span>
+          <span className="text-xs font-semibold text-slate-400 tracking-wide">등록된 가격조사 목록 ({filteredItems.length}건)</span>
         </div>
 
-        {items.length > 0 && (
+        <div className="flex gap-1.5">
+          {[["mine", "👤 내 조사 건"], ["others", "👥 직원 조사 건"], ["all", "🌐 전체 조사 건"]].map(([key, label]) => (
+            <button key={key} onClick={() => setSourcingFilter(key)} className={"text-xs px-3 py-1.5 rounded-full font-medium whitespace-nowrap " + (sourcingFilter === key ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>{label}</button>
+          ))}
+        </div>
+
+        {filteredItems.length > 0 && (
           <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl px-4 py-3">
             <label className="flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer">
               <input type="checkbox" checked={allChecked} onChange={toggleAll} className="w-4 h-4 accent-[#1E3A8A]" />
@@ -2811,11 +2825,13 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
           </div>
         )}
 
-        {items.length === 0 ? (
-          <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">등록된 가격조사 건이 없습니다.</div>
+        {filteredItems.length === 0 ? (
+          <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">
+            {sourcingFilter === "mine" ? "내가 등록한 가격조사 건이 없습니다." : sourcingFilter === "others" ? "다른 직원이 등록한 가격조사 건이 없습니다." : "등록된 가격조사 건이 없습니다."}
+          </div>
         ) : (
           <div className="space-y-3">
-            {items.map((it) => (
+            {filteredItems.map((it) => (
               <SourcingCard key={it.id} item={it} checked={selected.includes(it.id)} onToggle={toggle} onSend={onSend}
                 onEdit={setEditingSourcingItem} onDelete={onDeleteItem} />
             ))}
@@ -7372,9 +7388,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   };
 
   const addSourcingItem = async (item) => {
-    setSourcingItems((prev) => [item, ...prev]); // 즉시 화면 반영 (로컬 캐시)
+    const rec = { ...item, createdBy: (roleUser && roleUser.displayName) || "" }; // 현재 로그인한 계정을 작성자로 자동기록
+    setSourcingItems((prev) => [rec, ...prev]); // 즉시 화면 반영 (로컬 캐시)
     try {
-      await fsAdd(COLLECTIONS.sourcing, item);
+      await fsAdd(COLLECTIONS.sourcing, rec);
       setToast(FIREBASE_ENABLED ? "가격조사 건이 Firestore에 저장되었습니다." : "가격조사 건이 등록되었습니다. (로컬 모드 — firebaseConfig 설정 필요)");
     } catch (e) {
       console.error(e);
@@ -7770,7 +7787,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           <div className="max-w-7xl mx-auto px-6 pt-6"><div className="bg-slate-100 text-slate-500 text-xs px-4 py-2 rounded-lg">🔒 조회 전용 모드입니다. 목록에서 "✏️ 수정"으로 불러와야 편집할 수 있습니다.</div></div>
         )}
         <fieldset disabled={proposalReadOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
-          <SourcingStage items={sourcingItems} onAdd={addSourcingItem} onUpdateItem={updateSourcingItem} onDeleteItem={deleteSourcingItem} onSend={sendToProposal} onSendBulk={sendBulkToProposal} products={productsList} pickedProduct={productToPick} onConsumePicked={() => setProductToPick(null)} />
+          <SourcingStage items={sourcingItems} onAdd={addSourcingItem} onUpdateItem={updateSourcingItem} onDeleteItem={deleteSourcingItem} onSend={sendToProposal} onSendBulk={sendBulkToProposal} products={productsList} pickedProduct={productToPick} onConsumePicked={() => setProductToPick(null)} currentUserName={(roleUser && roleUser.displayName) || ""} />
         </fieldset>
         </>
       )}
