@@ -7634,7 +7634,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 {m.label}
               </button>
             ))}
-            {isAdmin && <button onClick={() => setSettingsOpen(true)} className="text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors bg-white/15 hover:bg-white/25">⚙️ 기준정보</button>}
+            <button onClick={() => setSettingsOpen(true)} className="text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors bg-white/15 hover:bg-white/25">⚙️ 기준정보</button>
             {isAdmin && <button onClick={() => setAccountModalOpen(true)} className="text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors bg-white/15 hover:bg-white/25">👥 계정 관리</button>}
           </div>
         </div>
