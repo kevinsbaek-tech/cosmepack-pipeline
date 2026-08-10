@@ -7575,7 +7575,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               {fsErrors.map((e) => <div key={e.collection}>· {e.message}</div>)}
               {fsSlowWarning && <div>· 8초가 지나도 서버로부터 응답이 전혀 없습니다. 이 계정의 인터넷/네트워크(회사 방화벽, VPN, 보안 프로그램 등)가 Firebase 접속을 막고 있을 수 있습니다. 다른 네트워크(핫스팟 등)에서 다시 시도해보시고, 계속되면 이 메시지 그대로 캡처해서 보내주세요.</div>}
             </div>
-            <button onClick={() => { setFsErrors([]); setFsSlowWarning(false); }} className="text-white/80 hover:text-white text-sm shrink-0">✕</button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={() => window.location.reload()} className="text-xs px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 whitespace-nowrap">🔄 다시 시도</button>
+              <button onClick={() => { setFsErrors([]); setFsSlowWarning(false); }} className="text-white/80 hover:text-white text-sm">✕</button>
+            </div>
           </div>
         </div>
       )}
