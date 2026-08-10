@@ -96,7 +96,7 @@ async function fsDelete(collectionName, id) {
 }
 // 실시간 구독: onSnapshot으로 목록을 항상 최신 상태로 유지 (연결 안 됐으면 아무 것도 안 함 → 로컬 state만 사용)
 // orderBy를 서버 쿼리에 걸지 않음(createdAt 필드가 없는 기존 문서가 결과에서 통째로 제외되는 것을 방지) — 대신 받은 뒤 클라이언트에서 정렬
-function fsSubscribe(collectionName, onData) {
+function fsSubscribe(collectionName, onData, onError) {
   if (!db) return () => {};
   return db.collection(collectionName).onSnapshot(
     (snap) => {
@@ -108,7 +108,10 @@ function fsSubscribe(collectionName, onData) {
       });
       onData(list);
     },
-    (err) => console.error(`${collectionName} 구독 오류:`, err)
+    (err) => {
+      console.error(`${collectionName} 구독 오류:`, err);
+      if (onError) onError(collectionName, err);
+    }
   );
 }
 
@@ -6248,15 +6251,23 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
   // Firestore 연결 시 실시간 구독 — 미연결이면 로컬 state만 사용
   useEffect(() => {
-    const unsub1 = fsSubscribe(COLLECTIONS.sourcing, (list) => setSourcingItems(list));
-    const unsub2 = fsSubscribe(COLLECTIONS.proposals, (list) => setProposalList(list));
-    const unsub3 = fsSubscribe(COLLECTIONS.clients, (list) => setClientsList(list));
-    const unsub4 = fsSubscribe(COLLECTIONS.factories, (list) => setFactoriesList(list));
-    const unsub5 = fsSubscribe(COLLECTIONS.products, (list) => setProductsList(list));
-    const unsub6 = fsSubscribe(COLLECTIONS.excelArchive, (list) => setExcelArchiveList(list));
-    const unsub7 = fsSubscribe(COLLECTIONS.tasks, (list) => setTaskList(list));
-    const unsub8 = fsSubscribe(COLLECTIONS.samples, (list) => setSampleList(list));
-    const unsub9 = fsSubscribe(COLLECTIONS.sampleStock, (list) => setSampleStockList(list));
+    // 구독 오류(특히 권한거부)를 콘솔뿐 아니라 화면에도 노출 — "데이터가 0개로 보인다"는 문의가 실은
+    // 필터링이 아니라 이 계정에 Firestore 읽기 권한이 없어서 생기는 문제일 수 있어, 원인을 바로 확인할 수 있게 한다.
+    const handleFsError = (collectionName, err) => {
+      const denied = err && (err.code === "permission-denied" || /permission/i.test(err.message || ""));
+      setToast(denied
+        ? `⚠️ "${collectionName}" 데이터를 불러올 권한이 없습니다. Firebase 보안 규칙을 확인해주세요.`
+        : `⚠️ "${collectionName}" 데이터를 불러오는 중 오류가 발생했습니다.`);
+    };
+    const unsub1 = fsSubscribe(COLLECTIONS.sourcing, (list) => setSourcingItems(list), handleFsError);
+    const unsub2 = fsSubscribe(COLLECTIONS.proposals, (list) => setProposalList(list), handleFsError);
+    const unsub3 = fsSubscribe(COLLECTIONS.clients, (list) => setClientsList(list), handleFsError);
+    const unsub4 = fsSubscribe(COLLECTIONS.factories, (list) => setFactoriesList(list), handleFsError);
+    const unsub5 = fsSubscribe(COLLECTIONS.products, (list) => setProductsList(list), handleFsError);
+    const unsub6 = fsSubscribe(COLLECTIONS.excelArchive, (list) => setExcelArchiveList(list), handleFsError);
+    const unsub7 = fsSubscribe(COLLECTIONS.tasks, (list) => setTaskList(list), handleFsError);
+    const unsub8 = fsSubscribe(COLLECTIONS.samples, (list) => setSampleList(list), handleFsError);
+    const unsub9 = fsSubscribe(COLLECTIONS.sampleStock, (list) => setSampleStockList(list), handleFsError);
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); };
   }, []);
   const [clientModal, setClientModal] = useState({ open: false, mode: "save" });
