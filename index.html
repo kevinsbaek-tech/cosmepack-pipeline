@@ -2419,12 +2419,19 @@ function PdfPreview({ open, onClose, data, supplierLogo }) {
               </span>
             </div>
           </div>
-          <table className="pdf-supplier-table text-xs border border-slate-300" style={{ color: DARK, width: "48%", tableLayout: "fixed" }}><tbody>
-            <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50 whitespace-nowrap">사업자번호</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.bizNo} onChange={(v) => setSupplier({ ...supplier, bizNo: v })} className="w-full" /></td></tr>
-            <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">업체명</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.company} onChange={(v) => setSupplier({ ...supplier, company: v })} className="w-full" /></td><td className="border border-slate-300 px-2 py-1 bg-slate-50">대표</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.ceo} onChange={(v) => setSupplier({ ...supplier, ceo: v })} className="w-16" />&nbsp;(인)</td></tr>
-            <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">주소</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.address} onChange={(v) => setSupplier({ ...supplier, address: v })} className="w-full" /></td></tr>
-            <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">업태</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizType} onChange={(v) => setSupplier({ ...supplier, bizType: v })} className="w-full" /></td><td className="border border-slate-300 px-2 py-1 bg-slate-50">종목</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizItem} onChange={(v) => setSupplier({ ...supplier, bizItem: v })} className="w-full" /></td></tr>
-            <tr><td className="border border-slate-300 px-2 py-1 bg-slate-50">전화</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.tel} onChange={(v) => setSupplier({ ...supplier, tel: v })} className="w-full" /></td><td className="border border-slate-300 px-2 py-1 bg-slate-50">팩스</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.fax} onChange={(v) => setSupplier({ ...supplier, fax: v })} className="w-full" /></td></tr>
+          <table className="pdf-supplier-table text-xs border border-slate-300" style={{ color: DARK, width: "48%", tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: "60px" }} />
+              <col style={{ width: "45%" }} />
+              <col style={{ width: "44px" }} />
+              <col />
+            </colgroup>
+            <tbody>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">사업자번호</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.bizNo} onChange={(v) => setSupplier({ ...supplier, bizNo: v })} className="w-full" /></td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">업체명</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.company} onChange={(v) => setSupplier({ ...supplier, company: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">대표</td><td className="border border-slate-300 px-2 py-1 whitespace-nowrap"><EditField value={supplier.ceo} onChange={(v) => setSupplier({ ...supplier, ceo: v })} className="w-16" />&nbsp;(인)</td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">주소</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.address} onChange={(v) => setSupplier({ ...supplier, address: v })} className="w-full" /></td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">업태</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizType} onChange={(v) => setSupplier({ ...supplier, bizType: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">종목</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizItem} onChange={(v) => setSupplier({ ...supplier, bizItem: v })} className="w-full" /></td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">전화</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.tel} onChange={(v) => setSupplier({ ...supplier, tel: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">팩스</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.fax} onChange={(v) => setSupplier({ ...supplier, fax: v })} className="w-full" /></td></tr>
           </tbody></table>
         </div>
 
@@ -2595,6 +2602,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
   const [link, setLink] = useState("");
   const [factoryLink, setFactoryLink] = useState("");
   const [spec, setSpec] = useState("");
+  const [category, setCategory] = useState(""); // 기존 제품 DB에서 불러온 제품의 카테고리(제안가 계산 화면으로 넘어갈 때 그대로 반영됨)
   const [selected, setSelected] = useState([]);
   const [productSearch, setProductSearch] = useState("");
   const [showProductPicker, setShowProductPicker] = useState(false);
@@ -2640,6 +2648,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
     setName(p.name || "");
     setImage(p.image || "");
     setSpec([p.specSize ? `사이즈: ${p.specSize}` : "", p.material ? `재질: ${p.material}` : ""].filter(Boolean).join("\n"));
+    setCategory(p.category || ""); // 불러온 제품의 카테고리를 그대로 캡처 — 나중에 제안가 계산 화면으로 넘어갈 때 자동 반영됨
     setFactory(p.factory || "");
     setWechatGroup(p.wechatGroup || "");
     setFactoryLink(p.factoryLink || "");
@@ -2666,10 +2675,10 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
       id: Date.now(), image, name, rmbCost: Number(rmbCost), quantity: qty,
       totalShippingRmb: Number(totalShippingRmb) || 0,
       unitShippingRmb: qty > 0 ? (Number(totalShippingRmb) || 0) / qty : 0,
-      factory, factoryContact, wechatGroup, link, factoryLink, spec,
+      factory, factoryContact, wechatGroup, link, factoryLink, spec, category,
     });
     setImage(""); setName(""); setRmbCost(""); setQuantity(""); setTotalShippingRmb("");
-    setFactory(""); setFactoryContact(""); setWechatGroup(""); setLink(""); setFactoryLink(""); setSpec("");
+    setFactory(""); setFactoryContact(""); setWechatGroup(""); setLink(""); setFactoryLink(""); setSpec(""); setCategory("");
   };
 
   const toggle = (id) => setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -6303,6 +6312,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const materialLine = specLines.find((l) => l.includes("재질")) || "";
     setSpecSize(sizeLine.replace(/사이즈[:\s]*/, "").trim());
     setMaterial(materialLine.replace(/재질[:\s]*/, "").trim());
+    setCategory(sourcingItem.category || CATEGORIES[0]); // 불러온 제품의 카테고리를 그대로 반영 — category state가 바뀌면 관세율/마진율/후가공목록이 전부 자동으로 다시 계산됨
     setQuantity(sourcingItem.quantity || 3000);
     setRmbBase(sourcingItem.rmbCost || 0);
     setRmbBox(0); setRmbInspect(0);
