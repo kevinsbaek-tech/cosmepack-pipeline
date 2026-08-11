@@ -49,6 +49,37 @@ const firebaseConfig = {
   measurementId: "G-5VV62PN7KP",
 };
 
+/* =========================================================================
+   한글 URL 해시 라우팅 — 상단 메뉴 이동시 주소창이 "#업무지시"처럼 한글로 바뀌고,
+   새로고침(F5)이나 뒤로가기를 해도 같은 한글 해시를 읽어서 그 화면으로 그대로 복원된다.
+========================================================================= */
+const VIEW_TO_HASH = { tasks: "업무지시", proposals: "제안서목록", excel: "엑셀보관함", products: "제품관리", clients: "업체관리", factories: "공장관리" };
+const HASH_TO_VIEW = Object.fromEntries(Object.entries(VIEW_TO_HASH).map(([k, v]) => [v, k]));
+// location.hash를 { view: "제품관리", page: 2 } 형태로 해석. "#제품관리?페이지=2" 형태를 읽는다.
+function parseKoreanHash() {
+  try {
+    const raw = decodeURIComponent(window.location.hash || "").replace(/^#/, "");
+    if (!raw) return { view: "", page: 1 };
+    const [viewPart, queryPart] = raw.split("?");
+    let page = 1;
+    if (queryPart) {
+      const params = new URLSearchParams(queryPart);
+      const p = parseInt(params.get("페이지"), 10);
+      if (p > 0) page = p;
+    }
+    return { view: viewPart, page };
+  } catch (e) {
+    return { view: "", page: 1 };
+  }
+}
+// 특정 리스트 화면(제품관리 등) 안에서 페이지 번호가 바뀔 때마다 주소창 해시를 "#제품관리?페이지=N"으로 갱신.
+// 이 화면이 화면에 떠 있을 때만(조건부 렌더링으로 마운트되어 있을 때만) 호출되므로 다른 화면의 해시를 덮어쓸 걱정이 없다.
+function useHashPageSync(koreanLabel, page) {
+  useEffect(() => {
+    window.location.hash = page > 1 ? `${koreanLabel}?페이지=${page}` : koreanLabel;
+  }, [koreanLabel, page]);
+}
+
 const FIREBASE_ENABLED = firebaseConfig.apiKey !== "YOUR_API_KEY";
 let db = null;
 let auth = null;
@@ -2023,6 +2054,13 @@ function formatCreatedAt(val) {
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+// 제안서 목록의 "발송일시" 컬럼을 날짜/시간 2줄로 슬림하게 표시하기 위한 분리버전
+function formatCreatedAtParts(val) {
+  const d = parseCreatedAt(val);
+  if (!d) return { date: "-", time: "" };
+  const p = (n) => String(n).padStart(2, "0");
+  return { date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`, time: `${p(d.getHours())}:${p(d.getMinutes())}` };
+}
 
 function proposalMarginProfit(p) {
   const withSnap = (p.items || []).filter((it) => it.calcSnapshot);
@@ -2035,16 +2073,16 @@ function proposalMarginProfit(p) {
 function ProposalTableColGroup({ withAction, withCheckbox }) {
   return (
     <colgroup>
-      {withCheckbox && <col style={{ width: "3%", minWidth: "36px" }} />}
-      <col style={{ width: "11%", minWidth: "105px" }} />
-      <col style={{ width: "9%", minWidth: "90px" }} />
-      <col style={{ width: "10%", minWidth: "95px" }} />
-      <col style={{ width: withAction ? "20%" : "28%", minWidth: "130px" }} />
-      <col style={{ width: "11%", minWidth: "95px" }} />
-      <col style={{ width: "9%", minWidth: "85px" }} />
-      <col style={{ width: "12%", minWidth: "100px" }} />
-      <col style={{ width: "10%", minWidth: "95px" }} />
-      {withAction && <col style={{ width: "14%", minWidth: "180px" }} />}
+      {withCheckbox && <col style={{ width: "40px" }} />}
+      <col style={{ width: "12%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "13%" }} />
+      <col style={{ width: "22%" }} />
+      <col style={{ width: "12%" }} />
+      <col style={{ width: "8%" }} />
+      <col style={{ width: "8%" }} />
+      <col style={{ width: "9%" }} />
+      {withAction && <col style={{ width: "90px" }} />}
     </colgroup>
   );
 }
@@ -2060,7 +2098,8 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
   const [groupByClient, setGroupByClient] = useState(false);
   const [openClient, setOpenClient] = useState(null);
   const [pendingOnly, setPendingOnly] = useState(false);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => (parseKoreanHash().view === "제안서목록" ? parseKoreanHash().page : 1));
+  useHashPageSync("제안서목록", page);
   const PAGE_SIZE = 20;
 
   const pendingCount = useMemo(() => proposals.filter((p) => getReviewStatus(p) === "검토대기").length, [proposals]);
@@ -2112,7 +2151,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
     const locked = isReviewLockedForStaff(p, isAdmin);
     const iconBtn = "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm leading-none";
     return (
-      <div className="flex flex-wrap justify-end content-start gap-1" style={{ width: "180px", minWidth: "180px" }}>
+      <div className="flex flex-wrap justify-end content-start gap-1" style={{ width: "90px", minWidth: "90px" }}>
         <button onClick={() => onOpenPdf(p)} title="PDF 제안서" className={iconBtn}>👁️</button>
         {locked ? (
           <span className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-slate-50 text-slate-400 text-sm" title="승인/발송완료된 제안서는 대표님만 수정할 수 있습니다">🔒</span>
@@ -2138,31 +2177,23 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         <td className="px-3 py-3 text-xs whitespace-nowrap">
           <button onClick={() => onView(p)} className="text-[#1D4ED8] hover:underline font-medium" title="클릭하면 조회 전용으로 상세 내역을 확인할 수 있습니다">{p.code}</button>
         </td>
-        <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt(p.sentAt || p.createdAt)}</td>
-        <td className="px-3 py-3 text-sm font-medium text-slate-800 truncate" style={{ maxWidth: "160px" }} title={p.clientName}>{p.clientName}</td>
-        <td className="px-3 py-3 text-xs text-slate-600 truncate" style={{ maxWidth: "260px" }} title={p.itemSummary}>{p.itemSummary}</td>
+        <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap leading-tight">
+          <div>{formatCreatedAtParts(p.sentAt || p.createdAt).date}</div>
+          <div>{formatCreatedAtParts(p.sentAt || p.createdAt).time}</div>
+        </td>
+        <td className="px-3 py-3 text-sm font-medium text-slate-800 truncate" title={p.clientName}>{p.clientName}</td>
+        <td className="px-3 py-3 text-xs text-slate-600 leading-snug" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={p.itemSummary}>{p.itemSummary}</td>
         <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{won(p.totalAmount)}</td>
         <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(p.createdBy) || "-"}</td>
         <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">
-          {p.sentBy ? `${displayStaffName(p.sentBy)} (${p.sentChannel || "-"})` : <span className="text-slate-300">미발송</span>}
+          {p.sentBy ? displayStaffName(p.sentBy) : <span className="text-slate-300">미발송</span>}
         </td>
         <td className="px-3 py-3" style={{ minWidth: "100px" }}>
-          {isAdmin ? (
-            <select
-              value={reviewStatus}
-              onChange={(e) => onReviewStatusChange(p, e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-              className={"text-xs px-2 py-1 rounded-full font-medium border-none outline-none cursor-pointer whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}
-            >
-              {REVIEW_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{REVIEW_STATUS_LABELS[s]}</option>)}
-            </select>
-          ) : (
-            <span className={"text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}>
-              {REVIEW_STATUS_LABELS[reviewStatus]}
-            </span>
-          )}
+          <span className={"text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}>
+            {REVIEW_STATUS_LABELS[reviewStatus]}
+          </span>
         </td>
-        <td className="px-3 py-3 align-top" style={{ minWidth: "180px" }}><ActionButtons p={p} /></td>
+        <td className="px-3 py-3 align-top" style={{ minWidth: "90px" }}><ActionButtons p={p} /></td>
       </tr>
     );
   };
@@ -2261,7 +2292,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
               </button>
               {openClient === client && (
                 <div className="overflow-x-auto border-t border-slate-100">
-                  <table className="w-full" style={{ tableLayout: "auto", width: "100%", minWidth: "980px" }}>
+                  <table className="w-full table-fixed" style={{ tableLayout: "fixed", width: "100%" }}>
                     <ProposalTableColGroup withAction withCheckbox={isAdmin && !!onBulkDelete} />
                     <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
                       {isAdmin && onBulkDelete && (
@@ -2286,7 +2317,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
       ) : (
         <div>
           <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
-            <table className="w-full" style={{ tableLayout: "auto", width: "100%", minWidth: "980px" }}>
+            <table className="w-full table-fixed" style={{ tableLayout: "fixed", width: "100%" }}>
               <ProposalTableColGroup withAction withCheckbox={isAdmin && !!onBulkDelete} />
               <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
                 {isAdmin && onBulkDelete && (
@@ -2354,9 +2385,14 @@ function EditNumberField({ value, onChange, className, placeholder, readOnly }) 
   );
 }
 
-const SEND_CHANNEL_OPTIONS = ["카카오톡", "카카오채널", "이메일", "팩스", "직접 전달/기타"];
+const SEND_CHANNEL_OPTIONS = ["카카오톡", "카카오채널", "이메일", "팩스", "기타"];
 function SendCompleteModal({ onConfirm, onClose }) {
   const [channel, setChannel] = useState(SEND_CHANNEL_OPTIONS[0]);
+  const [customChannel, setCustomChannel] = useState("");
+  const confirm = () => {
+    const finalChannel = channel === "기타" ? (customChannel.trim() || "기타") : channel;
+    onConfirm(finalChannel);
+  };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[80] p-4" onClick={onClose}>
       <div className="bg-white rounded-xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -2371,12 +2407,21 @@ function SendCompleteModal({ onConfirm, onClose }) {
                 <button key={c} type="button" onClick={() => setChannel(c)} className={"text-xs px-3 py-2 rounded-lg font-medium border " + (channel === c ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>{c}</button>
               ))}
             </div>
+            {channel === "기타" && (
+              <input
+                autoFocus
+                value={customChannel}
+                onChange={(e) => setCustomChannel(e.target.value)}
+                placeholder="발송 수단/사유 입력 (예: 직접 전달, 위챗)"
+                className="mt-2 w-full text-xs px-3 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]"
+              />
+            )}
           </Field>
           <p className="text-xs text-slate-400">확인을 누르면 현재 로그인한 계정 이름과 지금 시각이 발송자 정보로 함께 기록됩니다.</p>
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
-          <button onClick={() => onConfirm(channel)} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">확인/발송완료 처리</button>
+          <button onClick={confirm} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">확인/발송완료 처리</button>
         </div>
       </div>
     </div>
@@ -2435,7 +2480,16 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
     <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4" id="pdf-preview-overlay">
       <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "880px", maxWidth: "880px" }}>
         <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">{data.readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다"}</span>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {data.id && (
+            data.sentBy ? (
+              <span className="text-xs px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 font-medium whitespace-nowrap">
+                [발송완료] {data.sentChannel || "-"} | {formatCreatedAt(data.sentAt)}
+              </span>
+            ) : (
+              <span className="text-xs px-3 py-2 rounded-lg bg-slate-100 text-slate-500 font-medium whitespace-nowrap">[미발송]</span>
+            )
+          )}
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
           <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
           {onSendComplete && data.id && (
@@ -3261,7 +3315,8 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => (parseKoreanHash().view === "업체관리" ? parseKoreanHash().page : 1));
+  useHashPageSync("업체관리", page);
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
   const [keyClientFilter, setKeyClientFilter] = useState(false); // true면 ⭐주거래업체만 모아보기
@@ -3614,7 +3669,8 @@ function FactoryMergeModal({ selectedFactories, onRun, onClose }) {
 
 function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete, onImportFromProducts, onOpenProduct, onBulkDelete, onToggleKeyFactory, onMergeFactories, isAdmin }) {
   const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => (parseKoreanHash().view === "공장관리" ? parseKoreanHash().page : 1));
+  useHashPageSync("공장관리", page);
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
   const [keyFactoryFilter, setKeyFactoryFilter] = useState(false); // true면 ⭐주거래공장만 모아보기
@@ -4480,7 +4536,8 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
   const zipRef = useRef(null);
   const uploadRef = useRef(null);
   const [categoryFilter, setCategoryFilter] = useState("전체");
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => (parseKoreanHash().view === "제품관리" ? parseKoreanHash().page : 1));
+  useHashPageSync("제품관리", page);
   const PAGE_SIZE = 20;
 
   const filtered = useMemo(() => {
@@ -6113,9 +6170,9 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
 
 function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDeleteAccount }) {
   const isAdmin = !roleUser || roleUser.role === "admin"; // roleUser 없는 로컬/과거 세션은 관리자로 간주(하위호환)
-  const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [accountModalOpen, setAccountModalOpen] = useState(() => parseKoreanHash().view === "계정관리");
   const [activeStep, setActiveStep] = useState(1);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(() => parseKoreanHash().view === "기준정보");
   const [showFinishingAnalysis, setShowFinishingAnalysis] = useState(false);
   const [manualMergeList, setManualMergeList] = useState(null);
   const [exSettingsOpen, setExSettingsOpen] = useState(false); // 상단 유틸리티바의 "환율 상세설정" 팝업 토글
@@ -6351,7 +6408,24 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); clearTimeout(slowTimer); };
   }, []);
   const [clientModal, setClientModal] = useState({ open: false, mode: "save" });
-  const [view, setView] = useState("pipeline"); // pipeline | proposals | clients | factories | products | excel
+
+  // 브라우저 뒤로가기/앞으로가기(hashchange)를 누르면 그 한글 해시에 맞는 탭/모달로 전환한다.
+  useEffect(() => {
+    const applyHash = () => {
+      const { view: hashView } = parseKoreanHash();
+      if (hashView === "기준정보") { setSettingsOpen(true); return; }
+      if (hashView === "계정관리") { setAccountModalOpen(true); return; }
+      if (HASH_TO_VIEW[hashView]) { setSettingsOpen(false); setAccountModalOpen(false); setView(HASH_TO_VIEW[hashView]); }
+    };
+    window.addEventListener("hashchange", applyHash);
+    // 접속 직후에도 한 번 더 반영(첫 렌더 이후 0.1초 뒤 최종 확인 — 계정목록 로딩 등과 타이밍이 겹쳐도 놓치지 않도록)
+    const t = setTimeout(applyHash, 100);
+    return () => { window.removeEventListener("hashchange", applyHash); clearTimeout(t); };
+  }, []);
+  const [view, setView] = useState(() => {
+    const { view: hashView } = parseKoreanHash();
+    return HASH_TO_VIEW[hashView] || "pipeline";
+  }); // pipeline | proposals | clients | factories | products | excel
   const [pdfData, setPdfData] = useState(null);
   const [toast, setToast] = useState("");
 
@@ -7677,8 +7751,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo}
         onSendComplete={async (id, channel) => {
           const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
-          const patch = { status: "발송완료", sentBy: actorName, sentAt: nowDateTimeStr(), sentChannel: channel };
+          const patch = { status: "발송완료", reviewStatus: "발송완료", sentBy: actorName, sentAt: nowDateTimeStr(), sentChannel: channel, updatedAt: nowDateTimeStr(), updatedBy: actorName };
           setProposalList((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+          setPdfData((prev) => (prev && prev.id === id ? { ...prev, ...patch } : prev)); // 지금 열려있는 미리보기 모달도 즉시 갱신(닫지 않아도 상단 발송정보 배지가 바로 바뀜)
           try {
             if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(COLLECTIONS.proposals, id, patch);
             setToast("✅ [발송완료] 상태로 변경되었습니다.");
@@ -7688,7 +7763,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           }
         }}
       />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} onShowAnalysis={() => setShowFinishingAnalysis(true)} />
+      <SettingsModal open={settingsOpen} onClose={() => { setSettingsOpen(false); window.location.hash = VIEW_TO_HASH[view] || ""; }} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} onShowAnalysis={() => setShowFinishingAnalysis(true)} />
       {showFinishingAnalysis && (
         <FinishingAnalysisModal finishingOptions={finishingOptions} products={productsList} onClose={() => setShowFinishingAnalysis(false)} />
       )}
@@ -7781,19 +7856,19 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             ].map((m) => (
               <button
                 key={m.key}
-                onClick={() => setView(m.key)}
+                onClick={() => { setView(m.key); window.location.hash = VIEW_TO_HASH[m.key]; }}
                 className={"text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors " + (view === m.key ? "bg-white text-[#1E3A8A] shadow-sm" : "bg-white/15 hover:bg-white/25")}
               >
                 {m.label}
               </button>
             ))}
-            <button onClick={() => setSettingsOpen(true)} className="text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors bg-white/15 hover:bg-white/25">⚙️ 기준정보</button>
-            {isAdmin && <button onClick={() => setAccountModalOpen(true)} className="text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors bg-white/15 hover:bg-white/25">👥 계정 관리</button>}
+            <button onClick={() => { setSettingsOpen(true); window.location.hash = "기준정보"; }} className="text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors bg-white/15 hover:bg-white/25">⚙️ 기준정보</button>
+            {isAdmin && <button onClick={() => { setAccountModalOpen(true); window.location.hash = "계정관리"; }} className="text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors bg-white/15 hover:bg-white/25">👥 계정 관리</button>}
           </div>
         </div>
       </header>
       {accountModalOpen && (
-        <AccountManageModal accounts={accounts} onSave={onSaveAccount} onDelete={onDeleteAccount} onClose={() => setAccountModalOpen(false)} />
+        <AccountManageModal accounts={accounts} onSave={onSaveAccount} onDelete={onDeleteAccount} onClose={() => { setAccountModalOpen(false); window.location.hash = VIEW_TO_HASH[view] || ""; }} />
       )}
 
       {view === "pipeline" && <Stepper active={activeStep} onChange={setActiveStep} />}
