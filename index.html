@@ -1993,10 +1993,12 @@ const STATUS_COLORS = {
 };
 
 // 직원 작성 → 대표님 검토/수정 → 최종 승인 → 발송 결재 워크플로우 (제안서 진행상태(STATUS_OPTIONS)와는 별개의 축)
-const REVIEW_STATUS_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료", "발송완료"];
-// 목록 드롭다운에서 각 권한이 "직접 선택"할 수 있는 상태 — 발송완료는 그 누구도 드롭다운으로 선택 불가(오직 🚀발송완료 버튼 경로로만 전환됨)
+// "샘플진행"/"인보이스"는 각각 4단계 샘플요청·5단계 인보이스발행 액션이 일어날 때 자동으로만 전환되는 상태 — 드롭다운으로 직접 선택할 수는 없다(발송완료와 동일한 방식)
+const REVIEW_STATUS_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료", "발송완료", "샘플진행", "인보이스"];
+// 목록 드롭다운에서 각 권한이 "직접 선택"할 수 있는 상태 — 발송완료/샘플진행/인보이스는 그 누구도 드롭다운으로 선택 불가(오직 해당 액션 버튼 경로로만 전환됨)
 const REVIEW_STATUS_STAFF_OPTIONS = ["작성중", "검토대기"];
 const REVIEW_STATUS_ADMIN_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료"];
+const REVIEW_STATUS_AUTO_ONLY = ["발송완료", "샘플진행", "인보이스"]; // 드롭다운에서 절대 선택 불가, 읽기전용 배지로만 표시
 // ===== 업무지시 & 소통방 =====
 const TASK_STATUS_OPTIONS = ["요청", "진행중", "완료"];
 const TASK_STATUS_LABELS = { "요청": "📥 요청", "진행중": "⏳ 진행중", "완료": "✅ 완료" };
@@ -2031,6 +2033,8 @@ const REVIEW_STATUS_LABELS = {
   "수정중": "✏️ 수정중",
   "승인완료": "✅ 승인완료",
   "발송완료": "✉️ 발송완료",
+  "샘플진행": "🧪 샘플진행",
+  "인보이스": "📄 인보이스",
 };
 const REVIEW_STATUS_COLORS = {
   "작성중": "bg-slate-100 text-slate-500",
@@ -2038,6 +2042,8 @@ const REVIEW_STATUS_COLORS = {
   "수정중": "bg-amber-50 text-amber-700",
   "승인완료": "bg-emerald-50 text-emerald-700",
   "발송완료": "bg-blue-50 text-[#1D4ED8]",
+  "샘플진행": "bg-blue-100 text-blue-700",
+  "인보이스": "bg-purple-100 text-purple-700",
 };
 // 작성자/발송자 등 사람 이름 뒤에 직급이 붙어 저장된 경우(예: "이수림 과장") 화면에는 실명만 깔끔하게 보여준다.
 // 저장된 원본 값은 건드리지 않고 표시할 때만 잘라내는 방식 — 계정관리에서 이름을 고치면 그게 바로 반영되고, 이 함수는 옛 기록에 남은 직급 접미사만 화면에서 정리해준다.
@@ -2127,7 +2133,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
       const hay = `${p.clientName || ""} ${p.proposalTitle || ""} ${p.itemSummary || ""} ${p.code || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    if (statusFilter !== "전체" && p.status !== statusFilter) return false;
+    if (statusFilter !== "전체" && getReviewStatus(p) !== statusFilter) return false;
     const d = parseCreatedAt(p.createdAt);
     if (periodFilter !== "전체") {
       if (!d) return false;
@@ -2219,7 +2225,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         <td className="px-3 py-3" style={{ minWidth: "100px" }}>
           {(() => {
             const badge = <span className={"text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}>{REVIEW_STATUS_LABELS[reviewStatus]}</span>;
-            if (reviewStatus === "발송완료") return badge; // 발송완료는 그 누구도 드롭다운으로 되돌릴 수 없음 — 오직 🚀발송완료 버튼 경로로만 도달
+            if (REVIEW_STATUS_AUTO_ONLY.includes(reviewStatus)) return badge; // 발송완료/샘플진행/인보이스는 그 누구도 드롭다운으로 되돌릴 수 없음 — 오직 해당 액션 버튼 경로로만 도달
             const myOptions = isAdmin ? REVIEW_STATUS_ADMIN_OPTIONS : REVIEW_STATUS_STAFF_OPTIONS;
             if (!isAdmin && !myOptions.includes(reviewStatus)) return badge; // 직원은 관리자가 다루는 중(수정중/승인완료)인 건은 손댈 수 없음, 조회만
             return (
@@ -2264,7 +2270,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         )}
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]">
           <option>전체</option>
-          {STATUS_OPTIONS.map((o) => <option key={o}>{o}</option>)}
+          {["작성중", "검토대기", "수정중", "승인완료", "샘플진행", "인보이스"].map((o) => <option key={o}>{o}</option>)}
         </select>
         <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]">
           {SORT_OPTIONS_COMMON.map(([k, label]) => <option key={k} value={k}>정렬: {label}</option>)}
@@ -2818,9 +2824,6 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
           {onSendComplete && data.id && (
             <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90">🚀 발송완료</button>
-          )}
-          {!isInvoice && onCreateInvoice && data.id && (
-            <button onClick={() => onCreateInvoice(data)} className="px-4 py-2 rounded-lg bg-white border border-purple-300 text-purple-700 text-sm font-medium hover:bg-purple-50">📄 인보이스 확정(본품 전환)</button>
           )}
           {!isInvoice && onCreateSample && data.id && data.reviewStatus === "발송완료" && (
             <button onClick={() => onCreateSample(data)} title="고객이 실제로 샘플을 요청한 경우에만 눌러주세요" className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50">🧪 샘플요청 등록</button>
@@ -6893,6 +6896,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setInvoiceData(local);
     setInvoiceEditProposal(null);
     setView("pipeline"); setActiveStep(5); // 5단계 본품계약 목록으로 즉시 이관 — 미리보기를 닫으면 바로 목록에서 확인 가능
+    if (p.id) await updateReviewStatus(p, "인보이스"); // 원본 제안서의 검토상태를 자동으로 "인보이스"로 전환(제안서 데이터 자체는 그대로, 상태값만 갱신)
     try { await fsAdd(COLLECTIONS.invoices, record); setToast("📄 인보이스가 발행되어 5단계로 이관되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
   };
   const deleteInvoiceRecord = async (iv) => {
@@ -7514,6 +7518,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setSampleList((prev) => [local, ...prev]);
     try { await fsAdd(COLLECTIONS.samples, sampleRec); } catch (e) { console.error(e); }
     if (stockItemId) await decrementSampleStock(stockItemId, stockQty || 1); // 한국 재고에서 선택했으면 신청수량만큼 자동 차감(Outbound)
+    // 제안서에서 연결되어 등록된 샘플이면("🧪 샘플요청 등록" 경로), 그 제안서의 검토상태를 자동으로 "샘플진행"으로 전환
+    if (sampleRec.linkedProposalId) {
+      const linkedProposal = proposalList.find((p) => String(p.id) === String(sampleRec.linkedProposalId));
+      if (linkedProposal) await updateReviewStatus(linkedProposal, "샘플진행");
+    }
     setToast("샘플 진행 건을 등록했습니다." + (stockItemId ? ` (재고 ${stockQty || 1}개 차감됨)` : ""));
     return local; // 방금 생성된 샘플 정보를 반환 — 등록 직후 샘플비 인보이스를 연속으로 여는 데 사용
   };
@@ -8507,7 +8516,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             }
           }}
           onReviewStatusChange={async (p, newReviewStatus) => {
-            if (newReviewStatus === "발송완료") { setToast("발송완료는 제안서 미리보기의 '🚀 발송완료' 버튼으로만 처리할 수 있습니다."); return; }
+            if (REVIEW_STATUS_AUTO_ONLY.includes(newReviewStatus)) { setToast("이 상태는 드롭다운으로 직접 바꿀 수 없습니다 — 해당 액션(발송완료/샘플요청 등록/인보이스 발행) 버튼으로만 전환됩니다."); return; }
             const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
             const extra = newReviewStatus === "승인완료" ? { updatedAt: nowDateTimeStr(), updatedBy: actorName } : {};
             await updateReviewStatus(p, newReviewStatus, extra);
