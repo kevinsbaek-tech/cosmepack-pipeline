@@ -2177,7 +2177,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         <button onClick={() => onCopy(p)} title="복사" className={iconBtn}>📋</button>
         {isAdmin && <button onClick={() => onDelete(p)} title="삭제" className={iconBtn + " border-red-100 text-red-500 hover:bg-red-50"}>🗑️</button>}
         {onCreateInvoice && (
-          <button onClick={() => onCreateInvoice(p)} title="📄 인보이스 발행" className={iconBtn + " border-purple-200 text-purple-600 hover:bg-purple-50"}>📄</button>
+          <button onClick={() => onCreateInvoice(p)} title="📄 인보이스 확정(본품 전환)" className={iconBtn + " border-purple-200 text-purple-600 hover:bg-purple-50"}>📄</button>
         )}
         {onCreateSample && getReviewStatus(p) === "발송완료" && (
           <button onClick={() => onCreateSample(p)} title="🧪 샘플요청 등록 — 고객이 실제로 샘플을 요청한 경우에만 눌러주세요" className={iconBtn + " border-emerald-200 text-emerald-600 hover:bg-emerald-50"}>🧪</button>
@@ -2537,6 +2537,123 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, isAdmin })
   );
 }
 
+/* ===================== 📦 5단계 · 본품계약 & 공장 발주 목록 (인보이스 목록과 동일한 테이블 UI) ===================== */
+function OrderStageListView({ orders, proposalList, invoiceList, onOpenProposal, onOpenInvoice }) {
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 20;
+
+  // 5단계에 들어오는 두 가지 경로를 하나의 목록으로 합친다:
+  // ① 4단계 샘플진행에서 "📜 본품계약 전환"된 건 ② 3단계 제안서에서 "📄 인보이스 확정(본품 전환)"으로 샘플 단계 없이 바로 넘어온 건
+  const enriched = useMemo(() => {
+    const fromSamples = orders.map((s) => ({
+      key: `sample-${s.id}`, clientName: s.clientName, productName: s.productName,
+      convertedAt: s.orderConvertedAt, convertedBy: s.orderConvertedBy,
+      proposal: proposalList.find((p) => String(p.id) === String(s.linkedProposalId)),
+      invoice: invoiceList.find((iv) => String(iv.proposalId) === String(s.linkedProposalId)),
+    }));
+    const sampleProposalIds = new Set(orders.map((s) => String(s.linkedProposalId)));
+    const fromDirectInvoices = invoiceList
+      .filter((iv) => !sampleProposalIds.has(String(iv.proposalId)))
+      .map((iv) => ({
+        key: `invoice-${iv.id}`, clientName: iv.clientName, productName: (iv.items || []).map((it) => it.productName).join(", "),
+        convertedAt: iv.createdAt, convertedBy: iv.createdBy,
+        proposal: proposalList.find((p) => String(p.id) === String(iv.proposalId)),
+        invoice: iv,
+      }));
+    return [...fromSamples, ...fromDirectInvoices];
+  }, [orders, proposalList, invoiceList]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const base = !q ? enriched : enriched.filter((e) => (e.clientName || "").toLowerCase().includes(q) || (e.invoice && (e.invoice.code || "").toLowerCase().includes(q)));
+    return [...base].sort((a, b) => (parseCreatedAt(b.convertedAt) || 0) - (parseCreatedAt(a.convertedAt) || 0));
+  }, [enriched, search]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pagedList = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [search]);
+
+  return (
+    <main className="max-w-7xl mx-auto px-6 py-8">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">📦 5단계 · 본품계약 & 공장 발주 (Order & Final Invoice)</h2>
+          <p className="text-xs text-slate-400 mt-1">4단계에서 "📜 본품계약 전환"된 건이 여기 모입니다. 원본 제안서와 발행 인보이스를 바로 확인할 수 있습니다.</p>
+        </div>
+      </div>
+      <input
+        value={search} onChange={(e) => setSearch(e.target.value)}
+        placeholder="🔍 고객사명, 인보이스번호 검색"
+        className="w-full mb-4 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]"
+      />
+      {pagedList.length === 0 ? (
+        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">아직 본품계약으로 전환된 건이 없습니다. 4단계 샘플 진행에서 "📜 본품계약 전환" 버튼을 눌러 등록해주세요.</div>
+      ) : (
+        <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
+          <table className="w-full table-fixed" style={{ tableLayout: "fixed", width: "100%" }}>
+            <colgroup>
+              <col style={{ width: "13%" }} /><col style={{ width: "10%" }} /><col style={{ width: "15%" }} />
+              <col style={{ width: "22%" }} /><col style={{ width: "12%" }} /><col style={{ width: "9%" }} />
+              <col style={{ width: "9%" }} /><col style={{ width: "10%" }} /><col style={{ width: "110px" }} />
+            </colgroup>
+            <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
+              <th className="text-left px-3 py-3 font-medium">인보이스/발주번호</th>
+              <th className="text-left px-3 py-3 font-medium">발행일시</th>
+              <th className="text-left px-3 py-3 font-medium">고객사명</th>
+              <th className="text-center px-3 py-3 font-medium">대표 제품명</th>
+              <th className="text-right px-3 py-3 font-medium">총 금액</th>
+              <th className="text-left px-3 py-3 font-medium">작성자</th>
+              <th className="text-left px-3 py-3 font-medium">발송자</th>
+              <th className="text-center px-3 py-3 font-medium">상태</th>
+              <th className="text-center px-3 py-3 font-medium">작업</th>
+            </tr></thead>
+            <tbody>
+              {pagedList.map(({ key, clientName, productName, convertedAt, convertedBy, proposal, invoice }) => {
+                const reviewStatus = invoice ? getReviewStatus(invoice) : null;
+                return (
+                  <tr key={key} className="border-t border-slate-100 hover:bg-slate-50/50">
+                    <td className="px-3 py-3 text-xs whitespace-nowrap">{invoice ? <span className="text-[#1D4ED8] font-medium">{invoice.code}</span> : <span className="text-slate-300">미발행</span>}</td>
+                    <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt((invoice && (invoice.sentAt || invoice.createdAt)) || convertedAt)}</td>
+                    <td className="px-3 py-3 text-xs font-medium text-slate-800" style={{ wordBreak: "keep-all" }}>{clientName}</td>
+                    <td className="px-3 py-3 text-xs text-slate-600 text-center" style={{ wordBreak: "keep-all" }}>{productName}</td>
+                    <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{invoice ? won(invoice.totalAmount) : "-"}</td>
+                    <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(convertedBy) || "-"}</td>
+                    <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{invoice && invoice.sentBy ? displayStaffName(invoice.sentBy) : <span className="text-slate-300">미발송</span>}</td>
+                    <td className="px-3 py-3 text-center">
+                      {reviewStatus ? (
+                        <span className={"text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}>{REVIEW_STATUS_LABELS[reviewStatus] || reviewStatus}</span>
+                      ) : (
+                        <span className="text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap bg-purple-50 text-purple-700">🎉 계약전환완료</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <div className="flex justify-center gap-1">
+                        <button
+                          onClick={() => proposal ? onOpenProposal(proposal) : window.alert("연결된 원본 제안서를 찾을 수 없습니다.")}
+                          title="📋 원본 제안서" className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm"
+                        >
+                          📋
+                        </button>
+                        <button
+                          onClick={() => invoice ? onOpenInvoice(invoice) : window.alert("아직 발행된 인보이스가 없습니다. 원본 제안서에서 '📄 인보이스 확정(본품 전환)'을 먼저 진행해주세요.")}
+                          title="📄 인보이스" className="w-8 h-8 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 text-sm"
+                        >
+                          📄
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
+    </main>
+  );
+}
+
 /* ===================== PDF 제안서 미리보기 ===================== */
 
 function EditField({ value, onChange, className, placeholder }) {
@@ -2703,7 +2820,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
             <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90">🚀 발송완료</button>
           )}
           {!isInvoice && onCreateInvoice && data.id && (
-            <button onClick={() => onCreateInvoice(data)} className="px-4 py-2 rounded-lg bg-white border border-purple-300 text-purple-700 text-sm font-medium hover:bg-purple-50">📄 인보이스 발행</button>
+            <button onClick={() => onCreateInvoice(data)} className="px-4 py-2 rounded-lg bg-white border border-purple-300 text-purple-700 text-sm font-medium hover:bg-purple-50">📄 인보이스 확정(본품 전환)</button>
           )}
           {!isInvoice && onCreateSample && data.id && data.reviewStatus === "발송완료" && (
             <button onClick={() => onCreateSample(data)} title="고객이 실제로 샘플을 요청한 경우에만 눌러주세요" className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50">🧪 샘플요청 등록</button>
@@ -3506,6 +3623,12 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
   const [items, setItems] = useState(() => (proposal.items || []).map((it) => ({ ...it, id: it.id || Date.now() + Math.random(), selectedFinishingIds: [] })));
 
   const updateItem = (id, patch) => setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  const removeItem = (id) => setItems((prev) => prev.filter((it) => it.id !== id));
+  // "품목 추가" — 제안서에 없던 항목도 인보이스에서만 자유롭게 새로 넣을 수 있다(원본 제안서는 절대 안 건드림)
+  const addItem = () => setItems((prev) => [...prev, {
+    id: Date.now() + Math.random(), image: "", productName: "", specSize: "", material: "", category: "",
+    quantity: 0, unitPrice: 0, totalPrice: 0, notes: "", selectedFinishingIds: [],
+  }]);
 
   // 체크/해제할 때마다 해당 항목의 "비고"란 맨 앞부분에 선택된 후가공 목록을 다시 구성해 넣는다(기존 비고의 나머지 문구는 보존)
   const toggleFinishing = (item, opt) => {
@@ -3519,7 +3642,12 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
     updateItem(item.id, { selectedFinishingIds: nextIds, notes: nextNotes });
   };
 
+  // 인보이스 화면에서도 부가세·계약금(30%)·잔금(70%)이 실시간으로 어떻게 나올지 바로 보여준다(최종 미리보기와 동일한 계산식)
   const totalAmount = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
+  const vat = Math.round(totalAmount * 0.1);
+  const grandTotal = totalAmount + vat;
+  const depositAmount = Math.round(grandTotal * 0.3);
+  const balanceAmount = grandTotal - depositAmount;
 
   return (
     <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
@@ -3527,7 +3655,7 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <div>
             <h2 className="text-base font-bold text-slate-800">📄 인보이스 작성 — {proposal.clientName}</h2>
-            <p className="text-xs text-slate-400 mt-0.5">발행 전, 품목별 수량·단가와 후가공 옵션을 다시 확인해주세요.</p>
+            <p className="text-xs text-slate-400 mt-0.5">여기서 아무리 수정해도 3단계 원본 제안서는 전혀 바뀌지 않습니다(완전히 독립된 사본입니다).</p>
           </div>
           <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
@@ -3537,13 +3665,22 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
             return (
               <div key={it.id} className="border border-slate-200 rounded-xl p-4">
                 <div className="flex items-start gap-3 mb-3">
-                  <div className="w-14 h-14 rounded-lg bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
-                    {it.image ? <img src={it.image} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
+                  <div className="shrink-0">
+                    <div className="text-[10px] text-slate-400 mb-1">실물 사진 교체</div>
+                    <ImageUpload value={it.image} onChange={(v) => updateItem(it.id, { image: v })} />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-semibold text-slate-800 text-sm">{it.productName}</div>
-                    <div className="text-xs text-slate-400">{it.specSize} {it.material ? `· ${it.material}` : ""} {it.category ? `· ${it.category}` : ""}</div>
+                  <div className="min-w-0 flex-1 grid grid-cols-3 gap-2">
+                    <Field label="제품명" span={3}><input className={inputCls} value={it.productName} onChange={(e) => updateItem(it.id, { productName: e.target.value })} /></Field>
+                    <Field label="사이즈"><input className={inputCls} value={it.specSize || ""} onChange={(e) => updateItem(it.id, { specSize: e.target.value })} /></Field>
+                    <Field label="재질"><input className={inputCls} value={it.material || ""} onChange={(e) => updateItem(it.id, { material: e.target.value })} /></Field>
+                    <Field label="카테고리(후가공 목록 기준)">
+                      <select className={inputCls} value={it.category || ""} onChange={(e) => updateItem(it.id, { category: e.target.value })}>
+                        <option value="">선택 안 함</option>
+                        {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </Field>
                   </div>
+                  <button onClick={() => removeItem(it.id)} title="이 품목 삭제" className="shrink-0 w-8 h-8 rounded-lg border border-red-100 text-red-500 hover:bg-red-50 text-sm">🗑️</button>
                 </div>
                 <div className="grid grid-cols-3 gap-3 mb-3">
                   <Field label="수량"><input type="number" className={inputCls} value={it.quantity} onChange={(e) => { const q = Number(e.target.value) || 0; updateItem(it.id, { quantity: q, totalPrice: q * (Number(it.unitPrice) || 0) }); }} /></Field>
@@ -3569,6 +3706,16 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
               </div>
             );
           })}
+          <button onClick={addItem} className="w-full text-xs py-2.5 rounded-lg border-2 border-dashed border-slate-200 text-slate-500 hover:border-[#1E3A8A] hover:text-[#1E3A8A] font-medium">➕ 품목 추가</button>
+
+          <div className="bg-slate-50 rounded-xl p-4 text-xs space-y-1.5">
+            <div className="font-semibold text-slate-600 mb-1">💰 실시간 정산 요약</div>
+            <div className="flex justify-between"><span className="text-slate-500">① 공급가액 합계</span><span className="font-medium">{Math.round(totalAmount).toLocaleString("ko-KR")}원</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">② 부가가치세 (10%)</span><span className="font-medium">{vat.toLocaleString("ko-KR")}원</span></div>
+            <div className="flex justify-between border-t border-slate-200 pt-1.5"><span className="text-slate-700 font-semibold">③ 총 합계금액 (①+②)</span><span className="font-bold text-[#1E3A8A]">{grandTotal.toLocaleString("ko-KR")}원</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">④ 계약금 청구금액 (30%)</span><span className="font-medium">{depositAmount.toLocaleString("ko-KR")}원</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">⑤ 잔금 청구금액 (70%)</span><span className="font-medium">{balanceAmount.toLocaleString("ko-KR")}원</span></div>
+          </div>
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
           <span className="text-sm text-slate-500">품목 합계: <b className="text-[#1E3A8A]">{Math.round(totalAmount).toLocaleString("ko-KR")}원</b></span>
@@ -6724,24 +6871,29 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   // 제안서를 기반으로 인보이스를 발행 — 품목/수량/단가/고객사 정보를 100% 그대로 가져오고, 미리보기를 바로 띄운다(버튼 한 번으로 자동입력)
   const [invoiceEditProposal, setInvoiceEditProposal] = useState(null); // "📄 인보이스 발행" 클릭시 열리는 후가공/수량 재선택 편집단계
   // 1단계: "📄 인보이스 발행" 클릭 → 편집 모달(InvoiceEditModal)을 연다 (제안서 작성처럼 후가공/수량을 다시 선택하는 단계)
-  const openInvoiceEditor = (p) => setInvoiceEditProposal(p);
+  const openInvoiceEditor = (p) => {
+    if (!window.confirm(`"${p.clientName}" 제안서를 바탕으로 본품계약(인보이스)을 진행하시겠습니까?\n제안서 원본은 그대로 유지되고, 완전히 독립된 인보이스 사본이 새로 만들어집니다.`)) return;
+    setInvoiceEditProposal(p);
+  };
   // 2단계: 편집 모달에서 "확정"하면, 그 결과(editedItems)로 실제 인보이스를 발행하고 미리보기를 연다
   const finalizeInvoice = async (p, editedItems) => {
     const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
     const code = `INV-${todayStr()}-${String(invoiceList.length + 1).padStart(3, "0")}`;
-    const totalAmount = editedItems.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
+    const cleanItems = editedItems.map(({ selectedFinishingIds, ...rest }) => rest); // 편집용 임시 필드는 저장 전에 제거
+    const totalAmount = cleanItems.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
     const record = {
       code, proposalId: typeof p.id === "string" ? p.id : null, proposalCode: p.code || "",
       clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "", employee: p.employee || "",
       proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", totalAmount, totalCbm: p.totalCbm || 0,
-      items: editedItems, validUntil: addDays(30),
+      items: cleanItems, validUntil: addDays(30),
       createdAt: nowDateTimeStr(), createdBy: actorName,
     };
     const local = { id: Date.now() + Math.random(), ...record };
     setInvoiceList((prev) => [local, ...prev]);
     setInvoiceData(local);
     setInvoiceEditProposal(null);
-    try { await fsAdd(COLLECTIONS.invoices, record); setToast("📄 인보이스가 발행되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
+    setView("pipeline"); setActiveStep(5); // 5단계 본품계약 목록으로 즉시 이관 — 미리보기를 닫으면 바로 목록에서 확인 가능
+    try { await fsAdd(COLLECTIONS.invoices, record); setToast("📄 인보이스가 발행되어 5단계로 이관되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
   };
   const deleteInvoiceRecord = async (iv) => {
     if (!window.confirm(`"${iv.clientName}" 인보이스(${iv.code})를 삭제할까요?`)) return;
@@ -8903,50 +9055,13 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
 
       {view === "pipeline" && activeStep === 5 && (
-        <main className="max-w-5xl mx-auto px-6 py-8">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-lg font-bold text-slate-800">📦 5단계 · 본품계약 & 공장 발주 (Order & Final Invoice)</h2>
-              <p className="text-xs text-slate-400 mt-1">4단계에서 "📜 본품계약 전환"된 건이 여기 모입니다. 각 건에서 원본 제안서와 발행된 인보이스를 바로 확인할 수 있습니다.</p>
-            </div>
-          </div>
-          {(() => {
-            const orders = sampleList.filter((s) => s.orderConverted);
-            if (orders.length === 0) {
-              return <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">아직 본품계약으로 전환된 건이 없습니다. 4단계 샘플 진행에서 "📜 본품계약 전환" 버튼을 눌러 등록해주세요.</div>;
-            }
-            return (
-              <div className="space-y-3">
-                {orders.map((s) => {
-                  const linkedProposal = proposalList.find((p) => String(p.id) === String(s.linkedProposalId));
-                  const linkedInvoice = invoiceList.find((iv) => String(iv.proposalId) === String(s.linkedProposalId));
-                  return (
-                    <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="font-semibold text-slate-800 text-sm">{s.clientName} <span className="text-slate-400 font-normal">— {s.productName}</span></div>
-                        <div className="text-xs text-slate-400 mt-0.5">본품계약 전환: {s.orderConvertedBy} · {s.orderConvertedAt}</div>
-                      </div>
-                      <div className="flex gap-2 shrink-0">
-                        <button
-                          onClick={() => linkedProposal ? setPdfData({ ...linkedProposal, readOnly: true }) : setToast("연결된 원본 제안서를 찾을 수 없습니다.")}
-                          className="text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 font-medium whitespace-nowrap"
-                        >
-                          📋 원본 제안서 보기
-                        </button>
-                        <button
-                          onClick={() => linkedInvoice ? setInvoiceData(linkedInvoice) : setToast("아직 발행된 인보이스가 없습니다. 원본 제안서에서 '📄 인보이스 발행'을 먼저 진행해주세요.")}
-                          className="text-xs px-3 py-2 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 font-medium whitespace-nowrap"
-                        >
-                          📄 발행 인보이스 보기
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
-        </main>
+        <OrderStageListView
+          orders={sampleList.filter((s) => s.orderConverted)}
+          proposalList={proposalList}
+          invoiceList={invoiceList}
+          onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })}
+          onOpenInvoice={(iv) => setInvoiceData(iv)}
+        />
       )}
     </div>
   );
