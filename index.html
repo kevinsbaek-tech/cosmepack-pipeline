@@ -107,6 +107,7 @@ const COLLECTIONS = {
   settings: "settings", // 기준정보(물류비/마진율표/관세율/난이도차등율/공급자로고) 저장용, 고정 문서id(pricingConfig) 하나만 사용
   tasks: "task_assignments", // 업무지시 & 소통방
   sampleStock: "sample_stock", // 한국 본사 샘플 재고 현황
+  invoices: "invoices", // INVOICE(인보이스) 발행 — 제안서에서 파생, proposalId로 연결
 };
 
 async function fsAdd(collectionName, data) {
@@ -1484,6 +1485,16 @@ const GREETING = [
   "기타 문의사항이 있으시면 당사로 언제든지 연락 주시기 바랍니다.",
 ];
 
+// INVOICE(인보이스) 발행 전용 하단 참고사항 — 제안서(TERMS)와 별도로 관리, 발행시 이 6줄이 기본으로 채워지며 자유롭게 수정 가능
+const INVOICE_TERMS = [
+  "본 계약은 상품대금+국제운송료+관세+기타 수입부대비용 포함 인천항 도착 기준입니다. (국내 내륙운송비 별도)",
+  "예상 제작 기간은 계약금(30%) 입금 확인 및 디자인 확정일로부터 약 35일 소요됩니다.",
+  "결제는 주문 확정 시 30%, 제품 생산 완료 후 출고 전 70% 조건입니다.",
+  "대량 생산 공정 특성상 최종 입고 수량은 발주 수량 대비 ±3% 내외의 오차가 발생할 수 있으며, 실제 입고 수량을 기준으로 차감 또는 추가 청구하여 정산합니다.",
+  "제품 입고 후 샘플 기준과 상이한 불량이 확인될 경우, 사진/수량 확인 후 환불, 차감 정산, 또는 다음 주문 시 추가생산 등으로 신속히 처리해 드립니다.",
+  "해당 인보이스의 유효기간은 30일입니다. (원재료/환율 변동 반영)",
+];
+
 function todayStr() { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`; }
 
 // 엑셀 파일명 맨 앞의 8자리 숫자(YYYYMMDD)를 날짜로 추출. 없거나 유효하지 않으면 null 반환 (호출부에서 오늘 날짜로 폴백)
@@ -1982,7 +1993,10 @@ const STATUS_COLORS = {
 };
 
 // 직원 작성 → 대표님 검토/수정 → 최종 승인 → 발송 결재 워크플로우 (제안서 진행상태(STATUS_OPTIONS)와는 별개의 축)
-const REVIEW_STATUS_OPTIONS = ["검토대기", "검토중", "승인완료", "발송완료"];
+const REVIEW_STATUS_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료", "발송완료"];
+// 목록 드롭다운에서 각 권한이 "직접 선택"할 수 있는 상태 — 발송완료는 그 누구도 드롭다운으로 선택 불가(오직 🚀발송완료 버튼 경로로만 전환됨)
+const REVIEW_STATUS_STAFF_OPTIONS = ["작성중", "검토대기"];
+const REVIEW_STATUS_ADMIN_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료"];
 // ===== 업무지시 & 소통방 =====
 const TASK_STATUS_OPTIONS = ["요청", "진행중", "완료"];
 const TASK_STATUS_LABELS = { "요청": "📥 요청", "진행중": "⏳ 진행중", "완료": "✅ 완료" };
@@ -2012,14 +2026,16 @@ const DEFAULT_SAMPLE_SHIPPING_FEE_NOTES = {
   "항공": "항공특송료 15,000원, 급송 (2~3일 소요)",
 };
 const REVIEW_STATUS_LABELS = {
+  "작성중": "🖊️ 작성중",
   "검토대기": "📝 검토대기",
-  "검토중": "✏️ 검토/수정중",
+  "수정중": "✏️ 수정중",
   "승인완료": "✅ 승인완료",
   "발송완료": "✉️ 발송완료",
 };
 const REVIEW_STATUS_COLORS = {
+  "작성중": "bg-slate-100 text-slate-500",
   "검토대기": "bg-slate-100 text-slate-600",
-  "검토중": "bg-amber-50 text-amber-700",
+  "수정중": "bg-amber-50 text-amber-700",
   "승인완료": "bg-emerald-50 text-emerald-700",
   "발송완료": "bg-blue-50 text-[#1D4ED8]",
 };
@@ -2077,17 +2093,17 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
       <col style={{ width: "12%" }} />
       <col style={{ width: "9%" }} />
       <col style={{ width: "13%" }} />
-      <col style={{ width: "22%" }} />
+      <col style={{ width: "16%" }} />
       <col style={{ width: "12%" }} />
       <col style={{ width: "8%" }} />
       <col style={{ width: "8%" }} />
       <col style={{ width: "9%" }} />
-      {withAction && <col style={{ width: "100px" }} />}
+      {withAction && <col style={{ width: "130px" }} />}
     </colgroup>
   );
 }
 
-function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onBulkApprovePending, onDedupe, onBulkDelete, isAdmin }) {
+function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkApprovePending, onDedupe, onBulkDelete, isAdmin }) {
   const [search, setSearch] = useState("");
   const [periodFilter, setPeriodFilter] = useState("전체");
   const [customFrom, setCustomFrom] = useState("");
@@ -2151,7 +2167,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
     const locked = isReviewLockedForStaff(p, isAdmin);
     const iconBtn = "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm leading-none";
     return (
-      <div className="grid grid-cols-2 gap-1 justify-items-center" style={{ width: "76px", minWidth: "76px" }}>
+      <div className="flex flex-wrap gap-1 justify-end" style={{ width: "116px", minWidth: "116px" }}>
         <button onClick={() => onOpenPdf(p)} title="PDF 제안서" className={iconBtn}>👁️</button>
         {locked ? (
           <span className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-slate-50 text-slate-400 text-sm" title="승인/발송완료된 제안서는 대표님만 수정할 수 있습니다">🔒</span>
@@ -2160,6 +2176,12 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         )}
         <button onClick={() => onCopy(p)} title="복사" className={iconBtn}>📋</button>
         {isAdmin && <button onClick={() => onDelete(p)} title="삭제" className={iconBtn + " border-red-100 text-red-500 hover:bg-red-50"}>🗑️</button>}
+        {onCreateInvoice && (
+          <button onClick={() => onCreateInvoice(p)} title="📄 인보이스 발행" className={iconBtn + " border-purple-200 text-purple-600 hover:bg-purple-50"}>📄</button>
+        )}
+        {onCreateSample && getReviewStatus(p) === "발송완료" && (
+          <button onClick={() => onCreateSample(p)} title="🧪 샘플요청 등록 — 고객이 실제로 샘플을 요청한 경우에만 눌러주세요" className={iconBtn + " border-emerald-200 text-emerald-600 hover:bg-emerald-50"}>🧪</button>
+        )}
         <HistoryBadge record={p} compact />
       </div>
     );
@@ -2182,9 +2204,11 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
           <div>{formatCreatedAtParts(p.sentAt || p.createdAt).time}</div>
         </td>
         <td className="px-3 py-3 text-xs font-medium text-slate-800 leading-snug" style={{ wordBreak: "keep-all", overflowWrap: "break-word" }} title={p.clientName}>{p.clientName}</td>
-        <td className="px-3 py-3 text-xs text-slate-600 text-center align-middle" title={p.itemSummary}>
-          <div className="flex items-center justify-center h-full">
-            <span className="leading-snug" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }}>{p.itemSummary}</span>
+        <td className="px-3 py-3 text-xs text-slate-600 text-center align-middle" title={(p.items || []).map((it) => it.productName).join(", ")}>
+          <div className="flex flex-col items-center justify-center h-full gap-0.5">
+            {(p.items && p.items.length > 0 ? p.items : [{ id: "x", productName: p.itemSummary }]).map((it, idx) => (
+              <span key={it.id || idx} className="leading-snug" style={{ wordBreak: "keep-all" }}>{it.productName}</span>
+            ))}
           </div>
         </td>
         <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{won(p.totalAmount)}</td>
@@ -2193,11 +2217,24 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
           {p.sentBy ? displayStaffName(p.sentBy) : <span className="text-slate-300">미발송</span>}
         </td>
         <td className="px-3 py-3" style={{ minWidth: "100px" }}>
-          <span className={"text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}>
-            {REVIEW_STATUS_LABELS[reviewStatus]}
-          </span>
+          {(() => {
+            const badge = <span className={"text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}>{REVIEW_STATUS_LABELS[reviewStatus]}</span>;
+            if (reviewStatus === "발송완료") return badge; // 발송완료는 그 누구도 드롭다운으로 되돌릴 수 없음 — 오직 🚀발송완료 버튼 경로로만 도달
+            const myOptions = isAdmin ? REVIEW_STATUS_ADMIN_OPTIONS : REVIEW_STATUS_STAFF_OPTIONS;
+            if (!isAdmin && !myOptions.includes(reviewStatus)) return badge; // 직원은 관리자가 다루는 중(수정중/승인완료)인 건은 손댈 수 없음, 조회만
+            return (
+              <select
+                value={reviewStatus}
+                onChange={(e) => onReviewStatusChange(p, e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                className={"text-xs px-2 py-1 rounded-full font-medium border-none outline-none cursor-pointer whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-500")}
+              >
+                {myOptions.map((s) => <option key={s} value={s}>{REVIEW_STATUS_LABELS[s]}</option>)}
+              </select>
+            );
+          })()}
         </td>
-        <td className="px-2 py-3 align-top" style={{ minWidth: "100px" }}><ActionButtons p={p} /></td>
+        <td className="px-2 py-3 align-top" style={{ minWidth: "130px" }}><ActionButtons p={p} /></td>
       </tr>
     );
   };
@@ -2432,10 +2469,11 @@ function SendCompleteModal({ onConfirm, onClose }) {
   );
 }
 
-function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
+function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, mode }) {
+  const isInvoice = mode === "invoice";
   const [showSendModal, setShowSendModal] = useState(false);
   const [greeting, setGreeting] = useState(GREETING);
-  const [terms, setTerms] = useState(TERMS);
+  const [terms, setTerms] = useState(isInvoice ? INVOICE_TERMS : TERMS);
   const [supplier, setSupplier] = useState(SUPPLIER);
   const [clientName, setClientName] = useState("");
   const [validUntil, setValidUntil] = useState("");
@@ -2444,16 +2482,22 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
   useEffect(() => {
     if (!data) return;
     setGreeting(GREETING);
-    setTerms(TERMS);
+    setTerms(isInvoice ? INVOICE_TERMS : TERMS);
     setSupplier(SUPPLIER);
     setClientName(data.clientName || "");
     setValidUntil(data.validUntil || "");
     setItems((data.items || []).map((it) => ({ ...it, productName: (data.proposalTitle && data.proposalTitle.trim()) ? data.proposalTitle : it.productName })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
   if (!open || !data) return null;
   const DARK = "#111827";
   const totalAmount = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
+  // 인보이스 하단 정산표: 공급가액합계 → 부가세(10%) → 총합계 → 계약금(30%) → 잔금(70%)
+  const vat = Math.round(totalAmount * 0.1);
+  const grandTotal = totalAmount + vat;
+  const depositAmount = Math.round(grandTotal * 0.3);
+  const balanceAmount = grandTotal - depositAmount;
 
   const updateItem = (id, field, value) => {
     setItems((prev) => prev.map((it) => {
@@ -2471,11 +2515,11 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
   const updateTerm = (idx, v) => setTerms((prev) => prev.map((t, i) => (i === idx ? v : t)));
 
   // "PDF로 저장" 시 브라우저가 기본 제안하는 파일명은 보통 document.title을 그대로 따르므로,
-  // 인쇄 다이얼로그를 열기 직전에만 제목을 "제안서_고객사명_작성일자"로 바꿔뒀다가 되돌린다.
+  // 인쇄 다이얼로그를 열기 직전에만 제목을 "제안서_고객사명_작성일자"(인보이스는 "인보이스_...")로 바꿔뒀다가 되돌린다.
   const handlePrint = () => {
     const originalTitle = document.title;
     const safeClient = (clientName || "").trim().replace(/[\\/:*?"<>|]/g, "") || "고객사";
-    document.title = `제안서_${safeClient}_${todayStr()}`;
+    document.title = `${isInvoice ? "인보이스" : "제안서"}_${safeClient}_${todayStr()}`;
     window.print();
     setTimeout(() => { document.title = originalTitle; }, 1000);
   };
@@ -2499,6 +2543,12 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
           {onSendComplete && data.id && (
             <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90">🚀 발송완료</button>
           )}
+          {!isInvoice && onCreateInvoice && data.id && (
+            <button onClick={() => onCreateInvoice(data)} className="px-4 py-2 rounded-lg bg-white border border-purple-300 text-purple-700 text-sm font-medium hover:bg-purple-50">📄 인보이스 발행</button>
+          )}
+          {!isInvoice && onCreateSample && data.id && data.reviewStatus === "발송완료" && (
+            <button onClick={() => onCreateSample(data)} title="고객이 실제로 샘플을 요청한 경우에만 눌러주세요" className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50">🧪 샘플요청 등록</button>
+          )}
         </div>
       </div>
       {showSendModal && (
@@ -2513,7 +2563,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
 
         {/* 1) 대타이틀 + 로고 */}
         <div className="flex items-start justify-between border-b-2 pb-4 mb-5" style={{ borderColor: DARK }}>
-          <h1 className="text-xl font-bold" style={{ color: DARK }}>제품공급제안서</h1>
+          <h1 className="text-xl font-bold" style={{ color: DARK }}>{isInvoice ? "INVOICE" : "제품공급제안서"}</h1>
           <img src={supplierLogo || DEFAULT_LOGO} className="h-12 object-contain" />
         </div>
 
@@ -2545,6 +2595,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
             <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">주소</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.address} onChange={(v) => setSupplier({ ...supplier, address: v })} className="w-full" /></td></tr>
             <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">업태</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizType} onChange={(v) => setSupplier({ ...supplier, bizType: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">종목</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizItem} onChange={(v) => setSupplier({ ...supplier, bizItem: v })} className="w-full" /></td></tr>
             <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">전화</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.tel} onChange={(v) => setSupplier({ ...supplier, tel: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">팩스</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.fax} onChange={(v) => setSupplier({ ...supplier, fax: v })} className="w-full" /></td></tr>
+            {isInvoice && (
+              <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">입금계좌</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.bank} onChange={(v) => setSupplier({ ...supplier, bank: v })} className="w-full" /></td></tr>
+            )}
           </tbody></table>
         </div>
 
@@ -2585,6 +2638,18 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
             ))}
           </tbody>
         </table>
+
+        {isInvoice && (
+          <table className="w-full border-collapse text-xs mb-6" style={{ color: DARK }}>
+            <tbody>
+              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium w-1/2">① 공급가액 합계</td><td className="border border-slate-300 py-1.5 px-3 text-right">{Math.round(totalAmount).toLocaleString("ko-KR")}원</td></tr>
+              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">② 부가가치세 (10%)</td><td className="border border-slate-300 py-1.5 px-3 text-right">{vat.toLocaleString("ko-KR")}원</td></tr>
+              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-100 font-bold">③ 총 합계금액 (①+②)</td><td className="border border-slate-300 py-1.5 px-3 text-right font-bold">{grandTotal.toLocaleString("ko-KR")}원</td></tr>
+              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">④ 계약금 청구금액 (30%)</td><td className="border border-slate-300 py-1.5 px-3 text-right">{depositAmount.toLocaleString("ko-KR")}원</td></tr>
+              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">⑤ 잔금 청구금액 (70%)</td><td className="border border-slate-300 py-1.5 px-3 text-right">{balanceAmount.toLocaleString("ko-KR")}원</td></tr>
+            </tbody>
+          </table>
+        )}
 
         {/* 5) 하단 참고사항 */}
         <div className="print-terms" style={{ color: DARK, fontSize: "12.5px", lineHeight: "1.65" }}>
@@ -5404,9 +5469,9 @@ function StockPickerModal({ stock, onClose, onPick }) {
   );
 }
 
-function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }) {
+function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId, onClose, onSave }) {
   const assigneeOptions = accounts || [];
-  const [linkedProposalId, setLinkedProposalId] = useState("");
+  const [linkedProposalId, setLinkedProposalId] = useState(initialProposalId || "");
   const [clientName, setClientName] = useState("");
   const [productName, setProductName] = useState("");
   const [itemOptions, setItemOptions] = useState([]); // 선택한 제안서에 포함된 품목명 목록
@@ -5430,6 +5495,11 @@ function SampleCreateModal({ accounts, proposals, sampleStock, onClose, onSave }
   };
 
   const canSave = clientName.trim() && productName.trim();
+  // "🧪 샘플요청 등록" 버튼(발송완료된 제안서 → 4단계로 선택 전환)으로 열렸을 때, 그 제안서를 자동으로 적용
+  useEffect(() => {
+    if (initialProposalId) applyProposal(String(initialProposalId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const save = async () => {
     if (!canSave) return;
     if (stockLocation === "korea" && !pickedStock) {
@@ -5892,8 +5962,24 @@ function SampleCard({ sample, accounts, products, proposals, supplierLogo, shipp
       <div className="flex gap-2">
         <button onClick={() => setShowInvoice(true)} className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-medium">📄 샘플비 인보이스 자동 생성</button>
         <button onClick={() => setShowAnnounce(true)} className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium">💬 고객 안내문 생성</button>
+        {sample.status === "발송" && !sample.orderConverted && (
+          <button
+            onClick={() => {
+              if (!window.confirm(`"${sample.clientName}" 건을 실제로 본품 계약·발주가 확정되어 5단계로 전환하시겠습니까?\n(파이프라인이 종결(Completed) 처리됩니다)`)) return;
+              onUpdate(sample, { orderConverted: true, orderConvertedAt: nowDateTimeStr(), orderConvertedBy: currentUserName || "알 수 없음" });
+            }}
+            className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-purple-300 text-purple-700 hover:bg-purple-50 font-medium"
+          >
+            📜 본품계약 전환
+          </button>
+        )}
         {isAdmin && <button onClick={() => onDelete(sample)} className="text-xs px-2 text-red-400 hover:text-red-600">🗑️</button>}
       </div>
+      {sample.orderConverted && (
+        <div className="mt-2 text-xs px-3 py-2 rounded-lg bg-purple-50 text-purple-700 font-medium">
+          🎉 본품계약 전환 완료 — 파이프라인 종결됨 ({sample.orderConvertedBy}, {sample.orderConvertedAt})
+        </div>
+      )}
 
       {/* 💬 업무 특이사항 및 소통 메모 — 작성자/작성일시 자동기록되는 타임라인 */}
       <div className="mt-4 pt-3 border-t border-slate-100">
@@ -6050,8 +6136,18 @@ function SampleDetailModal({ onClose, children }) {
   );
 }
 
-function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onSaveStockEdits, onDeleteStock, onAddMemo, onDeleteMemo }) {
+function SampleStageView({ samples, accounts, proposals, products, sampleStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onSaveStockEdits, onDeleteStock, onAddMemo, onDeleteMemo, initialProposalId, onConsumeInitialProposal }) {
   const [showCreate, setShowCreate] = useState(false);
+  const [pendingProposalId, setPendingProposalId] = useState(null); // "🧪 샘플요청 등록"으로 넘어온 제안서 id를 등록모달에 넘겨주기 위한 로컬 보관
+  // "🧪 샘플요청 등록"으로 특정(발송완료된) 제안서에서 넘어온 경우, 등록모달을 자동으로 열어준다.
+  useEffect(() => {
+    if (initialProposalId) {
+      setPendingProposalId(initialProposalId);
+      setShowCreate(true);
+      if (onConsumeInitialProposal) onConsumeInitialProposal();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialProposalId]);
   const [showStockManage, setShowStockManage] = useState(false);
   const [showFeeSettings, setShowFeeSettings] = useState(false);
   const [filter, setFilter] = useState("전체");
@@ -6128,6 +6224,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
                   <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
                   <td className="px-3 py-3 text-center whitespace-nowrap">
                     <span className={"inline-block text-[10px] px-2 py-1 rounded-full font-semibold border " + (SAMPLE_STATUS_COLORS[s.status] || "bg-slate-50 text-slate-500 border-slate-200")}>{SAMPLE_STATUS_LABELS[s.status] || s.status}</span>
+                    {s.orderConverted && <span className="ml-1 inline-block text-[10px] px-2 py-1 rounded-full font-semibold border bg-purple-50 text-purple-700 border-purple-200" title={`본품계약 전환 완료 (${s.orderConvertedBy || ""}, ${s.orderConvertedAt || ""})`}>📜 계약전환</span>}
                   </td>
                   <td className="px-3 py-3 text-center" onClick={(e) => toggleFlag(e, s, "customerConfirmed")}>
                     <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.customerConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
@@ -6148,7 +6245,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
 
-      {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} onClose={() => setShowCreate(false)} onSave={handleCreateSample} />}
+      {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} initialProposalId={pendingProposalId} onClose={() => { setShowCreate(false); setPendingProposalId(null); }} onSave={handleCreateSample} />}
       {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onSaveEdits={onSaveStockEdits} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
       {showFeeSettings && (
         <ShippingFeeSettingsModal
@@ -6368,6 +6465,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [draftItems, setDraftItems] = useState([]);
   const [clientInfo, setClientInfo] = useState(() => ({ clientName: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" }));
   const [proposalList, setProposalList] = useState([]);
+  const [invoiceList, setInvoiceList] = useState([]); // INVOICE(인보이스) 발행 목록 — 제안서에서 파생, proposalId로 연결
   const [factoriesList, setFactoriesList] = useState([]);
   const [productsList, setProductsList] = useState([]);
   const [excelArchiveList, setExcelArchiveList] = useState([]);
@@ -6375,6 +6473,29 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [sampleList, setSampleList] = useState([]);
   const [sampleStockList, setSampleStockList] = useState([]);
   const [productToPick, setProductToPick] = useState(null);
+  const [sampleInitProposalId, setSampleInitProposalId] = useState(null); // "🧪 샘플요청 등록"으로 4단계에 전달할 발송완료 제안서 id
+  // 발송완료된 제안서 하나를 골라 4단계(샘플진행)로 "선택적" 전환 — 자동이관이 아니라 사용자가 명시적으로 누를 때만
+  const createSampleFromProposal = (p) => {
+    setSampleInitProposalId(p.id);
+    setView("pipeline");
+    setActiveStep(4);
+  };
+  // 제안서를 기반으로 인보이스를 발행 — 품목/수량/단가/고객사 정보를 100% 그대로 가져오고, 미리보기를 바로 띄운다(버튼 한 번으로 자동입력)
+  const createInvoiceFromProposal = async (p) => {
+    const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
+    const code = `INV-${todayStr()}-${String(invoiceList.length + 1).padStart(3, "0")}`;
+    const record = {
+      code, proposalId: typeof p.id === "string" ? p.id : null, proposalCode: p.code || "",
+      clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "", employee: p.employee || "",
+      proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", totalAmount: p.totalAmount || 0, totalCbm: p.totalCbm || 0,
+      items: p.items || [], validUntil: addDays(30),
+      createdAt: nowDateTimeStr(), createdBy: actorName,
+    };
+    const local = { id: Date.now() + Math.random(), ...record };
+    setInvoiceList((prev) => [local, ...prev]);
+    setInvoiceData(local);
+    try { await fsAdd(COLLECTIONS.invoices, record); setToast("📄 인보이스가 발행되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
+  };
   const [productToView, setProductToView] = useState(null);
   // 날짜별(YYYYMMDD) 제안번호 순번 카운터. useState가 아닌 ref를 쓰는 이유:
   // ZIP/일괄 업로드 루프 안에서 여러 파일을 연속 처리할 때 setState는 비동기라 같은 렌더 안에서는
@@ -6406,10 +6527,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const unsub7 = fsSubscribe(COLLECTIONS.tasks, markResponded((list) => setTaskList(list)), handleFsError);
     const unsub8 = fsSubscribe(COLLECTIONS.samples, markResponded((list) => setSampleList(list)), handleFsError);
     const unsub9 = fsSubscribe(COLLECTIONS.sampleStock, markResponded((list) => setSampleStockList(list)), handleFsError);
+    const unsub10 = fsSubscribe(COLLECTIONS.invoices, markResponded((list) => setInvoiceList(list)), handleFsError);
     // 8초가 지나도 9개 컬렉션 중 단 하나도 응답(성공/실패 무관)이 없으면 — 권한거부 에러조차 안 뜬 것이므로
     // 네트워크/방화벽이 Firestore 접속 자체를 막고 있을 가능성이 높다고 보고 별도로 경고한다.
     const slowTimer = setTimeout(() => { if (FIREBASE_ENABLED && !gotAnyResponse) setFsSlowWarning(true); }, 8000);
-    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); clearTimeout(slowTimer); };
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); clearTimeout(slowTimer); };
   }, []);
   const [clientModal, setClientModal] = useState({ open: false, mode: "save" });
 
@@ -6431,6 +6553,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     return HASH_TO_VIEW[hashView] || "pipeline";
   }); // pipeline | proposals | clients | factories | products | excel
   const [pdfData, setPdfData] = useState(null);
+  const [invoiceData, setInvoiceData] = useState(null); // 인보이스 미리보기 모달에 띄울 데이터
   const [toast, setToast] = useState("");
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2200); return () => clearTimeout(t); }, [toast]);
@@ -7135,9 +7258,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       if (FIREBASE_ENABLED && p.id && typeof p.id === "string") await fsUpdate(COLLECTIONS.proposals, p.id, patch);
     } catch (e) { console.error(e); }
   };
-  // 관리자(대표님)가 제안서를 조회/수정 모드로 열었을 때, 아직 "검토대기" 상태면 자동으로 "검토중"으로 전환
+  // 관리자(대표님)가 제안서를 조회/수정 모드로 열었을 때, 아직 "검토대기" 상태면 자동으로 "수정중"으로 전환
   const markUnderReviewIfNeeded = (p) => {
-    if (isAdmin && getReviewStatus(p) === "검토대기") updateReviewStatus(p, "검토중");
+    if (isAdmin && getReviewStatus(p) === "검토대기") updateReviewStatus(p, "수정중");
   };
 
   // "검토대기" 상태인 제안서를 전부 한번에 "승인완료"로 일괄 전환 (관리자 전용)
@@ -7766,6 +7889,25 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             setToast("발송완료 처리 중 오류가 발생했습니다. (화면에는 반영됨)");
           }
         }}
+        onCreateSample={(p) => { setPdfData(null); createSampleFromProposal(p); }}
+        onCreateInvoice={(p) => createInvoiceFromProposal(p)}
+      />
+      <PdfPreview
+        mode="invoice"
+        open={!!invoiceData} data={invoiceData} onClose={() => setInvoiceData(null)} supplierLogo={supplierLogo}
+        onSendComplete={async (id, channel) => {
+          const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
+          const patch = { status: "발송완료", reviewStatus: "발송완료", sentBy: actorName, sentAt: nowDateTimeStr(), sentChannel: channel, updatedAt: nowDateTimeStr(), updatedBy: actorName };
+          setInvoiceList((prev) => prev.map((iv) => (iv.id === id ? { ...iv, ...patch } : iv)));
+          setInvoiceData((prev) => (prev && prev.id === id ? { ...prev, ...patch } : prev));
+          try {
+            if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(COLLECTIONS.invoices, id, patch);
+            setToast("✅ [발송완료] 상태로 변경되었습니다.");
+          } catch (e) {
+            console.error(e);
+            setToast("발송완료 처리 중 오류가 발생했습니다. (화면에는 반영됨)");
+          }
+        }}
       />
       <SettingsModal open={settingsOpen} onClose={() => { setSettingsOpen(false); window.location.hash = VIEW_TO_HASH[view] || ""; }} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} onShowAnalysis={() => setShowFinishingAnalysis(true)} />
       {showFinishingAnalysis && (
@@ -7883,6 +8025,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           proposals={proposalList}
           onBack={() => setView("pipeline")}
           onOpenPdf={(p) => setPdfData({ ...p, readOnly: true })}
+          onCreateSample={createSampleFromProposal}
+          onCreateInvoice={createInvoiceFromProposal}
           onView={(p) => {
             setDraftItems((p.items || []).map((it) => ({ ...it, id: it.id && typeof it.id !== "string" ? it.id : Date.now() + Math.random() })));
             setClientInfo({ clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
@@ -7949,6 +8093,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             }
           }}
           onReviewStatusChange={async (p, newReviewStatus) => {
+            if (newReviewStatus === "발송완료") { setToast("발송완료는 제안서 미리보기의 '🚀 발송완료' 버튼으로만 처리할 수 있습니다."); return; }
             const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
             const extra = newReviewStatus === "승인완료" ? { updatedAt: nowDateTimeStr(), updatedBy: actorName } : {};
             await updateReviewStatus(p, newReviewStatus, extra);
@@ -8476,17 +8621,55 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       {view === "pipeline" && activeStep === 4 && (
         <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
-          onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onSaveStockEdits={saveSampleStockEdits} onDeleteStock={deleteSampleStock} />
+          onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onSaveStockEdits={saveSampleStockEdits} onDeleteStock={deleteSampleStock}
+          initialProposalId={sampleInitProposalId} onConsumeInitialProposal={() => setSampleInitProposalId(null)} />
       )}
 
       {view === "pipeline" && activeStep === 5 && (
-        <PlaceholderStage icon="📦" title="5단계 · 본품계약 & 공장 발주 (Order & Final Invoice)"
-          desc="계약이 확정되면 이 단계에서 정식 인보이스와 공장 발주서를 생성합니다."
-          points={[
-            "본품 인보이스 (원화/외환 선택 발행)",
-            "중국 공장 전달용 발주서(订货单) — 제품명/수량/단가/합계, 정금(定金) 30% · 여관(余款) 70% 자동 구분",
-            "정산내역서 — 상품대금/운송료/통관수수료/이익·이익율 자동 계산 후 DB 보관",
-          ]} />
+        <main className="max-w-5xl mx-auto px-6 py-8">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">📦 5단계 · 본품계약 & 공장 발주 (Order & Final Invoice)</h2>
+              <p className="text-xs text-slate-400 mt-1">4단계에서 "📜 본품계약 전환"된 건이 여기 모입니다. 각 건에서 원본 제안서와 발행된 인보이스를 바로 확인할 수 있습니다.</p>
+            </div>
+          </div>
+          {(() => {
+            const orders = sampleList.filter((s) => s.orderConverted);
+            if (orders.length === 0) {
+              return <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">아직 본품계약으로 전환된 건이 없습니다. 4단계 샘플 진행에서 "📜 본품계약 전환" 버튼을 눌러 등록해주세요.</div>;
+            }
+            return (
+              <div className="space-y-3">
+                {orders.map((s) => {
+                  const linkedProposal = proposalList.find((p) => String(p.id) === String(s.linkedProposalId));
+                  const linkedInvoice = invoiceList.find((iv) => String(iv.proposalId) === String(s.linkedProposalId));
+                  return (
+                    <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-800 text-sm">{s.clientName} <span className="text-slate-400 font-normal">— {s.productName}</span></div>
+                        <div className="text-xs text-slate-400 mt-0.5">본품계약 전환: {s.orderConvertedBy} · {s.orderConvertedAt}</div>
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => linkedProposal ? setPdfData({ ...linkedProposal, readOnly: true }) : setToast("연결된 원본 제안서를 찾을 수 없습니다.")}
+                          className="text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 font-medium whitespace-nowrap"
+                        >
+                          📋 원본 제안서 보기
+                        </button>
+                        <button
+                          onClick={() => linkedInvoice ? setInvoiceData(linkedInvoice) : setToast("아직 발행된 인보이스가 없습니다. 원본 제안서에서 '📄 인보이스 발행'을 먼저 진행해주세요.")}
+                          className="text-xs px-3 py-2 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 font-medium whitespace-nowrap"
+                        >
+                          📄 발행 인보이스 보기
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </main>
       )}
     </div>
   );
