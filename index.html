@@ -13,6 +13,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://t1.kakaocdn.net/kakao_js_sdk/2.7.2/kakao.min.js" crossorigin="anonymous"></script>
 <style>
   body { font-family: "Malgun Gothic", "Apple SD Gothic Neo", system-ui, -apple-system, sans-serif; background:#DCE1EA; }
   ::-webkit-scrollbar { height: 8px; width: 8px; }
@@ -60,6 +61,46 @@ if (FIREBASE_ENABLED) {
   } catch (e) {
     console.error("Firebase 초기화 실패:", e);
   }
+}
+
+/* =========================================================================
+   카카오톡 "공유하기" 연동 (서버 없이 클라이언트에서 바로 가능한 방식)
+   1) https://developers.kakao.com 에서 앱 등록(무료) → "앱 키" 탭에서 JavaScript 키 발급
+   2) [내 애플리케이션] → [플랫폼] → Web 플랫폼에 이 사이트 도메인 등록
+      (예: https://cosmepack-pipeline.vercel.app, https://cosmepack.co.kr)
+   3) 아래 KAKAO_JS_KEY 값을 발급받은 JavaScript 키로 교체
+   그러면 제안서 미리보기 화면의 "💬 카카오톡 공유" 버튼이 바로 작동합니다.
+   (참고: 사람이 직접 받을 사람을 골라 보내는 "공유하기" 방식이며, 번호로 자동발송하는
+    "알림톡/친구톡"은 카카오 비즈니스 인증 + 유료 발송대행사 API + 별도 서버가 필요해 이 방식과는 다릅니다.)
+========================================================================= */
+const KAKAO_JS_KEY = "YOUR_KAKAO_JS_KEY"; // 발급받은 JavaScript 키로 교체해주세요
+const KAKAO_ENABLED = KAKAO_JS_KEY !== "YOUR_KAKAO_JS_KEY";
+let kakaoReady = false;
+if (KAKAO_ENABLED && typeof Kakao !== "undefined") {
+  try {
+    if (!Kakao.isInitialized()) Kakao.init(KAKAO_JS_KEY);
+    kakaoReady = Kakao.isInitialized();
+  } catch (e) {
+    console.error("카카오 SDK 초기화 실패:", e);
+  }
+}
+// 제안서 정보를 카카오톡 공유하기(피드형 메시지)로 전송 — 클릭한 사람이 카카오톡에서 보낼 대화상대를 직접 고르는 방식
+function shareProposalToKakao({ clientName, code, totalAmount, logoUrl }) {
+  if (!KAKAO_ENABLED || !kakaoReady) {
+    alert("카카오톡 공유 기능이 아직 설정되지 않았습니다.\n개발자에게 문의해 Kakao Developers JavaScript 키를 등록해주세요.");
+    return;
+  }
+  const pageUrl = window.location.href.split("#")[0].split("?")[0];
+  Kakao.Share.sendDefault({
+    objectType: "feed",
+    content: {
+      title: `${clientName || "고객사"} 제안서 (${code || ""})`,
+      description: totalAmount ? `총 제안금액: ${totalAmount}` : "제안서 내용을 확인해주세요.",
+      imageUrl: logoUrl || "https://cosmepack-pipeline.vercel.app/favicon.ico",
+      link: { mobileWebUrl: pageUrl, webUrl: pageUrl },
+    },
+    buttons: [{ title: "제안서 확인하기", link: { mobileWebUrl: pageUrl, webUrl: pageUrl } }],
+  });
 }
 
 // Firestore 컬렉션 이름 (요청하신 4개 컬렉션)
@@ -922,7 +963,7 @@ function ProductCompareCard({ product, label, accent }) {
       <div className="text-[10px] font-semibold text-slate-400 mb-2">{label}</div>
       <div className="flex gap-3">
         <div className="w-20 h-20 rounded-lg bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
-          {product.image ? <img src={product.image} alt={product.name} className="w-full h-full object-cover" /> : <span className="text-slate-300 text-xs">사진</span>}
+          {product.image ? <img src={product.image} alt={product.name} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-xs">사진</span>}
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold truncate" style={{ color: "#1e293b" }}>{product.name}</div>
@@ -1034,7 +1075,7 @@ function MergeCandidateThumb({ product }) {
       style={product ? { cursor: "help" } : undefined}
     >
       {product && product.image ? (
-        <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
+        <img src={product.image} alt={product.name} loading="lazy" className="w-full h-full object-cover" />
       ) : (
         <span className="text-slate-300 text-lg">🧴</span>
       )}
@@ -1375,8 +1416,18 @@ const DEFAULT_EXRATE = { rmbToKrw: 230, rmbToUsd: 6.8, usdToKrw: 1380 };
 const EXRATE_CACHE_KEY = "cosmepack_exrate_cache";
 const EXRATE_SAVED_KEY = "cosmepack_exrate_saved"; // 사용자가 직접 저장한 환율 + 저장일시
 const PRICING_SETTINGS_KEY = "cosmepack_pricing_settings"; // 기준정보(물류비/마진율표/관세율/난이도차등율/로고) 저장용
+// 기준정보 localStorage 캐시 — 최초 1회만 읽고 파싱해서 메모리 변수(_pricingSettingsCacheMemo)에 저장해두고,
+// 이후 호출은 전부 그 메모리 값을 즉시 반환한다(반복적인 localStorage.getItem+JSON.parse 방지, 초기 렌더링 시 8곳에서 중복 파싱하던 문제 해결).
+let _pricingSettingsCacheMemo;
 function loadPricingSettingsCache() {
-  try { return JSON.parse(localStorage.getItem(PRICING_SETTINGS_KEY) || "null"); } catch (e) { return null; }
+  if (_pricingSettingsCacheMemo !== undefined) return _pricingSettingsCacheMemo;
+  try { _pricingSettingsCacheMemo = JSON.parse(localStorage.getItem(PRICING_SETTINGS_KEY) || "null"); } catch (e) { _pricingSettingsCacheMemo = null; }
+  return _pricingSettingsCacheMemo;
+}
+// 저장(save) 시에는 반드시 이 함수로 메모리 캐시도 함께 갱신해야 한다 — 그렇지 않으면 저장 직후에도
+// loadPricingSettingsCache()가 예전 값을 계속 돌려주게 된다.
+function invalidatePricingSettingsCache(nextValue) {
+  _pricingSettingsCacheMemo = nextValue;
 }
 // 무료 환율 API(open.er-api.com, CORS 제한 없음)로 CNY->KRW, CNY->USD, USD->KRW 중간환율을 가져와
 // 은행 송금(전신환매도율) 기준 근사 우대환율을 계산한다. 실제 은행 고시환율과는 소폭 차이가 있을 수 있는 "추천값"이다.
@@ -1591,7 +1642,7 @@ function ZoomableImage({ src, alt, className }) {
   if (!src) return null;
   return (
     <React.Fragment>
-      <img src={src} alt={alt || ""} className={className} onClick={() => setOpen(true)} style={{ cursor: "zoom-in" }} />
+      <img src={src} alt={alt || ""} loading="lazy" className={className} onClick={() => setOpen(true)} style={{ cursor: "zoom-in" }} />
       {open && (
         <div className="fixed inset-0 bg-black/85 z-[100] flex items-center justify-center p-6" onClick={() => setOpen(false)}>
           <img src={src} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} />
@@ -1634,7 +1685,7 @@ function ImageUpload({ value, onChange }) {
       </div>
       <div className="flex items-center gap-3">
         <div className="w-16 h-16 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
-          {value ? <img src={value} className="w-full h-full object-cover" /> : <span className="text-slate-300 text-xs">사진</span>}
+          {value ? <img src={value} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-xs">사진</span>}
         </div>
         {mode === "upload" ? (
           <div className="flex flex-col gap-1">
@@ -2392,6 +2443,13 @@ function PdfPreview({ open, onClose, data, supplierLogo }) {
         <div className="flex gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
           <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
+          <button
+            onClick={() => shareProposalToKakao({ clientName, code: data.code, totalAmount: won(totalAmount), logoUrl: supplierLogo || DEFAULT_LOGO })}
+            title={KAKAO_ENABLED ? "" : "아직 카카오 JavaScript 키가 등록되지 않았습니다"}
+            className="px-4 py-2 rounded-lg bg-[#FEE500] text-[#191919] text-sm font-medium hover:opacity-90"
+          >
+            💬 카카오톡 공유
+          </button>
         </div>
       </div>
 
@@ -4870,7 +4928,7 @@ function TaskCreateModal({ accounts, currentUserName, onClose, onSave }) {
               <div className="grid grid-cols-4 gap-2 mt-2">
                 {images.map((img, i) => (
                   <div key={i} className="relative group">
-                    <img src={img} className="w-full h-16 object-cover rounded-lg border border-slate-200" />
+                    <img src={img} loading="lazy" className="w-full h-16 object-cover rounded-lg border border-slate-200" />
                     <button onClick={() => removeImage(i)} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs leading-5 opacity-90 hover:opacity-100">✕</button>
                   </div>
                 ))}
@@ -5555,7 +5613,7 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
                 <tbody>
                   <tr style={{ height: "56px" }}>
                     <td className="border border-slate-400 text-center">1</td>
-                    <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} className="w-14 h-14 object-cover mx-auto" /> : "-"}</td>
+                    <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} loading="lazy" className="w-14 h-14 object-cover mx-auto" /> : "-"}</td>
                     <td className="border border-slate-400 px-2">{productName}</td>
                     <td className="border border-slate-400 px-2">{spec}</td>
                     <td className="border border-slate-400 text-center">{qty}</td>
@@ -5864,7 +5922,7 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onSaveEdi
                     {suggestions.map((p) => (
                       <button key={p.id} type="button" onMouseDown={() => pickSuggestion(p)} className="w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-slate-50 text-left border-b border-slate-50 last:border-0">
                         <div className="w-9 h-9 rounded bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
-                          {p.image ? <img src={p.image} className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
+                          {p.image ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-xs font-medium text-slate-800" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>{p.name}</div>
@@ -6107,14 +6165,22 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setExSettingsOpen(false);
   };
 
-  // 페이지 로드시 캐시된 환율을 즉시 보여주고, 오늘 아직 갱신 안 됐으면 API를 호출해 하루 1회만 자동 갱신
+  // 페이지 로드시 캐시된 환율을 즉시 보여주고, 오늘 아직 갱신 안 됐으면 API를 호출해 하루 1회만 자동 갱신.
+  // 이 API호출은 화면 렌더링에 필요한 작업이 아니므로 requestIdleCallback(브라우저가 한가할 때)으로 미뤄서
+  // 첫 화면이 뜨는 속도와 경합하지 않도록 한다(미지원 브라우저는 setTimeout으로 대체).
   useEffect(() => {
-    try {
-      const cached = JSON.parse(localStorage.getItem(EXRATE_CACHE_KEY) || "null");
-      if (cached) setExRateSuggestion(cached);
-      if (cached && cached.fetchedDate === todayStr()) return; // 오늘 이미 갱신됨
-    } catch (e) { console.error(e); }
-    fetchTodayExchangeRates().then((rates) => { if (rates) setExRateSuggestion(rates); });
+    const runWhenIdle = (fn) => {
+      if (typeof requestIdleCallback === "function") requestIdleCallback(fn, { timeout: 2000 });
+      else setTimeout(fn, 200);
+    };
+    runWhenIdle(() => {
+      try {
+        const cached = JSON.parse(localStorage.getItem(EXRATE_CACHE_KEY) || "null");
+        if (cached) setExRateSuggestion(cached);
+        if (cached && cached.fetchedDate === todayStr()) return; // 오늘 이미 갱신됨
+      } catch (e) { console.error(e); }
+      fetchTodayExchangeRates().then((rates) => { if (rates) setExRateSuggestion(rates); });
+    });
   }, []);
 
   // "🔄 오늘 환율 적용" 버튼 — API로 받아온 추천 환율을 입력창(exRate)에 즉시 반영해 제안가 계산식에 바로 연동
@@ -6149,7 +6215,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   // "저장하고 닫기" 버튼 — 기준정보 7종을 localStorage + Firestore에 함께 저장(다음 접속에도 유지, 다른 기기와도 동기화)
   const saveSettingsConfig = async () => {
     const payload = { logistics, marginTable, customsRates, difficultyMargins, supplierLogo, finishingOptions, shippingFees, shippingFeeNotes, savedAt: nowDateTimeStr() };
-    try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); } catch (e) { console.error(e); }
+    try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); invalidatePricingSettingsCache(payload); } catch (e) { console.error(e); }
     try { if (FIREBASE_ENABLED && db) await db.collection(COLLECTIONS.settings).doc("pricingConfig").set(payload); } catch (e) { console.error(e); }
   };
 
@@ -6159,7 +6225,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setShippingFeeNotes(notes);
     const cache = loadPricingSettingsCache() || {};
     const payload = { ...cache, logistics, marginTable, customsRates, difficultyMargins, supplierLogo, finishingOptions, shippingFees: fees, shippingFeeNotes: notes, savedAt: nowDateTimeStr() };
-    try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); } catch (e) { console.error(e); }
+    try { localStorage.setItem(PRICING_SETTINGS_KEY, JSON.stringify(payload)); invalidatePricingSettingsCache(payload); } catch (e) { console.error(e); }
     try { if (FIREBASE_ENABLED && db) await db.collection(COLLECTIONS.settings).doc("pricingConfig").set(payload); } catch (e) { console.error(e); }
     setToast("배송비 설정을 저장했습니다.");
   };
