@@ -13,7 +13,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://t1.kakaocdn.net/kakao_js_sdk/2.7.2/kakao.min.js" crossorigin="anonymous"></script>
 <style>
   body { font-family: "Malgun Gothic", "Apple SD Gothic Neo", system-ui, -apple-system, sans-serif; background:#DCE1EA; }
   ::-webkit-scrollbar { height: 8px; width: 8px; }
@@ -61,46 +60,6 @@ if (FIREBASE_ENABLED) {
   } catch (e) {
     console.error("Firebase 초기화 실패:", e);
   }
-}
-
-/* =========================================================================
-   카카오톡 "공유하기" 연동 (서버 없이 클라이언트에서 바로 가능한 방식)
-   1) https://developers.kakao.com 에서 앱 등록(무료) → "앱 키" 탭에서 JavaScript 키 발급
-   2) [내 애플리케이션] → [플랫폼] → Web 플랫폼에 이 사이트 도메인 등록
-      (예: https://cosmepack-pipeline.vercel.app, https://cosmepack.co.kr)
-   3) 아래 KAKAO_JS_KEY 값을 발급받은 JavaScript 키로 교체
-   그러면 제안서 미리보기 화면의 "💬 카카오톡 공유" 버튼이 바로 작동합니다.
-   (참고: 사람이 직접 받을 사람을 골라 보내는 "공유하기" 방식이며, 번호로 자동발송하는
-    "알림톡/친구톡"은 카카오 비즈니스 인증 + 유료 발송대행사 API + 별도 서버가 필요해 이 방식과는 다릅니다.)
-========================================================================= */
-const KAKAO_JS_KEY = "3f10b7afef2c5fd1d340424a7211647f"; // (주)비케이브로 카카오디벨로퍼스 앱의 JavaScript 키
-const KAKAO_ENABLED = KAKAO_JS_KEY !== "YOUR_KAKAO_JS_KEY";
-let kakaoReady = false;
-if (KAKAO_ENABLED && typeof Kakao !== "undefined") {
-  try {
-    if (!Kakao.isInitialized()) Kakao.init(KAKAO_JS_KEY);
-    kakaoReady = Kakao.isInitialized();
-  } catch (e) {
-    console.error("카카오 SDK 초기화 실패:", e);
-  }
-}
-// 제안서 정보를 카카오톡 공유하기(피드형 메시지)로 전송 — 클릭한 사람이 카카오톡에서 보낼 대화상대를 직접 고르는 방식
-function shareProposalToKakao({ clientName, code, totalAmount, logoUrl }) {
-  if (!KAKAO_ENABLED || !kakaoReady) {
-    alert("카카오톡 공유 기능이 아직 설정되지 않았습니다.\n개발자에게 문의해 Kakao Developers JavaScript 키를 등록해주세요.");
-    return;
-  }
-  const pageUrl = window.location.href.split("#")[0].split("?")[0];
-  Kakao.Share.sendDefault({
-    objectType: "feed",
-    content: {
-      title: `${clientName || "고객사"} 제안서 (${code || ""})`,
-      description: totalAmount ? `총 제안금액: ${totalAmount}` : "제안서 내용을 확인해주세요.",
-      imageUrl: logoUrl || "https://cosmepack-pipeline.vercel.app/favicon.ico",
-      link: { mobileWebUrl: pageUrl, webUrl: pageUrl },
-    },
-    buttons: [{ title: "제안서 확인하기", link: { mobileWebUrl: pageUrl, webUrl: pageUrl } }],
-  });
 }
 
 // Firestore 컬렉션 이름 (요청하신 4개 컬렉션)
@@ -2443,13 +2402,6 @@ function PdfPreview({ open, onClose, data, supplierLogo }) {
         <div className="flex gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
           <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
-          <button
-            onClick={() => shareProposalToKakao({ clientName, code: data.code, totalAmount: won(totalAmount), logoUrl: supplierLogo || DEFAULT_LOGO })}
-            title={KAKAO_ENABLED ? "" : "아직 카카오 JavaScript 키가 등록되지 않았습니다"}
-            className="px-4 py-2 rounded-lg bg-[#FEE500] text-[#191919] text-sm font-medium hover:opacity-90"
-          >
-            💬 카카오톡 공유
-          </button>
         </div>
       </div>
 
@@ -7540,6 +7492,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       setRmbShip(snap.rmbShip ?? 0);
       setCustomsRate(snap.customsRate ?? (customsRates[item.category] ?? 0));
       setMarginOverride(snap.marginOverride ?? null);
+      if (snap.exRateSnapshot) setExRate(snap.exRateSnapshot); // 당시 적용됐던 환율도 함께 복원(기존엔 저장만 되고 복원이 누락되어 있었음)
       setToast(`품목 데이터를 불러왔습니다 (당시 마진율 ${pct((snap.marginRate || 0) * 100)}, 개당이익 ${won(snap.profitPerUnit || 0)}). 수정 후 [수정 반영]을 눌러주세요.`);
     } else {
       setMarginOverride(null);
@@ -7548,6 +7501,20 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   };
 
   const cancelEditItem = () => { setEditingItemId(null); resetItemForm(); };
+
+  // 제안서 목록에서 "보기"/"불러오기(수정)"로 제안서를 열 때, 1단계(가격조사)·2단계(제안가 계산) 화면에도
+  // 이 제안서 당시의 데이터를 함께 채워둔다 — 그래야 탭을 넘나들어도 데이터가 끊기거나 비어보이지 않는다.
+  const syncStoryFromProposal = (p) => {
+    const firstItem = (p.items || [])[0];
+    if (!firstItem) return;
+    loadDraftItemForEdit(firstItem); // 2단계: 제품정보+환율+CBM물류비+관세+마진율+제안가를 당시 값 그대로 복원
+    // 1단계: 원본 조사 정보(사진/위안화원가/수량/공장명/위챗방)를 등록 입력창에 프리필 — 기존 "🔍기존 제품DB불러오기"와 동일한 경로(pickProduct)를 재사용
+    setProductToPick({
+      name: firstItem.productName, image: firstItem.image, specSize: firstItem.specSize, material: firstItem.material,
+      category: firstItem.category, factory: firstItem.factory, wechatGroup: firstItem.wechatGroup,
+      rmbCost: firstItem.calcSnapshot ? firstItem.calcSnapshot.rmbBase : undefined, moqQuantity: firstItem.quantity,
+    });
+  };
 
   const addItemToDraft = () => {
     if (!productName.trim()) { setToast("제품명을 입력해주세요."); return; }
@@ -7785,6 +7752,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             setProposalReadOnly(true);
             setEditingProposalId(typeof p.id === "string" ? p.id : null);
             setEditingProposalHistory({ createdAt: p.createdAt, createdBy: p.createdBy, updatedAt: p.updatedAt, updatedBy: p.updatedBy });
+            syncStoryFromProposal(p);
             setView("pipeline");
             setActiveStep(3);
             markUnderReviewIfNeeded(p);
@@ -7801,6 +7769,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             setProposalReadOnly(false);
             setEditingProposalId(typeof p.id === "string" ? p.id : null);
             setEditingProposalHistory({ createdAt: p.createdAt, createdBy: p.createdBy, updatedAt: p.updatedAt, updatedBy: p.updatedBy });
+            syncStoryFromProposal(p);
             setView("pipeline");
             setActiveStep(2);
             markUnderReviewIfNeeded(p);
@@ -7896,6 +7865,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         {proposalReadOnly && (
           <div className="max-w-7xl mx-auto px-6 pt-6"><div className="bg-slate-100 text-slate-500 text-xs px-4 py-2 rounded-lg">🔒 조회 전용 모드입니다. 목록에서 "✏️ 수정"으로 불러와야 편집할 수 있습니다.</div></div>
         )}
+        {editingProposalId && (
+          <div className="max-w-7xl mx-auto px-6 pt-6"><div className="bg-[#1E3A8A]/5 text-[#1E3A8A] text-xs px-4 py-2 rounded-lg">📄 현재 열람 중인 제안서: <b>{clientInfo.clientName}</b>{clientInfo.proposalTitle ? ` — ${clientInfo.proposalTitle}` : ""} (원본 조사 정보가 아래 입력창에 채워져 있습니다)</div></div>
+        )}
         <fieldset disabled={proposalReadOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
           <SourcingStage items={sourcingItems} onAdd={addSourcingItem} onUpdateItem={updateSourcingItem} onDeleteItem={deleteSourcingItem} onSend={sendToProposal} onSendBulk={sendBulkToProposal} products={productsList} pickedProduct={productToPick} onConsumePicked={() => setProductToPick(null)} currentUserName={(roleUser && roleUser.displayName) || ""} />
         </fieldset>
@@ -7906,6 +7878,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <>
         {proposalReadOnly && (
           <div className="max-w-7xl mx-auto px-6 pt-6"><div className="bg-slate-100 text-slate-500 text-xs px-4 py-2 rounded-lg">🔒 조회 전용 모드입니다. 목록에서 "✏️ 수정"으로 불러와야 편집할 수 있습니다.</div></div>
+        )}
+        {editingProposalId && (
+          <div className="max-w-7xl mx-auto px-6 pt-6"><div className="bg-[#1E3A8A]/5 text-[#1E3A8A] text-xs px-4 py-2 rounded-lg">📄 현재 열람 중인 제안서: <b>{clientInfo.clientName}</b>{clientInfo.proposalTitle ? ` — ${clientInfo.proposalTitle}` : ""} (당시 원가·환율·마진율이 아래에 그대로 채워져 있습니다. 다른 품목을 보려면 3단계 품목 목록에서 클릭해주세요)</div></div>
         )}
         <fieldset disabled={proposalReadOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
           <main className="max-w-7xl mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
