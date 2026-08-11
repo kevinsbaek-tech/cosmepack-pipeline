@@ -2027,8 +2027,9 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
       {withCheckbox && <col style={{ width: "3%", minWidth: "36px" }} />}
       <col style={{ width: "12%", minWidth: "105px" }} />
       <col style={{ width: "10%", minWidth: "90px" }} />
-      <col style={{ width: "11%", minWidth: "95px" }} />
-      <col style={{ width: withAction ? "21%" : "31%", minWidth: "130px" }} />
+      <col style={{ width: "10%", minWidth: "90px" }} />
+      <col style={{ width: "9%", minWidth: "80px" }} />
+      <col style={{ width: withAction ? "18%" : "28%", minWidth: "130px" }} />
       <col style={{ width: "12%", minWidth: "95px" }} />
       <col style={{ width: "9%", minWidth: "75px" }} />
       <col style={{ width: "11%", minWidth: "100px" }} />
@@ -2128,6 +2129,9 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         </td>
         <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt(p.createdAt)}</td>
         <td className="px-3 py-3 text-sm font-medium text-slate-800 truncate" style={{ maxWidth: "160px" }} title={p.clientName}>{p.clientName}</td>
+        <td className="px-3 py-3 text-xs whitespace-nowrap">
+          {p.employee ? <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">👤 {p.employee}</span> : <span className="text-slate-300">-</span>}
+        </td>
         <td className="px-3 py-3 text-xs text-slate-600 truncate" style={{ maxWidth: "260px" }} title={p.itemSummary}>{p.itemSummary}</td>
         <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{won(p.totalAmount)}</td>
         <td className="px-3 py-3">
@@ -2267,7 +2271,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
                         </th>
                       )}
                       <th className="text-left px-3 py-2 font-medium">제안번호</th><th className="text-left px-3 py-2 font-medium">발송일시</th>
-                      <th className="text-left px-3 py-2 font-medium">고객사명</th><th className="text-left px-3 py-2 font-medium">대표 제품명</th>
+                      <th className="text-left px-3 py-2 font-medium">고객사명</th><th className="text-left px-3 py-2 font-medium">담당자</th><th className="text-left px-3 py-2 font-medium">대표 제품명</th>
                       <th className="text-right px-3 py-2 font-medium">총 제안금액</th><th className="text-left px-3 py-2 font-medium">상태</th><th className="text-left px-3 py-2 font-medium">검토상태</th><th className="text-right px-3 py-2 font-medium">작업</th>
                     </tr></thead>
                     <tbody>{list.map((p) => <ProposalRow key={p.id} p={p} />)}</tbody>
@@ -2287,7 +2291,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
                   <th className="text-center px-2 py-3 font-medium"><input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /></th>
                 )}
                 <th className="text-left px-3 py-3 font-medium">제안번호</th><th className="text-left px-3 py-3 font-medium">발송일시</th>
-                <th className="text-left px-3 py-3 font-medium">고객사명</th><th className="text-left px-3 py-3 font-medium">대표 제품명/품목요약</th>
+                <th className="text-left px-3 py-3 font-medium">고객사명</th><th className="text-left px-3 py-3 font-medium">담당자</th><th className="text-left px-3 py-3 font-medium">대표 제품명/품목요약</th>
                 <th className="text-right px-3 py-3 font-medium">총 제안금액</th><th className="text-left px-3 py-3 font-medium">상태</th><th className="text-left px-3 py-3 font-medium">검토상태</th><th className="text-right px-3 py-3 font-medium">작업</th>
               </tr></thead>
               <tbody>{pagedList.map((p) => <ProposalRow key={p.id} p={p} />)}</tbody>
@@ -2944,7 +2948,7 @@ function ProposalEditStage({ draftItems, setDraftItems, removeDraftItem, clientI
           <Field label="문의 채널">
             <select disabled={readOnly} className={inputCls + (readOnly ? " bg-slate-50 text-slate-500" : "")} value={clientInfo.channel} onChange={(e) => setClientInfo({ ...clientInfo, channel: e.target.value })}><option>카카오채널</option><option>이메일</option><option>전화</option></select>
           </Field>
-          <Field label="담당 직원명" hint="필수"><input disabled={readOnly} className={inputCls + (readOnly ? " bg-slate-50 text-slate-500" : "")} value={clientInfo.employee} onChange={(e) => setClientInfo({ ...clientInfo, employee: e.target.value })} placeholder="예: 김직원" /></Field>
+          <Field label="담당 직원명" hint="로그인 계정으로 자동 지정됩니다"><input disabled className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-100 text-slate-500 cursor-not-allowed text-sm" value={clientInfo.employee} placeholder="예: 김직원" /></Field>
         </div>
       </Card>
 
@@ -6260,7 +6264,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   }, [category, quantity, cbm, customsRate, rmbBase, rmbBox, rmbInspect, rmbShip, marginTable, logistics, exRate, marginOverride, clientsList, difficultyMargins, marginClientName, finishingOptions, selectedFinishingIds, selectedFinishingQty, finishingApplyMode]);
 
   const [draftItems, setDraftItems] = useState([]);
-  const [clientInfo, setClientInfo] = useState({ clientName: "", contact: "", channel: "카카오채널", employee: "", proposalTitle: "" });
+  const [clientInfo, setClientInfo] = useState(() => ({ clientName: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" }));
   const [proposalList, setProposalList] = useState([]);
   const [factoriesList, setFactoriesList] = useState([]);
   const [productsList, setProductsList] = useState([]);
@@ -6400,7 +6404,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       }
       setToast("✅ 업체 상호 및 연관 제안서 데이터가 정상적으로 동기화 수정되었습니다.");
     } else {
-      setToast("업체 정보가 수정되었습니다.");
+      setToast("✅ 성공적으로 수정되었습니다.");
     }
   };
   const deleteClientRecord = async (c) => {
@@ -6522,10 +6526,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         }
         setToast(`공장명 변경에 따라 연동 제품 ${affected.length}건도 자동 갱신되었습니다.`);
       } else {
-        setToast("공장 정보가 수정되었습니다.");
+        setToast("✅ 성공적으로 수정되었습니다.");
       }
     } else {
-      setToast("공장 정보가 수정되었습니다.");
+      setToast("✅ 성공적으로 수정되었습니다.");
     }
   };
   const deleteFactoryRecord = async (f) => {
@@ -7305,7 +7309,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setProductsList((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
     try {
       if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(COLLECTIONS.products, id, patch);
-      setToast("제품 정보가 수정되었습니다.");
+      setToast("✅ 성공적으로 수정되었습니다.");
     } catch (e) {
       console.error(e);
       setToast("Firestore 수정 중 오류가 발생했습니다. (화면에는 반영됨)");
@@ -8166,31 +8170,47 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               </Card>
               <Card title="③ 총 주문 이익 요약">
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <ResultBox
-                    label="총 제안금액" value={won(calc.totalProposal)}
-                    tooltip={`개당 제안단가(${won(calc.proposedPrice)}) × 주문수량(${(Number(quantity) || 0).toLocaleString("ko-KR")}개) = ${won(calc.totalProposal)}`}
-                  />
-                  <ResultBox
-                    label="총 상품 공장원가" value={won(calc.totalFactoryCost)} sub="공장 순수 원가"
-                    tooltip={`개당 공장원가(¥${(Number(rmbBase) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })} × ${fmtRate(exRate.rmbToKrw)}원 = ${won(calc.pureFactoryCostKrw)}) × ${(Number(quantity) || 0).toLocaleString("ko-KR")}개 = ${won(calc.totalFactoryCost)}`}
-                  />
-                  <ResultBox
-                    label="총 부대비용" value={won(calc.totalOverhead)} sub="운송·관세·물류 합계"
-                    tooltip={(() => {
-                      const totalShipKrw = (Number(rmbShip) || 0) * Number(exRate.rmbToKrw);
-                      const totalCustomsKrw = calc.customsPerUnit * (Number(quantity) || 0);
-                      const totalCbmKrw = calc.totalOverhead - totalShipKrw - totalCustomsKrw;
-                      return `총 운송료(${won(totalShipKrw)}) + 총 CBM비용(${won(totalCbmKrw)}) + 총 관세(${won(totalCustomsKrw)}) = ${won(calc.totalOverhead)}`;
-                    })()}
-                  />
-                  <ResultBox
-                    label="개당 예상이익" value={won(calc.profitPerUnit)} accent="text-emerald-600"
-                    tooltip={`개당 제안단가(${won(calc.proposedPrice)}) - 개당 총원가(${won(calc.totalCostPerUnit)}) = ${won(calc.profitPerUnit)}`}
-                  />
-                  <ResultBox
-                    label="총 예상이익 (이익률)" value={won(calc.totalProfit)} sub={pct(calc.profitRate)} accent="text-emerald-600"
-                    tooltip={`총 제안금액(${won(calc.totalProposal)}) - 총 원가합계(${won(calc.totalCostPerUnit * (Number(quantity) || 0))}) = ${won(calc.totalProfit)} (이익률: ${pct(calc.profitRate)})`}
-                  />
+                  {(() => {
+                    const qtyLabel = (Number(quantity) || 0).toLocaleString("ko-KR");
+                    const totalShipKrw = (Number(rmbShip) || 0) * Number(exRate.rmbToKrw);
+                    const totalCustomsKrw = calc.customsPerUnit * (Number(quantity) || 0);
+                    const totalCbmKrw = calc.totalOverhead - totalShipKrw - totalCustomsKrw;
+                    const overheadParts = [
+                      totalShipKrw ? `운송 ${won(totalShipKrw)}` : null,
+                      totalCbmKrw ? `CBM ${won(totalCbmKrw)}` : null,
+                      totalCustomsKrw ? `관세 ${won(totalCustomsKrw)}` : null,
+                    ].filter(Boolean).join(" + ");
+                    const boxes = [
+                      {
+                        label: "총 제안금액", value: won(calc.totalProposal),
+                        calc: `${won(calc.proposedPrice)} × ${qtyLabel}개`,
+                      },
+                      {
+                        label: "총 상품 공장원가", value: won(calc.totalFactoryCost), sub: "공장 순수 원가",
+                        calc: `¥${(Number(rmbBase) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })} × @${fmtRate(exRate.rmbToKrw)}원 × ${qtyLabel}개`,
+                      },
+                      {
+                        label: "총 부대비용", value: won(calc.totalOverhead), sub: "운송·관세·물류 합계",
+                        calc: overheadParts || "-",
+                      },
+                      {
+                        label: "개당 예상이익", value: won(calc.profitPerUnit), accent: "text-emerald-600",
+                        calc: `${won(calc.proposedPrice)} - ${won(calc.totalCostPerUnit)} = ${won(calc.profitPerUnit)}`,
+                      },
+                      {
+                        label: "총 예상이익 (이익률)", value: won(calc.totalProfit), sub: pct(calc.profitRate), accent: "text-emerald-600",
+                        calc: `${won(calc.totalProposal)} - ${won(calc.totalCostPerUnit * (Number(quantity) || 0))} = ${won(calc.totalProfit)} (${pct(calc.profitRate)})`,
+                      },
+                    ];
+                    return boxes.map((b) => (
+                      <div key={b.label} className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                        <div className="text-xs text-slate-500 mb-1">{b.label}</div>
+                        <div className={"text-lg font-bold " + (b.accent || "text-slate-800")}>{b.value}</div>
+                        {b.sub && <div className="text-xs text-slate-400 mt-0.5">{b.sub}</div>}
+                        <div className="text-xs text-slate-500 mt-1">{b.calc}</div>
+                      </div>
+                    ));
+                  })()}
                 </div>
               </Card>
             </div>
@@ -8307,7 +8327,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               setToast("Firestore 저장 중 오류가 발생했습니다. (로컬에는 반영됨)");
             }
             setDraftItems([]);
-            setClientInfo({ clientName: "", contact: "", channel: "카카오채널", employee: "", proposalTitle: "" });
+            setClientInfo({ clientName: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" });
           }}
           onPrint={() => {
             if (draftItems.length === 0) { setToast("먼저 품목을 추가해주세요."); return; }
