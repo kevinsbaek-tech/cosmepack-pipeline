@@ -2027,11 +2027,10 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
       {withCheckbox && <col style={{ width: "3%", minWidth: "36px" }} />}
       <col style={{ width: "12%", minWidth: "105px" }} />
       <col style={{ width: "10%", minWidth: "90px" }} />
-      <col style={{ width: "10%", minWidth: "90px" }} />
-      <col style={{ width: "9%", minWidth: "80px" }} />
-      <col style={{ width: withAction ? "18%" : "28%", minWidth: "130px" }} />
+      <col style={{ width: "11%", minWidth: "95px" }} />
+      <col style={{ width: withAction ? "24%" : "34%", minWidth: "130px" }} />
       <col style={{ width: "12%", minWidth: "95px" }} />
-      <col style={{ width: "9%", minWidth: "75px" }} />
+      <col style={{ width: "10%", minWidth: "90px" }} />
       <col style={{ width: "11%", minWidth: "100px" }} />
       {withAction && <col style={{ width: "14%", minWidth: "180px" }} />}
     </colgroup>
@@ -2129,21 +2128,9 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         </td>
         <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt(p.createdAt)}</td>
         <td className="px-3 py-3 text-sm font-medium text-slate-800 truncate" style={{ maxWidth: "160px" }} title={p.clientName}>{p.clientName}</td>
-        <td className="px-3 py-3 text-xs whitespace-nowrap">
-          {p.employee ? <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">👤 {p.employee}</span> : <span className="text-slate-300">-</span>}
-        </td>
         <td className="px-3 py-3 text-xs text-slate-600 truncate" style={{ maxWidth: "260px" }} title={p.itemSummary}>{p.itemSummary}</td>
         <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{won(p.totalAmount)}</td>
-        <td className="px-3 py-3">
-          <select
-            value={p.status}
-            onChange={(e) => onStatusChange(p, e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            className={"text-xs px-2 py-1 rounded-full font-medium border-none outline-none cursor-pointer " + (STATUS_COLORS[p.status] || "bg-slate-100 text-slate-500")}
-          >
-            {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </td>
+        <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{p.createdBy || "-"}</td>
         <td className="px-3 py-3" style={{ minWidth: "100px" }}>
           {isAdmin ? (
             <select
@@ -2271,8 +2258,8 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
                         </th>
                       )}
                       <th className="text-left px-3 py-2 font-medium">제안번호</th><th className="text-left px-3 py-2 font-medium">발송일시</th>
-                      <th className="text-left px-3 py-2 font-medium">고객사명</th><th className="text-left px-3 py-2 font-medium">담당자</th><th className="text-left px-3 py-2 font-medium">대표 제품명</th>
-                      <th className="text-right px-3 py-2 font-medium">총 제안금액</th><th className="text-left px-3 py-2 font-medium">상태</th><th className="text-left px-3 py-2 font-medium">검토상태</th><th className="text-right px-3 py-2 font-medium">작업</th>
+                      <th className="text-left px-3 py-2 font-medium">고객사명</th><th className="text-left px-3 py-2 font-medium">대표 제품명</th>
+                      <th className="text-right px-3 py-2 font-medium">총 제안금액</th><th className="text-left px-3 py-2 font-medium">작성자</th><th className="text-left px-3 py-2 font-medium">검토상태</th><th className="text-right px-3 py-2 font-medium">작업</th>
                     </tr></thead>
                     <tbody>{list.map((p) => <ProposalRow key={p.id} p={p} />)}</tbody>
                   </table>
@@ -2291,8 +2278,8 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
                   <th className="text-center px-2 py-3 font-medium"><input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /></th>
                 )}
                 <th className="text-left px-3 py-3 font-medium">제안번호</th><th className="text-left px-3 py-3 font-medium">발송일시</th>
-                <th className="text-left px-3 py-3 font-medium">고객사명</th><th className="text-left px-3 py-3 font-medium">담당자</th><th className="text-left px-3 py-3 font-medium">대표 제품명/품목요약</th>
-                <th className="text-right px-3 py-3 font-medium">총 제안금액</th><th className="text-left px-3 py-3 font-medium">상태</th><th className="text-left px-3 py-3 font-medium">검토상태</th><th className="text-right px-3 py-3 font-medium">작업</th>
+                <th className="text-left px-3 py-3 font-medium">고객사명</th><th className="text-left px-3 py-3 font-medium">대표 제품명/품목요약</th>
+                <th className="text-right px-3 py-3 font-medium">총 제안금액</th><th className="text-left px-3 py-3 font-medium">작성자</th><th className="text-left px-3 py-3 font-medium">검토상태</th><th className="text-right px-3 py-3 font-medium">작업</th>
               </tr></thead>
               <tbody>{pagedList.map((p) => <ProposalRow key={p.id} p={p} />)}</tbody>
             </table>
