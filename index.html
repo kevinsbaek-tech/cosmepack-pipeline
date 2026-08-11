@@ -6053,14 +6053,36 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
+  const [showSendModal, setShowSendModal] = useState(false);
+  const sendComplete = (channel) => {
+    if (onUpdate) onUpdate(sample, { sentBy: sample.assignee || "", sentAt: nowDateTimeStr(), sentChannel: channel });
+    setShowSendModal(false);
+  };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "97vw", maxWidth: "1420px", height: "94vh" }} onClick={(e) => e.stopPropagation()}>
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
-          <h2 className="text-base font-bold text-slate-800">📄 샘플비 인보이스 — {sample.clientName}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+    <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4" onClick={onClose}>
+      {/* 제안서 미리보기 상단바와 동일한 구조: 좌측에 조회/편집 태그, 우측에 발송상태 배지 + 버튼 툴바 */}
+      <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
+        <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다</span>
+        <div className="flex items-center gap-2">
+          {sample.sentBy ? (
+            <span className="text-xs px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 font-medium whitespace-nowrap">
+              [발송완료] {sample.sentChannel || "-"} | {formatCreatedAt(sample.sentAt)}
+            </span>
+          ) : (
+            <span className="text-xs px-3 py-2 rounded-lg bg-slate-100 text-slate-500 font-medium whitespace-nowrap">[미발송]</span>
+          )}
+          <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
+          {onUpdate && <button onClick={saveAndFlash} className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{saved ? "✅ 저장됨" : "💾 수정후 저장"}</button>}
+          <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
+          <button onClick={() => { persistToSample(); downloadSampleInvoiceXlsx(data); }} className="px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">📊 엑셀 다운로드</button>
+          {onUpdate && <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🚀 발송완료</button>}
         </div>
+      </div>
+      {showSendModal && (
+        <SendCompleteModal onClose={() => setShowSendModal(false)} onConfirm={sendComplete} />
+      )}
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col mx-auto" style={{ width: "97vw", maxWidth: "1420px", height: "88vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-[320px_1fr]">
           {/* 좌측: 편집 폼 */}
           <div className="p-5 border-r border-slate-100 space-y-2.5 overflow-y-auto">
@@ -6177,13 +6199,8 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
             </div>
           </div>
         </div>
-        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
+        <div className="px-6 py-3 border-t border-slate-200 shrink-0">
           <span className="text-[11px] text-slate-400">※ 엑셀 다운로드는 병합·수식·값(수정한 문구 포함)은 원본서식과 동일하게 재현되지만, 셀 테두리색상 등 세부서식과 제품사진·로고 삽입은 브라우저 라이브러리 한계로 포함되지 않습니다(인쇄/PDF는 로고·사진 포함 그대로 출력됩니다).</span>
-          <div className="flex gap-2 shrink-0 ml-3">
-            {onUpdate && <button onClick={saveAndFlash} className="px-4 py-2 rounded-lg border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{saved ? "✅ 저장됨" : "💾 수정후 저장"}</button>}
-            <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">🖨️ PDF/인쇄</button>
-            <button onClick={() => { persistToSample(); downloadSampleInvoiceXlsx(data); }} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📊 엑셀 파일 다운로드(.xlsx)</button>
-          </div>
         </div>
       </div>
     </div>
