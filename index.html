@@ -2388,7 +2388,8 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
 function SampleInvoiceListView({ samples, products, proposals, supplierLogo, shippingFees, shippingFeeNotes, onUpdate, onBack }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [viewingSample, setViewingSample] = useState(null);
+  const [viewingSampleId, setViewingSampleId] = useState(null); // 객체가 아니라 id만 보관 — 그래야 samples가 갱신될 때마다 최신 데이터를 다시 찾아 배지 등이 즉시 반영됨
+  const viewingSample = viewingSampleId ? samples.find((s) => s.id === viewingSampleId) : null;
   const PAGE_SIZE = 20;
 
   const filtered = useMemo(() => {
@@ -2420,8 +2421,9 @@ function SampleInvoiceListView({ samples, products, proposals, supplierLogo, shi
         <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
           <table className="w-full table-fixed" style={{ tableLayout: "fixed", width: "100%" }}>
             <colgroup>
-              <col style={{ width: "11%" }} /><col style={{ width: "16%" }} /><col style={{ width: "24%" }} />
-              <col style={{ width: "10%" }} /><col style={{ width: "13%" }} /><col style={{ width: "13%" }} /><col style={{ width: "13%" }} />
+              <col style={{ width: "9%" }} /><col style={{ width: "13%" }} /><col style={{ width: "18%" }} />
+              <col style={{ width: "8%" }} /><col style={{ width: "10%" }} /><col style={{ width: "10%" }} />
+              <col style={{ width: "9%" }} /><col style={{ width: "13%" }} /><col style={{ width: "10%" }} />
             </colgroup>
             <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
               <th className="text-left px-3 py-3 font-medium">요청일자</th>
@@ -2430,11 +2432,13 @@ function SampleInvoiceListView({ samples, products, proposals, supplierLogo, shi
               <th className="text-right px-3 py-3 font-medium">수량</th>
               <th className="text-center px-3 py-3 font-medium">진행단계</th>
               <th className="text-left px-3 py-3 font-medium">담당자</th>
+              <th className="text-left px-3 py-3 font-medium">발송자</th>
+              <th className="text-left px-3 py-3 font-medium">발송일시</th>
               <th className="text-center px-3 py-3 font-medium">작업</th>
             </tr></thead>
             <tbody>
               {pagedList.map((s) => (
-                <tr key={s.id} onClick={() => setViewingSample(s)} className="border-t border-slate-100 hover:bg-slate-50/50 cursor-pointer">
+                <tr key={s.id} onClick={() => setViewingSampleId(s.id)} className="border-t border-slate-100 hover:bg-slate-50/50 cursor-pointer">
                   <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.requestDate || "-"}</td>
                   <td className="px-3 py-3 text-xs font-medium text-slate-800" style={{ wordBreak: "keep-all" }}>{s.clientName}</td>
                   <td className="px-3 py-3 text-xs text-slate-600" style={{ wordBreak: "keep-all" }}>{s.productName}</td>
@@ -2443,8 +2447,10 @@ function SampleInvoiceListView({ samples, products, proposals, supplierLogo, shi
                     <span className={"inline-block text-[10px] px-2 py-1 rounded-full font-semibold border " + (SAMPLE_STATUS_COLORS[s.status] || "bg-slate-50 text-slate-500 border-slate-200")}>{SAMPLE_STATUS_LABELS[s.status] || s.status}</span>
                   </td>
                   <td className="px-3 py-3 text-xs text-slate-600 whitespace-nowrap">{displayStaffName(s.assignee) || "-"}</td>
+                  <td className="px-3 py-3 text-xs text-slate-600 whitespace-nowrap">{s.sentBy ? `${displayStaffName(s.sentBy)} (${s.sentChannel || "-"})` : <span className="text-slate-300">미발송</span>}</td>
+                  <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.sentAt ? formatCreatedAt(s.sentAt) : "-"}</td>
                   <td className="px-3 py-3 text-center" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => setViewingSample(s)} className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">👁️</button>
+                    <button onClick={() => setViewingSampleId(s.id)} className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">👁️</button>
                   </td>
                 </tr>
               ))}
@@ -2454,7 +2460,7 @@ function SampleInvoiceListView({ samples, products, proposals, supplierLogo, shi
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
       {viewingSample && (
-        <SampleInvoiceModal sample={viewingSample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setViewingSample(null)} />
+        <SampleInvoiceModal sample={viewingSample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setViewingSampleId(null)} />
       )}
     </main>
   );
@@ -5862,7 +5868,9 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
   const [linkedProposalId, setLinkedProposalId] = useState(initialProposalId || "");
   const [clientName, setClientName] = useState("");
   const [productName, setProductName] = useState("");
+  const [productImage, setProductImage] = useState(""); // 선택한 제안서 품목의 사진 — 샘플 등록시 그대로 이관되어 나중에 샘플비 인보이스에 100% 반영됨
   const [itemOptions, setItemOptions] = useState([]); // 선택한 제안서에 포함된 품목명 목록
+  const [itemImageMap, setItemImageMap] = useState({}); // 품목명 → 사진(image) 매핑 — 제품명을 바꿔도 그 사진으로 함께 전환
   const [stockLocation, setStockLocation] = useState("korea");
   const [assignee, setAssignee] = useState((assigneeOptions[0] && assigneeOptions[0].name) || "");
   const [requestDate, setRequestDate] = useState(todayStr());
@@ -5874,11 +5882,16 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
   const applyProposal = (proposalId) => {
     setLinkedProposalId(proposalId);
     const p = (proposals || []).find((pr) => String(pr.id) === proposalId);
-    if (!p) { setItemOptions([]); return; }
+    if (!p) { setItemOptions([]); setItemImageMap({}); return; }
     setClientName(p.clientName || "");
     const names = [...new Set((p.items || []).map((it) => it.productName).filter(Boolean))];
     setItemOptions(names);
+    // 품목명 → 사진 매핑을 함께 만들어둔다 — 제안서 품목의 image 필드를 그대로 이관(누락 없이 100% 매핑)
+    const imageMap = {};
+    (p.items || []).forEach((it) => { if (it.productName && it.image && !imageMap[it.productName]) imageMap[it.productName] = it.image; });
+    setItemImageMap(imageMap);
     setProductName(names[0] || "");
+    setProductImage(imageMap[names[0]] || "");
     if (p.employee && p.employee !== "(엑셀자동등록)") setAssignee(p.employee);
   };
 
@@ -5899,7 +5912,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
       return;
     }
     await onSave({
-      clientName: clientName.trim(), productName: productName.trim(), stockLocation, assignee,
+      clientName: clientName.trim(), productName: productName.trim(), image: productImage || "", stockLocation, assignee,
       status: "요청", requestDate, orderDate: "", stockInDate: "", dispatchDate: "", shippingMethod: "", notes: "",
       linkedProposalId: linkedProposalId || "",
       stockItemId: pickedStock ? pickedStock.id : null, // App의 addSample이 이 값을 보고 재고를 신청수량만큼 차감
@@ -5925,7 +5938,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
           <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
           <Field label="요청 제품">
             {itemOptions.length > 0 ? (
-              <select className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)}>
+              <select className={inputCls} value={productName} onChange={(e) => { setProductName(e.target.value); setProductImage(itemImageMap[e.target.value] || ""); }}>
                 {itemOptions.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             ) : (
@@ -5995,7 +6008,7 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
   // 제품DB에 사진이 없으면, 이 샘플에 연결된 제안서의 품목 사진을 대신 끌어온다(제안서에 실제로 첨부됐던 사진이라 더 정확한 경우가 많음)
   const linkedProposal = (proposals || []).find((p) => String(p.id) === String(sample.linkedProposalId));
   const proposalItem = linkedProposal && (linkedProposal.items || []).find((it) => it.productName === sample.productName);
-  const fallbackImage = (matchedProduct && matchedProduct.image) || (proposalItem && proposalItem.image) || "";
+  const fallbackImage = sample.image || (matchedProduct && matchedProduct.image) || (proposalItem && proposalItem.image) || "";
   // 예전에 "💾 수정후 저장"으로 저장해둔 내용(invoiceDraft)이 있으면 그걸 최우선으로 복원 — 다시 열었을 때 수정한 그대로 이어서 볼 수 있다.
   const draft = sample.invoiceDraft || {};
   const [clientName, setClientName] = useState(draft.clientName || sample.clientName || "");
@@ -6014,6 +6027,17 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
   // No.3 배송비 항목의 "비고" — 배송방식(일반/항공)에 설정된 안내문구가 기본값으로 자동 채워지고, 직접 수정도 가능
   const [domesticRemark, setDomesticRemark] = useState(draft.domesticRemark != null ? draft.domesticRemark : (feeNotes[draft.domesticMethod || sample.shippingMethod || "일반"] || ""));
   const changeDomesticMethod = (m) => { setDomesticMethod(m); setDomesticRemark(feeNotes[m] || ""); };
+  // 발송 출처(한국재고 / 중국공장) — 한국재고 발송이면 중국 내 운송료가 발생하지 않으므로 0원 처리하고, 안내 문구도 국내 택배 수령 조건으로 바꿔준다.
+  const [shipSource, setShipSource] = useState(draft.shipSource || sample.stockLocation || "china");
+  const SHIP_SOURCE_NOTICE = {
+    china: "◎ 귀사가 요청하신 샘플비 및 운송료에 대하여, 다음과 같이 제품 인보이스를 보내드립니다.",
+    korea: "◎ 한국 본사 재고에서 즉시 발송되는 건으로, 별도의 중국 내 운송료 없이 국내 택배로 바로 수령하실 수 있습니다.",
+  };
+  const changeShipSource = (src) => {
+    setShipSource(src);
+    if (src === "korea") setShippingRmbFee(0);
+    setGreetingLines((prev) => prev.map((line, i) => (i === 1 ? SHIP_SOURCE_NOTICE[src] : line)));
+  };
   // 우측 미리보기의 인사말/하단 안내문구는 클릭해서 직접 수정 가능(contentEditable) — 수정한 내용이 엑셀 다운로드에도 그대로 반영됨
   const [greetingLines, setGreetingLines] = useState(draft.greetingLines || [
     "◎ 귀사의 무궁한 발전을 진심으로 기원합니다.",
@@ -6026,7 +6050,6 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
     "4. 당사에 의뢰하여 주시면, 최선을 다하겠습니다.",
     "5. 사업자등록증 사본과 이메일 주소를 보내주시면 세금계산서를 발행하여 드립니다.",
   ]);
-  const [saved, setSaved] = useState(false);
   const updateGreeting = (i, text) => setGreetingLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
   const updateFooter = (i, text) => setFooterExtraLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
 
@@ -6041,17 +6064,12 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
 
   const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, domesticRemark, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines, shippingFees: fees };
 
-  // 좌측 입력값 + 미리보기에서 직접 고친 문구(인사말/하단안내)까지 전부 샘플 레코드에 저장 — 다음에 다시 열거나
-  // 엑셀/PDF로 출력할 때도 이 수정본이 그대로 반영된다. 청구금액/수령주소/수량은 목록 리스트 컬럼에도 바로 쓰인다.
+  // 좌측 입력값 + 미리보기에서 직접 고친 문구(인사말/하단안내)까지 전부 샘플 레코드에 저장 — 인쇄/PDF 저장이나 엑셀 다운로드를 누를 때 자동으로 함께 저장되며,
+  // 다음에 다시 열거나 엑셀/PDF로 출력할 때도 이 수정본이 그대로 반영된다. 청구금액/수령주소/수량은 목록 리스트 컬럼에도 바로 쓰인다.
   const persistToSample = () => {
     if (!onUpdate) return;
-    const invoiceDraft = { clientName, writeDate, productImage, productName, spec, qty: Number(qty) || 0, unitPrice: Number(unitPrice) || 0, shippingRmbFee: Number(shippingRmbFee) || 0, domesticMethod, domesticRemark, receiveAddress, dispatchDate, receiveDate, greetingLines, footerExtraLines };
-    onUpdate(sample, { invoiceAmount: grandTotal, receiveAddress, invoiceQty: Number(qty) || 0, invoiceDraft });
-  };
-  const saveAndFlash = () => {
-    persistToSample();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    const invoiceDraft = { clientName, writeDate, productImage, productName, spec, qty: Number(qty) || 0, unitPrice: Number(unitPrice) || 0, shippingRmbFee: Number(shippingRmbFee) || 0, domesticMethod, domesticRemark, receiveAddress, dispatchDate, receiveDate, greetingLines, footerExtraLines, shipSource };
+    onUpdate(sample, { invoiceAmount: grandTotal, receiveAddress, invoiceQty: Number(qty) || 0, invoiceDraft, stockLocation: shipSource });
   };
   const [showSendModal, setShowSendModal] = useState(false);
   const sendComplete = (channel) => {
@@ -6073,9 +6091,8 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
             <span className="text-xs px-3 py-2 rounded-lg bg-slate-100 text-slate-500 font-medium whitespace-nowrap">[미발송]</span>
           )}
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
-          {onUpdate && <button onClick={saveAndFlash} className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{saved ? "✅ 저장됨" : "💾 수정후 저장"}</button>}
           <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
-          <button onClick={() => { persistToSample(); downloadSampleInvoiceXlsx(data); }} className="px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">📊 엑셀 다운로드</button>
+          <button onClick={() => { persistToSample(); downloadSampleInvoiceXlsx(data); }} className="px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">엑셀 다운로드</button>
           {onUpdate && <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🚀 발송완료</button>}
         </div>
       </div>
@@ -6086,15 +6103,29 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
         <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-[320px_1fr]">
           {/* 좌측: 편집 폼 */}
           <div className="p-5 border-r border-slate-100 space-y-2.5 overflow-y-auto">
+            <Field label="진행상태">
+              <select className={inputCls} value={sample.status} onChange={(e) => onUpdate && onUpdate(sample, { status: e.target.value })}>
+                {SAMPLE_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{SAMPLE_STATUS_LABELS[s]}</option>)}
+              </select>
+            </Field>
+            <Field label="발송 출처">
+              <div className="flex gap-2">
+                <button type="button" onClick={() => changeShipSource("korea")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (shipSource === "korea" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇰🇷 한국재고 발송</button>
+                <button type="button" onClick={() => changeShipSource("china")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (shipSource === "china" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇨🇳 중국공장 발송</button>
+              </div>
+            </Field>
             <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
             <Field label="작성일자"><input type="date" className={inputCls} value={writeDate} onChange={(e) => setWriteDate(e.target.value)} /></Field>
             <Field label="제품명"><input className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)} /></Field>
+            <Field label="📷 제품 사진 (선택 시 실물 사진으로 교체)">
+              <ImageUpload value={productImage} onChange={setProductImage} />
+            </Field>
             <Field label="재원/규격"><input className={inputCls} value={spec} onChange={(e) => setSpec(e.target.value)} /></Field>
             <div className="grid grid-cols-2 gap-2">
               <Field label="주문수량"><input type="number" className={inputCls} value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
               <Field label="단가(ea)"><input type="number" className={inputCls} value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} /></Field>
             </div>
-            <Field label="중국내 운송료(원)"><input type="number" className={inputCls} value={shippingRmbFee} onChange={(e) => setShippingRmbFee(e.target.value)} /></Field>
+            <Field label="중국내 운송료(원)"><input type="number" disabled={shipSource === "korea"} className={inputCls + (shipSource === "korea" ? " bg-slate-50 text-slate-400" : "")} value={shipSource === "korea" ? 0 : shippingRmbFee} onChange={(e) => setShippingRmbFee(e.target.value)} /></Field>
             <Field label="국내 배송방식">
               <div className="flex gap-2">
                 <button type="button" onClick={() => changeDomesticMethod("일반")} className={"flex-1 text-xs px-2 py-2 rounded-lg font-medium border " + (domesticMethod === "일반" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>일반 ({fees["일반"].toLocaleString("ko-KR")}원)</button>
@@ -6151,7 +6182,7 @@ function SampleInvoiceModal({ sample, products, proposals, supplierLogo, shippin
                 <tbody>
                   <tr style={{ height: "56px" }}>
                     <td className="border border-slate-400 text-center">1</td>
-                    <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} loading="lazy" className="w-14 h-14 object-cover mx-auto" /> : "-"}</td>
+                    <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} loading="lazy" className="w-12 h-12 object-contain mx-auto" /> : "-"}</td>
                     <td className="border border-slate-400 px-2">{productName}</td>
                     <td className="border border-slate-400 px-2">{spec}</td>
                     <td className="border border-slate-400 text-center">{qty}</td>
@@ -6559,11 +6590,12 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 20;
   const [detailSample, setDetailSample] = useState(null); // "📋" 버튼 클릭시 진행상황(4단계 확인 테이블)을 보여줄 샘플
-  const [invoiceSample, setInvoiceSample] = useState(null); // 행 클릭시(또는 등록 직후) 샘플비 인보이스를 바로 보여줄 샘플
+  const [invoiceSampleId, setInvoiceSampleId] = useState(null); // 객체가 아니라 id만 보관 — samples가 갱신될 때마다 최신 데이터를 다시 찾아 배지 등이 즉시 반영됨
+  const invoiceSample = invoiceSampleId ? (samples || []).find((s) => s.id === invoiceSampleId) : null;
   // 신규 샘플 발송 등록이 끝나면(재고차감 포함) 그 샘플 정보가 자동 반영된 인보이스 작성 모달을 연속으로 연다.
   const handleCreateSample = async (rec) => {
     const created = await onCreate(rec);
-    if (created) setInvoiceSample(created);
+    if (created) setInvoiceSampleId(created.id);
   };
   const filtered = (samples || []).filter((s) => filter === "전체" || s.status === filter);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -6620,7 +6652,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
             </tr></thead>
             <tbody>
               {pagedFiltered.map((s, idx) => (
-                <tr key={s.id} onClick={() => setInvoiceSample(s)} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
+                <tr key={s.id} onClick={() => setInvoiceSampleId(s.id)} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
                   <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">{s.requestDate || "-"}</td>
                   <td className="px-3 py-3 font-medium" style={{ color: "#111827" }}>{s.clientName}</td>
                   <td className="px-3 py-3 text-slate-600 max-w-[220px] truncate">{s.productName}</td>
@@ -6661,7 +6693,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
         />
       )}
       {invoiceSample && (
-        <SampleInvoiceModal sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setInvoiceSample(null)} />
+        <SampleInvoiceModal sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
       )}
       {detailSample && (
         <SampleDetailModal onClose={() => setDetailSample(null)}>
