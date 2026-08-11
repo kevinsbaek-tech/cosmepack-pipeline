@@ -3341,6 +3341,88 @@ function ClientFormModal({ client, onClose, onSave }) {
 }
 
 // 범용 "선택 항목 병합" 모달 — 공장병합(FactoryMergeModal)과 동일한 패턴을 제품/업체에도 재사용
+// 인보이스 발행 전 편집 단계 — 제안서 품목별로 수량/단가를 다시 확인하고, 카테고리별 후가공 옵션을 체크박스로 다시 선택할 수 있다.
+// (2단계 계산화면의 전체 원가계산 엔진까지는 재사용하지 않고, "후가공 재선택 + 수량/단가 조정"에 집중한 경량 편집 단계)
+function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
+  const [items, setItems] = useState(() => (proposal.items || []).map((it) => ({ ...it, id: it.id || Date.now() + Math.random(), selectedFinishingIds: [] })));
+
+  const updateItem = (id, patch) => setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+
+  // 체크/해제할 때마다 해당 항목의 "비고"란 맨 앞부분에 선택된 후가공 목록을 다시 구성해 넣는다(기존 비고의 나머지 문구는 보존)
+  const toggleFinishing = (item, opt) => {
+    const already = item.selectedFinishingIds.includes(opt.id);
+    const nextIds = already ? item.selectedFinishingIds.filter((id) => id !== opt.id) : [...item.selectedFinishingIds, opt.id];
+    const options = finishingOptions[item.category] || [];
+    const chosen = options.filter((o) => nextIds.includes(o.id));
+    const finishingLines = chosen.map((o) => `${o.name}: ${(o.krwPrice || 0).toLocaleString("ko-KR")}원${o.unitLabel ? `/${o.unitLabel}` : ""}`);
+    const restNotes = (item.notes || "").split("\n").filter((line) => !options.some((o) => line.startsWith(`${o.name}:`))).join("\n");
+    const nextNotes = [...finishingLines, restNotes].filter(Boolean).join("\n");
+    updateItem(item.id, { selectedFinishingIds: nextIds, notes: nextNotes });
+  };
+
+  const totalAmount = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+          <div>
+            <h2 className="text-base font-bold text-slate-800">📄 인보이스 작성 — {proposal.clientName}</h2>
+            <p className="text-xs text-slate-400 mt-0.5">발행 전, 품목별 수량·단가와 후가공 옵션을 다시 확인해주세요.</p>
+          </div>
+          <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 overflow-y-auto flex-1 space-y-4">
+          {items.map((it) => {
+            const options = finishingOptions[it.category] || [];
+            return (
+              <div key={it.id} className="border border-slate-200 rounded-xl p-4">
+                <div className="flex items-start gap-3 mb-3">
+                  <div className="w-14 h-14 rounded-lg bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+                    {it.image ? <img src={it.image} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-slate-800 text-sm">{it.productName}</div>
+                    <div className="text-xs text-slate-400">{it.specSize} {it.material ? `· ${it.material}` : ""} {it.category ? `· ${it.category}` : ""}</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mb-3">
+                  <Field label="수량"><input type="number" className={inputCls} value={it.quantity} onChange={(e) => { const q = Number(e.target.value) || 0; updateItem(it.id, { quantity: q, totalPrice: q * (Number(it.unitPrice) || 0) }); }} /></Field>
+                  <Field label="단가(개당)"><input type="number" className={inputCls} value={it.unitPrice} onChange={(e) => { const u = Number(e.target.value) || 0; updateItem(it.id, { unitPrice: u, totalPrice: (Number(it.quantity) || 0) * u }); }} /></Field>
+                  <Field label="금액(합계)"><input disabled className={inputCls + " bg-slate-50 text-slate-500"} value={Math.round(it.totalPrice || 0).toLocaleString("ko-KR")} /></Field>
+                </div>
+                {options.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium text-slate-500 mb-1.5">후가공 선택 ({it.category})</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {options.map((opt) => (
+                        <label key={opt.id} className={"flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer " + (it.selectedFinishingIds.includes(opt.id) ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>
+                          <input type="checkbox" className="hidden" checked={it.selectedFinishingIds.includes(opt.id)} onChange={() => toggleFinishing(it, opt)} />
+                          {opt.name} ({(opt.krwPrice || 0).toLocaleString("ko-KR")}원{opt.unitLabel ? `/${opt.unitLabel}` : ""})
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-300">이 카테고리에 등록된 후가공 항목이 없습니다.</p>
+                )}
+                <Field label="비고" span={2}><textarea className={inputCls} rows={2} value={it.notes || ""} onChange={(e) => updateItem(it.id, { notes: e.target.value })} /></Field>
+              </div>
+            );
+          })}
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
+          <span className="text-sm text-slate-500">품목 합계: <b className="text-[#1E3A8A]">{Math.round(totalAmount).toLocaleString("ko-KR")}원</b></span>
+          <div className="flex gap-2">
+            <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
+            <button onClick={() => onConfirm(items)} className="px-5 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:opacity-90">확정하고 인보이스 미리보기 →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GenericMergeModal({ title, items, getLabel, getSubLabel, confirmText, onRun, onClose }) {
   const [primaryId, setPrimaryId] = useState(items[0] && items[0].id);
   const run = () => {
@@ -6481,19 +6563,25 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setActiveStep(4);
   };
   // 제안서를 기반으로 인보이스를 발행 — 품목/수량/단가/고객사 정보를 100% 그대로 가져오고, 미리보기를 바로 띄운다(버튼 한 번으로 자동입력)
-  const createInvoiceFromProposal = async (p) => {
+  const [invoiceEditProposal, setInvoiceEditProposal] = useState(null); // "📄 인보이스 발행" 클릭시 열리는 후가공/수량 재선택 편집단계
+  // 1단계: "📄 인보이스 발행" 클릭 → 편집 모달(InvoiceEditModal)을 연다 (제안서 작성처럼 후가공/수량을 다시 선택하는 단계)
+  const openInvoiceEditor = (p) => setInvoiceEditProposal(p);
+  // 2단계: 편집 모달에서 "확정"하면, 그 결과(editedItems)로 실제 인보이스를 발행하고 미리보기를 연다
+  const finalizeInvoice = async (p, editedItems) => {
     const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
     const code = `INV-${todayStr()}-${String(invoiceList.length + 1).padStart(3, "0")}`;
+    const totalAmount = editedItems.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
     const record = {
       code, proposalId: typeof p.id === "string" ? p.id : null, proposalCode: p.code || "",
       clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "", employee: p.employee || "",
-      proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", totalAmount: p.totalAmount || 0, totalCbm: p.totalCbm || 0,
-      items: p.items || [], validUntil: addDays(30),
+      proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", totalAmount, totalCbm: p.totalCbm || 0,
+      items: editedItems, validUntil: addDays(30),
       createdAt: nowDateTimeStr(), createdBy: actorName,
     };
     const local = { id: Date.now() + Math.random(), ...record };
     setInvoiceList((prev) => [local, ...prev]);
     setInvoiceData(local);
+    setInvoiceEditProposal(null);
     try { await fsAdd(COLLECTIONS.invoices, record); setToast("📄 인보이스가 발행되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
   };
   const [productToView, setProductToView] = useState(null);
@@ -7890,7 +7978,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           }
         }}
         onCreateSample={(p) => { setPdfData(null); createSampleFromProposal(p); }}
-        onCreateInvoice={(p) => createInvoiceFromProposal(p)}
+        onCreateInvoice={(p) => openInvoiceEditor(p)}
       />
       <PdfPreview
         mode="invoice"
@@ -7909,6 +7997,14 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           }
         }}
       />
+      {invoiceEditProposal && (
+        <InvoiceEditModal
+          proposal={invoiceEditProposal}
+          finishingOptions={finishingOptions}
+          onCancel={() => setInvoiceEditProposal(null)}
+          onConfirm={(editedItems) => finalizeInvoice(invoiceEditProposal, editedItems)}
+        />
+      )}
       <SettingsModal open={settingsOpen} onClose={() => { setSettingsOpen(false); window.location.hash = VIEW_TO_HASH[view] || ""; }} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} onShowAnalysis={() => setShowFinishingAnalysis(true)} />
       {showFinishingAnalysis && (
         <FinishingAnalysisModal finishingOptions={finishingOptions} products={productsList} onClose={() => setShowFinishingAnalysis(false)} />
@@ -8026,7 +8122,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onBack={() => setView("pipeline")}
           onOpenPdf={(p) => setPdfData({ ...p, readOnly: true })}
           onCreateSample={createSampleFromProposal}
-          onCreateInvoice={createInvoiceFromProposal}
+          onCreateInvoice={openInvoiceEditor}
           onView={(p) => {
             setDraftItems((p.items || []).map((it) => ({ ...it, id: it.id && typeof it.id !== "string" ? it.id : Date.now() + Math.random() })));
             setClientInfo({ clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
