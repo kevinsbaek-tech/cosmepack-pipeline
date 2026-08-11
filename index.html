@@ -1992,6 +1992,17 @@ const REVIEW_STATUS_COLORS = {
   "승인완료": "bg-emerald-50 text-emerald-700",
   "발송완료": "bg-blue-50 text-[#1D4ED8]",
 };
+// 작성자/발송자 등 사람 이름 뒤에 직급이 붙어 저장된 경우(예: "이수림 과장") 화면에는 실명만 깔끔하게 보여준다.
+// 저장된 원본 값은 건드리지 않고 표시할 때만 잘라내는 방식 — 계정관리에서 이름을 고치면 그게 바로 반영되고, 이 함수는 옛 기록에 남은 직급 접미사만 화면에서 정리해준다.
+const STAFF_TITLE_SUFFIXES = ["사원", "주임", "대리", "과장", "차장", "부장", "팀장", "실장", "이사", "상무", "전무", "부사장", "사장", "대표", "회장", "반장", "소장"];
+function displayStaffName(name) {
+  if (!name) return name;
+  const trimmed = name.trim();
+  for (const title of STAFF_TITLE_SUFFIXES) {
+    if (trimmed.endsWith(" " + title)) return trimmed.slice(0, -(title.length + 1)).trim();
+  }
+  return trimmed;
+}
 const getReviewStatus = (p) => p.reviewStatus || "검토대기";
 // 직원 권한 기준으로, 이미 승인완료/발송완료된 제안서는 수정·삭제를 잠금
 const isReviewLockedForStaff = (p, isAdmin) => !isAdmin && ["승인완료", "발송완료"].includes(getReviewStatus(p));
@@ -2025,13 +2036,14 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
   return (
     <colgroup>
       {withCheckbox && <col style={{ width: "3%", minWidth: "36px" }} />}
-      <col style={{ width: "12%", minWidth: "105px" }} />
-      <col style={{ width: "10%", minWidth: "90px" }} />
+      <col style={{ width: "11%", minWidth: "105px" }} />
+      <col style={{ width: "9%", minWidth: "90px" }} />
+      <col style={{ width: "10%", minWidth: "95px" }} />
+      <col style={{ width: withAction ? "20%" : "28%", minWidth: "130px" }} />
       <col style={{ width: "11%", minWidth: "95px" }} />
-      <col style={{ width: withAction ? "24%" : "34%", minWidth: "130px" }} />
-      <col style={{ width: "12%", minWidth: "95px" }} />
-      <col style={{ width: "10%", minWidth: "90px" }} />
-      <col style={{ width: "11%", minWidth: "100px" }} />
+      <col style={{ width: "9%", minWidth: "85px" }} />
+      <col style={{ width: "12%", minWidth: "100px" }} />
+      <col style={{ width: "10%", minWidth: "95px" }} />
       {withAction && <col style={{ width: "14%", minWidth: "180px" }} />}
     </colgroup>
   );
@@ -2126,11 +2138,14 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
         <td className="px-3 py-3 text-xs whitespace-nowrap">
           <button onClick={() => onView(p)} className="text-[#1D4ED8] hover:underline font-medium" title="클릭하면 조회 전용으로 상세 내역을 확인할 수 있습니다">{p.code}</button>
         </td>
-        <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt(p.createdAt)}</td>
+        <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt(p.sentAt || p.createdAt)}</td>
         <td className="px-3 py-3 text-sm font-medium text-slate-800 truncate" style={{ maxWidth: "160px" }} title={p.clientName}>{p.clientName}</td>
         <td className="px-3 py-3 text-xs text-slate-600 truncate" style={{ maxWidth: "260px" }} title={p.itemSummary}>{p.itemSummary}</td>
         <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{won(p.totalAmount)}</td>
-        <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{p.createdBy || "-"}</td>
+        <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(p.createdBy) || "-"}</td>
+        <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">
+          {p.sentBy ? `${displayStaffName(p.sentBy)} (${p.sentChannel || "-"})` : <span className="text-slate-300">미발송</span>}
+        </td>
         <td className="px-3 py-3" style={{ minWidth: "100px" }}>
           {isAdmin ? (
             <select
@@ -2259,7 +2274,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
                       )}
                       <th className="text-left px-3 py-2 font-medium">제안번호</th><th className="text-left px-3 py-2 font-medium">발송일시</th>
                       <th className="text-left px-3 py-2 font-medium">고객사명</th><th className="text-left px-3 py-2 font-medium">대표 제품명</th>
-                      <th className="text-right px-3 py-2 font-medium">총 제안금액</th><th className="text-left px-3 py-2 font-medium">작성자</th><th className="text-left px-3 py-2 font-medium">검토상태</th><th className="text-right px-3 py-2 font-medium">작업</th>
+                      <th className="text-right px-3 py-2 font-medium">총 제안금액</th><th className="text-left px-3 py-2 font-medium">작성자</th><th className="text-left px-3 py-2 font-medium">발송자</th><th className="text-left px-3 py-2 font-medium">검토상태</th><th className="text-right px-3 py-2 font-medium">작업</th>
                     </tr></thead>
                     <tbody>{list.map((p) => <ProposalRow key={p.id} p={p} />)}</tbody>
                   </table>
@@ -2279,7 +2294,7 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
                 )}
                 <th className="text-left px-3 py-3 font-medium">제안번호</th><th className="text-left px-3 py-3 font-medium">발송일시</th>
                 <th className="text-left px-3 py-3 font-medium">고객사명</th><th className="text-left px-3 py-3 font-medium">대표 제품명/품목요약</th>
-                <th className="text-right px-3 py-3 font-medium">총 제안금액</th><th className="text-left px-3 py-3 font-medium">작성자</th><th className="text-left px-3 py-3 font-medium">검토상태</th><th className="text-right px-3 py-3 font-medium">작업</th>
+                <th className="text-right px-3 py-3 font-medium">총 제안금액</th><th className="text-left px-3 py-3 font-medium">작성자</th><th className="text-left px-3 py-3 font-medium">발송자</th><th className="text-left px-3 py-3 font-medium">검토상태</th><th className="text-right px-3 py-3 font-medium">작업</th>
               </tr></thead>
               <tbody>{pagedList.map((p) => <ProposalRow key={p.id} p={p} />)}</tbody>
             </table>
@@ -2339,7 +2354,37 @@ function EditNumberField({ value, onChange, className, placeholder, readOnly }) 
   );
 }
 
-function PdfPreview({ open, onClose, data, supplierLogo }) {
+const SEND_CHANNEL_OPTIONS = ["카카오톡", "카카오채널", "이메일", "팩스", "직접 전달/기타"];
+function SendCompleteModal({ onConfirm, onClose }) {
+  const [channel, setChannel] = useState(SEND_CHANNEL_OPTIONS[0]);
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">🚀 발송완료 처리</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-3">
+          <Field label="발송 채널">
+            <div className="grid grid-cols-2 gap-2">
+              {SEND_CHANNEL_OPTIONS.map((c) => (
+                <button key={c} type="button" onClick={() => setChannel(c)} className={"text-xs px-3 py-2 rounded-lg font-medium border " + (channel === c ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>{c}</button>
+              ))}
+            </div>
+          </Field>
+          <p className="text-xs text-slate-400">확인을 누르면 현재 로그인한 계정 이름과 지금 시각이 발송자 정보로 함께 기록됩니다.</p>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
+          <button onClick={() => onConfirm(channel)} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">확인/발송완료 처리</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete }) {
+  const [showSendModal, setShowSendModal] = useState(false);
   const [greeting, setGreeting] = useState(GREETING);
   const [terms, setTerms] = useState(TERMS);
   const [supplier, setSupplier] = useState(SUPPLIER);
@@ -2393,8 +2438,17 @@ function PdfPreview({ open, onClose, data, supplierLogo }) {
         <div className="flex gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
           <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
+          {onSendComplete && data.id && (
+            <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90">🚀 발송완료</button>
+          )}
         </div>
       </div>
+      {showSendModal && (
+        <SendCompleteModal
+          onClose={() => setShowSendModal(false)}
+          onConfirm={(channel) => { onSendComplete(data.id, channel); setShowSendModal(false); }}
+        />
+      )}
 
       <div className="proposal-modal-content mx-auto bg-white shadow-xl p-10 text-sm" id="pdf-page" style={{ color: DARK, width: "880px", maxWidth: "880px" }}>
       <fieldset disabled={!!data.readOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
@@ -7619,7 +7673,21 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
       <ClientInfoModal open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
         onClose={() => setClientModal({ open: false, mode: clientModal.mode })} onSubmit={handleClientSubmit} />
-      <PdfPreview open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo} />
+      <PdfPreview
+        open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo}
+        onSendComplete={async (id, channel) => {
+          const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
+          const patch = { status: "발송완료", sentBy: actorName, sentAt: nowDateTimeStr(), sentChannel: channel };
+          setProposalList((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+          try {
+            if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(COLLECTIONS.proposals, id, patch);
+            setToast("✅ [발송완료] 상태로 변경되었습니다.");
+          } catch (e) {
+            console.error(e);
+            setToast("발송완료 처리 중 오류가 발생했습니다. (화면에는 반영됨)");
+          }
+        }}
+      />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} onShowAnalysis={() => setShowFinishingAnalysis(true)} />
       {showFinishingAnalysis && (
         <FinishingAnalysisModal finishingOptions={finishingOptions} products={productsList} onClose={() => setShowFinishingAnalysis(false)} />
