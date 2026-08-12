@@ -2695,6 +2695,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setItems((data.items || []).map((it) => ({ ...it, productName: (data.proposalTitle && data.proposalTitle.trim()) ? data.proposalTitle : it.productName })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+  const [savedFlash, setSavedFlash] = useState(false); // 훅은 반드시 조기 return(아래) 이전에 선언해야 한다 — 이전엔 이 줄이 return 뒤에 있어서 모달을 열 때(open/data가 바뀌는 순간) 훅 개수가 달라져 화면이 하얗게 깨지는 크래시가 있었음
 
   if (!open || !data) return null;
   const DARK = "#111827";
@@ -2729,7 +2730,6 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     window.print();
     setTimeout(() => { document.title = originalTitle; }, 1000);
   };
-  const [savedFlash, setSavedFlash] = useState(false);
   const handleSave = () => {
     if (!onSave || !data.id) return;
     onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier }, isInvoice ? "invoice" : "proposal");
