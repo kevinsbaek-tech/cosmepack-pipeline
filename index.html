@@ -5932,12 +5932,15 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
     setClientName(p.clientName || "");
     const names = [...new Set((p.items || []).map((it) => it.productName).filter(Boolean))];
     setItemOptions(names);
-    // 품목명 → 사진 매핑을 함께 만들어둔다 — 제안서 품목의 image 필드를 그대로 이관(누락 없이 100% 매핑)
+    // 품목명 → 사진 매핑을 함께 만들어둔다 — 이미지 필드명이 소스에 따라 다를 수 있어(image/imageUrl/productImg/photo) 전부 순차 탐색해 누락 없이 매핑
     const imageMap = {};
-    (p.items || []).forEach((it) => { if (it.productName && it.image && !imageMap[it.productName]) imageMap[it.productName] = it.image; });
+    (p.items || []).forEach((it) => {
+      const img = it && (it.image || it.imageUrl || it.productImg || it.photo);
+      if (it.productName && img && !imageMap[it.productName]) imageMap[it.productName] = img;
+    });
     setItemImageMap(imageMap);
     setProductName(names[0] || "");
-    setProductImage(imageMap[names[0]] || "");
+    setProductImage(imageMap[names[0]] || (p.image || p.imageUrl || p.photo || ""));
     if (p.employee && p.employee !== "(엑셀자동등록)") setAssignee(p.employee);
   };
 
@@ -6054,12 +6057,24 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
   // 제품DB에 사진이 없으면, 이 샘플에 연결된 제안서의 품목 사진을 대신 끌어온다(제안서에 실제로 첨부됐던 사진이라 더 정확한 경우가 많음)
   const linkedProposal = (proposals || []).find((p) => String(p.id) === String(sample.linkedProposalId));
   const proposalItem = linkedProposal && (linkedProposal.items || []).find((it) => it.productName === sample.productName);
-  const fallbackImage = sample.image || (matchedProduct && matchedProduct.image) || (proposalItem && proposalItem.image) || "";
+  const proposalFirstItem = linkedProposal && (linkedProposal.items || [])[0];
+  // 이미지가 저장된 필드명이 데이터 소스에 따라 다를 수 있어(image/imageUrl/productImg/photo 등) 전부 순차 탐색한다.
+  const pickImg = (obj) => (obj && (obj.image || obj.imageUrl || obj.productImg || obj.photo)) || "";
+  const fallbackImage = pickImg(sample) || pickImg(matchedProduct) || pickImg(proposalItem) || pickImg(proposalFirstItem) || pickImg(linkedProposal);
   // 예전에 "💾 수정후 저장"으로 저장해둔 내용(invoiceDraft)이 있으면 그걸 최우선으로 복원 — 다시 열었을 때 수정한 그대로 이어서 볼 수 있다.
   const draft = sample.invoiceDraft || {};
   const [clientName, setClientName] = useState(draft.clientName || sample.clientName || "");
   const [writeDate, setWriteDate] = useState(draft.writeDate || todayStr());
   const [productImage, setProductImage] = useState(draft.productImage || fallbackImage);
+  // 모달이 열린 시점엔 제안서 목록이 아직 로딩 전이었거나, 처음엔 사진이 없다가 뒤늦게 원본 제안서 사진을 찾게 되는 경우까지 대비해
+  // productImage가 여전히 비어있는 동안은 계속 폴백 탐색 결과를 반영한다(사용자가 직접 사진을 지우거나 새로 올리면 그 순간부터는 더 이상 덮어쓰지 않음).
+  useEffect(() => {
+    if (!productImage && fallbackImage) {
+      setProductImage(fallbackImage);
+      if (onUpdate && !sample.image) onUpdate(sample, { image: fallbackImage }); // 근본 복원: 다음부턴 이 탐색 없이도 sample.image로 바로 뜨도록 원본에 저장해둔다
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fallbackImage]);
   const [productName, setProductName] = useState(draft.productName || sample.productName || "");
   const [spec, setSpec] = useState(draft.spec || (matchedProduct && matchedProduct.specSize) || (proposalItem && proposalItem.specSize) || "");
   const [qty, setQty] = useState(draft.qty || sample.invoiceQty || 1);
@@ -6123,12 +6138,21 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
     setShowSendModal(false);
   };
   const [showStockPicker, setShowStockPicker] = useState(false);
-  const [stockPicked, setStockPicked] = useState(null); // 재고에서 실제로 출고 선택한 항목(안내 표시용)
+  // 재고에서 실제로 출고 선택한 항목(안내 표시용) — 이 인보이스 건에 이미 저장돼있는 배정 이력(allocatedStockId)이 있으면 그 재고항목을 찾아 복원한다.
+  const [stockPicked, setStockPicked] = useState(() => (sample.allocatedStockId && sampleStock ? (sampleStock.find((s) => s.id === sample.allocatedStockId) || null) : null));
+  // 재고를 다시 선택/수정할 때마다: ①이 인보이스 건이 예전에 차감해둔 수량(allocatedStockQty)이 있으면 먼저 그만큼 재고를 원상복구(롤백)하고,
+  // ②그 다음 이번에 새로 고른 수량만 딱 1번 차감한다 — 그래야 "2개→3개로 수정" 같은 재수정 시 5개가 아니라 3개만 차감된 상태로 유지된다.
   const pickStockForInvoice = (s, pickedQty) => {
-    if (onDecrementStock) onDecrementStock(s.id, pickedQty); // 선택한 수량만큼 한국 재고에서 즉시 차감(출고 연동)
+    const prevStockId = sample.allocatedStockId;
+    const prevQty = Number(sample.allocatedStockQty) || 0;
+    if (onDecrementStock && prevStockId && prevQty > 0) {
+      onDecrementStock(prevStockId, -prevQty); // 롤백: 이전 배정분을 원래 재고 수량으로 되돌림(음수 차감 = 복원)
+    }
+    if (onDecrementStock) onDecrementStock(s.id, pickedQty); // 복원된 실제 재고를 기준으로 이번 수량만 1회 차감
     setQty(pickedQty); // 주문수량(및 인보이스 본문 수량 셀)에 즉시 반영 — supplyTotal/vat/grandTotal이 qty에 의존하므로 총 청구금액도 자동 재계산됨
     setStockPicked(s);
     setShowStockPicker(false);
+    if (onUpdate) onUpdate(sample, { allocatedStockId: s.id, allocatedStockQty: pickedQty }); // 다음 재선택시 롤백 기준으로 쓸 배정 이력을 이 인보이스 건에 영구 저장
   };
 
   return (
@@ -6172,7 +6196,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
               {shipSource === "korea" && (
                 <div className="mt-2">
                   <button type="button" onClick={() => setShowStockPicker(true)} className="w-full text-xs px-3 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium">📦 한국 샘플 재고 현황 보기/선택</button>
-                  {stockPicked && <div className="mt-1 text-[11px] text-emerald-700">✅ 재고에서 {stockPicked.quantity}개 중 {qty}개 출고 처리되었습니다 ({stockPicked.location || "본사 창고"}).</div>}
+                  {stockPicked && sample.allocatedStockQty > 0 && <div className="mt-1 text-[11px] text-emerald-700">✅ 재고에서 {sample.allocatedStockQty}개 출고 처리되었습니다 (현재 잔여 {stockPicked.quantity}개, {stockPicked.location || "본사 창고"}).</div>}
                 </div>
               )}
             </Field>
