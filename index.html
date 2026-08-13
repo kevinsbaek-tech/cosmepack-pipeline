@@ -2142,7 +2142,7 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
   );
 }
 
-function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkApprovePending, onDedupe, onBulkDelete, isAdmin }) {
+function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkApprovePending, onDedupe, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
   const [search, setSearch] = useState("");
   const [periodFilter, setPeriodFilter] = useState("전체");
   const [customFrom, setCustomFrom] = useState("");
@@ -2330,6 +2330,16 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
             className="text-xs px-3 py-2 rounded-lg font-medium whitespace-nowrap border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
           >
             🧹 중복 제안서 정리
+          </button>
+        )}
+        {isAdmin && onBulkCompressImages && (
+          <button
+            onClick={onBulkCompressImages}
+            disabled={!!bulkCompressProgress}
+            title="제안서·인보이스 안에 저장된 큰 사진을 다시 압축해서 목록 불러오는 속도를 개선합니다(화질은 거의 유지됩니다)"
+            className="text-xs px-3 py-2 rounded-lg font-medium whitespace-nowrap border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {bulkCompressProgress ? `🗜️ 압축 중... (${bulkCompressProgress.done}/${bulkCompressProgress.total})` : "🗜️ 제안서 사진 일괄 압축(속도 개선)"}
           </button>
         )}
         <button
@@ -8137,6 +8147,46 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setBulkCompressProgress(null);
   };
 
+  // 🗜️ 제안서/인보이스 품목 사진 일괄압축 — 제품 DB와 달리 제안서·인보이스는 만들 당시의 사진을 "그 문서 안에 직접" 복사해서 저장해두는 구조라,
+  // 같은 제품으로 여러 건 만들면 그때마다 사진이 통째로 또 저장된다. 제품 수보다 제안서/인보이스 건수가 훨씬 많을 때 실제 병목은 대부분 여기다.
+  const bulkCompressProposalImages = async () => {
+    const BIG = 150 * 1024;
+    const collect = (list) => list
+      .map((doc) => ({ doc, bigItems: (doc.items || []).filter((it) => it.image && it.image.length * 0.75 > BIG) }))
+      .filter((x) => x.bigItems.length > 0);
+    const propTargets = collect(proposalList);
+    const invTargets = collect(invoiceList);
+    const totalImages = propTargets.reduce((s, x) => s + x.bigItems.length, 0) + invTargets.reduce((s, x) => s + x.bigItems.length, 0);
+    if (totalImages === 0) { setToast("압축이 필요한 큰 사진이 없습니다. 이미 충분히 가볍습니다."); return; }
+    if (!window.confirm(`제안서·인보이스 안에 저장된 큰 사진 ${totalImages}장을 압축합니다. 화질은 거의 그대로 유지되고 용량만 줄어듭니다.\n건수에 따라 몇 분 정도 걸릴 수 있어요. 계속할까요?`)) return;
+    setBulkCompressProgress({ done: 0, total: totalImages });
+    let done = 0;
+    const runBatch = async (targets, list, setList, collectionName) => {
+      for (const { doc } of targets) {
+        const newItems = await Promise.all((doc.items || []).map(async (it) => {
+          if (it.image && it.image.length * 0.75 > BIG) {
+            try {
+              const compressed = await compressBase64Image(it.image, 120 * 1024);
+              done++; setBulkCompressProgress({ done, total: totalImages });
+              return { ...it, image: compressed };
+            } catch (e) {
+              console.error("사진 압축 실패:", it.productName, e);
+              done++; setBulkCompressProgress({ done, total: totalImages });
+              return it;
+            }
+          }
+          return it;
+        }));
+        setList((prev) => prev.map((x) => (x.id === doc.id ? { ...x, items: newItems } : x)));
+        try { if (FIREBASE_ENABLED && typeof doc.id === "string") await fsUpdate(collectionName, doc.id, { items: newItems }); } catch (e) { console.error(e); }
+      }
+    };
+    await runBatch(propTargets, proposalList, setProposalList, COLLECTIONS.proposals);
+    await runBatch(invTargets, invoiceList, setInvoiceList, COLLECTIONS.invoices);
+    setToast(`✅ 사진 ${totalImages}장 압축이 끝났습니다. 다음 접속부터 더 빠르게 불러와집니다.`);
+    setBulkCompressProgress(null);
+  };
+
   // 제품명("[코스메팩] 유리용기 / ...")과 비고류 텍스트에서 카테고리를 추출해 일괄 매칭
   const guessCategoryForProduct = (p) => guessCategoryFromName(p.name, [p.otherOptionK, p.proposalNotesK, p.productionNotesC, p.specSize].filter(Boolean).join(" "));
   const autoAssignCategories = async () => {
@@ -8692,6 +8742,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           }}
           onBulkApprovePending={bulkApprovePendingProposals}
           onDedupe={dedupeProposals}
+          onBulkCompressImages={bulkCompressProposalImages} bulkCompressProgress={bulkCompressProgress}
           onBulkDelete={bulkDeleteProposals}
         />
       )}
