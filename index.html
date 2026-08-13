@@ -227,6 +227,39 @@ function compressImageFile(file, maxBytes) {
   });
 }
 
+// 이미 base64로 저장돼있는 사진(파일 선택 없이)을 그대로 재압축한다 — 오래된 제품/제안서 사진을 일괄로 줄일 때 사용.
+// compressImageFile과 같은 캔버스 축소 로직을 재사용하되, 입력이 File이 아니라 이미 dataURL 문자열이라는 점만 다르다.
+function compressBase64Image(dataUrl, maxBytes) {
+  maxBytes = maxBytes || 120 * 1024;
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onerror = reject;
+    img.onload = () => {
+      let maxDim = 640;
+      const attempt = (dim, quality) => {
+        const scale = Math.min(1, dim / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        return canvas.toDataURL("image/jpeg", quality);
+      };
+      let quality = 0.85;
+      let out = attempt(maxDim, quality);
+      let guard = 0;
+      while (out.length * 0.75 > maxBytes && guard < 8) {
+        if (quality > 0.4) quality -= 0.1; else maxDim = Math.round(maxDim * 0.8);
+        out = attempt(maxDim, quality);
+        guard++;
+      }
+      resolve(out);
+    };
+    img.src = dataUrl;
+  });
+}
+
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -4903,7 +4936,7 @@ function BatchFactoryUpdateModal({ products, onRun, onClose }) {
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -5146,6 +5179,16 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
           <button onClick={() => { setEditingProduct({}); setIsDuplicateFlow(false); }} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
           {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
+          {isAdmin && onBulkCompressImages && (
+            <button
+              onClick={onBulkCompressImages}
+              disabled={!!bulkCompressProgress}
+              title="용량이 큰 제품 사진을 다시 압축해서 목록 불러오는 속도를 개선합니다(화질은 거의 유지됩니다)"
+              className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+            >
+              {bulkCompressProgress ? `🗜️ 압축 중... (${bulkCompressProgress.done}/${bulkCompressProgress.total})` : "🗜️ 사진 일괄 압축(속도 개선)"}
+            </button>
+          )}
           <button
             onClick={() => setShowProductMergeModal(true)}
             disabled={selectedIds.length < 2}
@@ -6107,9 +6150,12 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
             <button onClick={handleSaveClick} className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{savedFlash ? "✅ 저장되었습니다" : "💾 저장"}</button>
           )}
           <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
-          {onUpdate && !readOnly && <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🚀 발송완료</button>}
+          {onUpdate && <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🚀 발송완료</button>}
         </div>
       </div>
+      {savedFlash && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-emerald-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg shadow-lg no-print">✅ 성공적으로 저장되었습니다.</div>
+      )}
       {showSendModal && (
         <SendCompleteModal onClose={() => setShowSendModal(false)} onConfirm={sendComplete} />
       )}
@@ -6962,7 +7008,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setPreviewState((prev) => (prev && prev.id === id ? { ...prev, ...fullPatch } : prev));
     try {
       if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(collectionName, id, fullPatch);
-      setToast("✅ 저장되었습니다.");
+      setToast("✅ 성공적으로 저장되었습니다.");
     } catch (e) {
       console.error(e);
       setToast("저장 중 오류가 발생했습니다. (화면에는 반영됨)");
@@ -8068,6 +8114,29 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     }
   };
 
+  // 🗜️ 제품 사진 일괄 압축 — Firestore에 사진이 base64로 직접 박혀있는 구조라, 오래되거나 용량이 큰 사진을 다시 압축해서
+  // 문서 크기 자체를 줄여준다(별도 Storage 이전 없이도 목록 불러오는 속도를 체감상 개선하는 실용적 방법).
+  const [bulkCompressProgress, setBulkCompressProgress] = useState(null); // {done,total} — 진행중일 때만 값이 있음
+  const bulkCompressProductImages = async () => {
+    const targets = productsList.filter((p) => p.image && p.image.length * 0.75 > 150 * 1024); // 150KB 넘는 사진만 대상
+    if (targets.length === 0) { setToast("압축이 필요한 큰 사진이 없습니다. 이미 충분히 가볍습니다."); return; }
+    if (!window.confirm(`용량이 큰 사진 ${targets.length}장을 압축합니다. 화질은 거의 그대로 유지되고 용량만 줄어듭니다.\n제품 수에 따라 몇 분 정도 걸릴 수 있어요. 계속할까요?`)) return;
+    setBulkCompressProgress({ done: 0, total: targets.length });
+    for (let i = 0; i < targets.length; i++) {
+      const p = targets[i];
+      try {
+        const compressed = await compressBase64Image(p.image, 120 * 1024);
+        setProductsList((prev) => prev.map((x) => (x.id === p.id ? { ...x, image: compressed } : x)));
+        if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, { image: compressed });
+      } catch (e) {
+        console.error("사진 압축 실패:", p.name, e);
+      }
+      setBulkCompressProgress({ done: i + 1, total: targets.length });
+    }
+    setToast(`✅ 사진 ${targets.length}장 압축이 끝났습니다. 다음 접속부터 더 빠르게 불러와집니다.`);
+    setBulkCompressProgress(null);
+  };
+
   // 제품명("[코스메팩] 유리용기 / ...")과 비고류 텍스트에서 카테고리를 추출해 일괄 매칭
   const guessCategoryForProduct = (p) => guessCategoryFromName(p.name, [p.otherOptionK, p.proposalNotesK, p.productionNotesC, p.specSize].filter(Boolean).join(" "));
   const autoAssignCategories = async () => {
@@ -8678,6 +8747,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onDeleteAllUploaded={deleteAllUploadedProductData}
           isAdmin={isAdmin}
           initialViewProduct={productToView} onConsumeInitialView={() => setProductToView(null)}
+          onBulkCompressImages={bulkCompressProductImages} bulkCompressProgress={bulkCompressProgress}
         />
       )}
 
