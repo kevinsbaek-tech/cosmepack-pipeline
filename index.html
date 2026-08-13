@@ -2735,7 +2735,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setSupplier(SUPPLIER);
     setClientName(data.clientName || "");
     setValidUntil(data.validUntil || "");
-    setItems((data.items || []).map((it) => ({ ...it, productName: (data.proposalTitle && data.proposalTitle.trim()) ? data.proposalTitle : it.productName })));
+    setItems((data.items || []).map((it) => ({ ...it }))); // 각 품목의 고유 제품명(it.productName)을 그대로 쓴다 — 예전엔 제안서 제목으로 모든 행을 덮어써서 전 품목이 같은 이름으로 통일되어 보이는 버그가 있었음
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
   const [savedFlash, setSavedFlash] = useState(false); // 훅은 반드시 조기 return(아래) 이전에 선언해야 한다 — 이전엔 이 줄이 return 뒤에 있어서 모달을 열 때(open/data가 바뀌는 순간) 훅 개수가 달라져 화면이 하얗게 깨지는 크래시가 있었음
