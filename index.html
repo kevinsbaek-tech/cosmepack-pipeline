@@ -6733,13 +6733,13 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
             <tbody>
               {pagedFiltered.map((s, idx) => (
                 <tr key={s.id} onClick={() => { setInvoiceViewMode("view"); setInvoiceSampleId(s.id); }} className={"border-t border-slate-100 cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
-                  <td className="px-3 py-3 whitespace-nowrap text-slate-500">{s.requestDate || "-"}</td>
-                  <td className="px-3 py-3 font-medium max-w-[160px]" style={{ color: "#111827", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.clientName}>{s.clientName}</td>
-                  <td className="px-3 py-3 text-slate-600 max-w-[220px]" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.productName}>{s.productName}</td>
-                  <td className="px-3 py-3 text-right text-slate-600">{s.invoiceQty || "-"}</td>
-                  <td className="px-3 py-3 text-slate-500 max-w-[160px]" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.receiveAddress || "-"}>{s.receiveAddress || "-"}</td>
-                  <td className="px-3 py-3 text-slate-500 whitespace-nowrap">{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
-                  <td className="px-3 py-3 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                  <td className="px-3 py-3 align-middle whitespace-nowrap text-slate-500">{s.requestDate || "-"}</td>
+                  <td className="px-3 py-3 align-middle font-medium max-w-[160px]" style={{ color: "#111827", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.clientName}>{s.clientName}</td>
+                  <td className="px-3 py-3 align-middle text-slate-600 max-w-[220px]" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.productName}>{s.productName}</td>
+                  <td className="px-3 py-3 align-middle text-right text-slate-600">{s.invoiceQty || "-"}</td>
+                  <td className="px-3 py-3 align-middle text-slate-500 max-w-[160px]" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.receiveAddress || "-"}>{s.receiveAddress || "-"}</td>
+                  <td className="px-3 py-3 align-middle text-slate-500 whitespace-nowrap">{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
+                  <td className="px-3 py-3 align-middle text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <select
                       value={s.status}
                       onChange={(e) => onUpdate(s, { status: e.target.value })}
@@ -6749,14 +6749,14 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
                     </select>
                     {s.orderConverted && <span className="ml-1 inline-block text-[10px] px-2 py-1 rounded-full font-semibold border bg-purple-50 text-purple-700 border-purple-200" title={`본품계약 전환 완료 (${s.orderConvertedBy || ""}, ${s.orderConvertedAt || ""})`}>📜 계약전환</span>}
                   </td>
-                  <td className="px-3 py-3 text-center" style={{ pointerEvents: "none" }} title="샘플비 인보이스에서 '🚀 발송완료' 처리하면 자동으로 체크됩니다">
+                  <td className="px-3 py-3 align-middle text-center" style={{ pointerEvents: "none" }} title="샘플비 인보이스에서 '🚀 발송완료' 처리하면 자동으로 체크됩니다">
                     <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.customerConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
                   </td>
-                  <td className="px-3 py-3 text-right font-semibold" style={{ color: "#111827" }}>{s.invoiceAmount ? won(s.invoiceAmount) : "-"}</td>
-                  <td className="px-3 py-3 text-center" onClick={(e) => toggleFlag(e, s, "paymentConfirmed")}>
+                  <td className="px-3 py-3 align-middle text-right font-semibold" style={{ color: "#111827" }}>{s.invoiceAmount ? won(s.invoiceAmount) : "-"}</td>
+                  <td className="px-3 py-3 align-middle text-center" onClick={(e) => toggleFlag(e, s, "paymentConfirmed")}>
                     <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.paymentConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
                   </td>
-                  <td className="px-3 py-3 text-center whitespace-nowrap">
+                  <td className="px-3 py-3 align-middle text-center whitespace-nowrap">
                     <button onClick={(e) => { e.stopPropagation(); setInvoiceViewMode("view"); setInvoiceSampleId(s.id); }} title="조회(읽기전용)" className="text-slate-400 hover:text-[#1E3A8A] mr-2">👁️</button>
                     <button onClick={(e) => { e.stopPropagation(); setInvoiceViewMode("edit"); setInvoiceSampleId(s.id); }} title="수정" className="text-slate-400 hover:text-[#1E3A8A] mr-2">✏️</button>
                     <button onClick={(e) => { e.stopPropagation(); setDetailSample(s); }} title="진행상황 보기" className="text-slate-400 hover:text-[#1E3A8A] mr-2">📋</button>
