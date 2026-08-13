@@ -9273,7 +9273,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             if (!clientInfo.clientName.trim()) { setToast("고객사명을 입력해주세요."); return; }
             const totalAmount = draftItems.reduce((s, i) => s + i.totalPrice, 0);
             const totalCbm = draftItems.reduce((s, i) => s + i.cbm, 0);
-            setPdfData({ ...clientInfo, items: draftItems, totalAmount, totalCbm, validUntil: addDays(30), readOnly: proposalReadOnly });
+            // 이미 저장된 제안서를 수정하는 중이면(editingProposalId 있음) 그 원본 레코드의 id·코드·발송상태 등도 함께 실어준다 —
+            // 그래야 이 미리보기에서도 "💾 저장"/"🚀 발송완료" 버튼이 정상적으로 뜨고 실제 저장이 그 제안서에 반영된다.
+            const original = editingProposalId ? proposalList.find((p) => p.id === editingProposalId) : null;
+            setPdfData({ ...(original || {}), ...clientInfo, items: draftItems, totalAmount, totalCbm, validUntil: (original && original.validUntil) || addDays(30), readOnly: proposalReadOnly });
           }}
         />
       )}
