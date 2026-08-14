@@ -4529,7 +4529,17 @@ function TextField({ label, value, onChange, hint, mono, rows, span }) {
 
 function PriceTierTable({ tiers, onChange }) {
   const update = (idx, field, value) => {
-    const next = tiers.map((t, i) => (i === idx ? { ...t, [field]: value } : t));
+    const next = tiers.map((t, i) => {
+      if (i !== idx) return t;
+      const patched = { ...t, [field]: value };
+      // 기준수량이 5,000개/10,000개면 검품비용을 정해진 금액(270/540)으로 자동완성 — 그 외 수량은 사용자가 직접 입력하도록 비워둔다.
+      if (field === "qty") {
+        const qtyNum = Number(value);
+        if (qtyNum === 5000) patched.inspectionRmb = 270;
+        else if (qtyNum === 10000) patched.inspectionRmb = 540;
+      }
+      return patched;
+    });
     onChange(next);
   };
   const addTier = () => onChange([...tiers, { qty: "", cbm: "", shippingRmb: "", inspectionRmb: "", factoryPriceRmb: "" }]);
@@ -4956,7 +4966,7 @@ function BatchFactoryUpdateModal({ products, onRun, onClose }) {
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -5216,6 +5226,15 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
               className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
             >
               {bulkCompressProgress ? `🗜️ 압축 중... (${bulkCompressProgress.done}/${bulkCompressProgress.total})` : "🗜️ 사진 일괄 압축(속도 개선)"}
+            </button>
+          )}
+          {isAdmin && onBulkMigrateInspection && (
+            <button
+              onClick={onBulkMigrateInspection}
+              title="전체 제품의 수량별 검품비용을 5,000개=270원 / 10,000개=540원으로 정리하고, 그 외 수량 구간은 비워서 직접 입력하도록 합니다"
+              className="text-sm px-4 py-2 rounded-lg border border-indigo-200 text-indigo-700 font-medium hover:bg-indigo-50 whitespace-nowrap"
+            >
+              🧾 검품비용 일괄 정리
             </button>
           )}
           <button
@@ -8153,6 +8172,25 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   // 🗜️ 제품 사진 일괄 압축 — Firestore에 사진이 base64로 직접 박혀있는 구조라, 오래되거나 용량이 큰 사진을 다시 압축해서
   // 문서 크기 자체를 줄여준다(별도 Storage 이전 없이도 목록 불러오는 속도를 체감상 개선하는 실용적 방법).
   const [bulkCompressProgress, setBulkCompressProgress] = useState(null); // {done,total} — 진행중일 때만 값이 있음
+  // 🧾 전체 제품 DB 검품비용 일괄 정리 — 수량 5,000개 구간은 270원, 10,000개 구간은 540원으로 통일하고,
+  // 그 외 수량 구간은 임의로 계산해 채우지 않고 비워서(직접 입력 필요) 사용자가 정확한 값을 입력하게 한다.
+  const bulkMigrateInspectionFees = async () => {
+    const targets = productsList.filter((p) => p.priceTiers && p.priceTiers.length > 0);
+    if (targets.length === 0) { setToast("수량 구간 데이터가 있는 제품이 없습니다."); return; }
+    if (!window.confirm(`전체 제품 ${targets.length}건의 수량별 검품비용을 아래 기준으로 정리합니다.\n\n· 5,000개 구간 → 270원\n· 10,000개 구간 → 540원\n· 그 외 수량 구간 → 값을 비웁니다(직접 입력 필요)\n\n계속할까요?`)) return;
+    for (const p of targets) {
+      const nextTiers = p.priceTiers.map((t) => {
+        const qtyNum = Number(t.qty);
+        let inspectionRmb = "";
+        if (qtyNum === 5000) inspectionRmb = 270;
+        else if (qtyNum === 10000) inspectionRmb = 540;
+        return { ...t, inspectionRmb };
+      });
+      setProductsList((prev) => prev.map((x) => (x.id === p.id ? { ...x, priceTiers: nextTiers } : x)));
+      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, { priceTiers: nextTiers }); } catch (e) { console.error(e); }
+    }
+    setToast(`✅ 제품 ${targets.length}건의 검품비용을 정리했습니다.`);
+  };
   const bulkCompressProductImages = async () => {
     const targets = productsList.filter((p) => p.image && p.image.length * 0.75 > 150 * 1024); // 150KB 넘는 사진만 대상
     if (targets.length === 0) { setToast("압축이 필요한 큰 사진이 없습니다. 이미 충분히 가볍습니다."); return; }
@@ -8871,6 +8909,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           isAdmin={isAdmin}
           initialViewProduct={productToView} onConsumeInitialView={() => setProductToView(null)}
           onBulkCompressImages={bulkCompressProductImages} bulkCompressProgress={bulkCompressProgress}
+          onBulkMigrateInspection={bulkMigrateInspectionFees}
         />
       )}
 
