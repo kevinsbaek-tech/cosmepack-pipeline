@@ -2058,6 +2058,17 @@ const SAMPLE_STATUS_COLORS = {
 const SAMPLE_STATUS_DATE_FIELD = { "요청": "requestDate", "발주": "orderDate", "입고": "stockInDate", "발송": "dispatchDate" };
 const SAMPLE_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "발주": "orderConfirmedBy", "입고": "stockInConfirmedBy", "발송": "dispatchConfirmedBy" };
 const DEFAULT_SAMPLE_SHIPPING_FEES = { "일반": 2500, "항공": 15000 }; // 배송비 설정 모달에서 수정 가능한 기본값
+
+/* ===================== 샘플 유형(1차 일반 / 2차 CT맞춤제작) =====================
+   sampleType 필드가 없는 기존 데이터는 전부 "general"(1차 일반샘플)로 간주한다 —
+   별도 마이그레이션 없이 옛 레코드도 그대로 목록/필터에 정상 노출되게 하기 위함. */
+const SAMPLE_TYPE_OPTIONS = ["general", "ct"];
+const SAMPLE_TYPE_LABELS = { general: "📋 1차 일반샘플", ct: "🧪 2차 CT샘플" };
+const SAMPLE_TYPE_BADGES = {
+  general: { label: "일반", cls: "bg-blue-100 text-blue-700" },
+  ct: { label: "CT", cls: "bg-purple-100 text-purple-700" },
+};
+const getSampleType = (s) => (s && s.sampleType === "ct" ? "ct" : "general");
 const DEFAULT_SAMPLE_SHIPPING_FEE_NOTES = {
   "일반": "일반 국내택배비 2,500원, 입금확인 후 7일 소요",
   "항공": "항공특송료 15,000원, 급송 (2~3일 소요)",
@@ -5942,16 +5953,26 @@ function StockPickerModal({ stock, productName, onClose, onPick }) {
   );
 }
 
-function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId, onClose, onSave }) {
+function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId, presetData, onClose, onSave }) {
+  const preset = presetData || {};
   const assigneeOptions = accounts || [];
-  const [linkedProposalId, setLinkedProposalId] = useState(initialProposalId || "");
-  const [clientName, setClientName] = useState("");
-  const [productName, setProductName] = useState("");
-  const [productImage, setProductImage] = useState(""); // 선택한 제안서 품목의 사진 — 샘플 등록시 그대로 이관되어 나중에 샘플비 인보이스에 100% 반영됨
+  const [sampleType, setSampleType] = useState(preset.sampleType || "general"); // "general"(1차 일반확인) | "ct"(2차 CT맞춤제작)
+  const [linkedProposalId, setLinkedProposalId] = useState(preset.linkedProposalId || initialProposalId || "");
+  const [clientName, setClientName] = useState(preset.clientName || "");
+  const [productName, setProductName] = useState(preset.productName || "");
+  const [productImage, setProductImage] = useState(preset.image || ""); // 선택한 제안서 품목의 사진 — 샘플 등록시 그대로 이관되어 나중에 샘플비 인보이스에 100% 반영됨
+  // CT맞춤제작 사양 — sampleType === "ct" 일 때만 입력/저장된다
+  const [ctBodyPantone, setCtBodyPantone] = useState("");
+  const [ctCapPantone, setCtCapPantone] = useState("");
+  const [ctPrintSpec, setCtPrintSpec] = useState("");
+  const [ctSizeSpec, setCtSizeSpec] = useState("");
+  const [ctProductionCost, setCtProductionCost] = useState("");
+  const [ctExpressCost, setCtExpressCost] = useState("");
+  const [ctNotes, setCtNotes] = useState("");
   const [itemOptions, setItemOptions] = useState([]); // 선택한 제안서에 포함된 품목명 목록
   const [itemImageMap, setItemImageMap] = useState({}); // 품목명 → 사진(image) 매핑 — 제품명을 바꿔도 그 사진으로 함께 전환
-  const [stockLocation, setStockLocation] = useState("korea");
-  const [assignee, setAssignee] = useState((assigneeOptions[0] && assigneeOptions[0].name) || "");
+  const [stockLocation, setStockLocation] = useState(preset.sampleType === "ct" ? "china" : "korea");
+  const [assignee, setAssignee] = useState(preset.assignee || (assigneeOptions[0] && assigneeOptions[0].name) || "");
   const [requestDate, setRequestDate] = useState(todayStr());
   const [pickedStock, setPickedStock] = useState(null); // 한국재고에서 선택한 항목(있으면 등록시 신청수량만큼 차감)
   const [stockQty, setStockQty] = useState(1); // 본사 재고에서 출고할 신청 수량
@@ -5985,32 +6006,64 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
   }, []);
   const save = async () => {
     if (!canSave) return;
-    if (stockLocation === "korea" && !pickedStock) {
+    const isCt = sampleType === "ct";
+    // CT맞춤제작은 중국 공장에서 새로 제작하는 건이라 한국 본사 재고 차감 개념이 없다 → 재고 선택 검증도 건너뛴다
+    if (!isCt && stockLocation === "korea" && !pickedStock) {
       alert("한국 본사 재고에서 출고할 샘플 제품을 선택해 주세요.");
       return;
     }
-    if (pickedStock && (Number(stockQty) || 0) > (Number(pickedStock.quantity) || 0)) {
+    if (!isCt && pickedStock && (Number(stockQty) || 0) > (Number(pickedStock.quantity) || 0)) {
       alert(`현재 보유 재고(${pickedStock.quantity}개)를 초과하여 신청할 수 없습니다.`);
       return;
     }
+    const usePicked = !isCt && pickedStock;
     await onSave({
-      clientName: clientName.trim(), productName: productName.trim(), image: productImage || "", stockLocation, assignee,
+      sampleType, // "general" | "ct" — 목록 필터/배지의 기준
+      clientName: clientName.trim(), productName: productName.trim(), image: productImage || "", stockLocation: isCt ? "china" : stockLocation, assignee,
       status: "요청", requestDate, orderDate: "", stockInDate: "", dispatchDate: "", shippingMethod: "", notes: "",
       linkedProposalId: linkedProposalId || "",
-      stockItemId: pickedStock ? pickedStock.id : null, // App의 addSample이 이 값을 보고 재고를 신청수량만큼 차감
-      stockQty: pickedStock ? (Number(stockQty) || 1) : null,
-      ...(pickedStock ? { invoiceQty: Number(stockQty) || 1 } : {}), // 샘플비 인보이스 기본 수량에도 동일하게 반영(Firestore엔 undefined를 못 넣으므로 조건부로만 포함)
+      ...(isCt ? {
+        ctBodyPantone: ctBodyPantone.trim(), ctCapPantone: ctCapPantone.trim(),
+        ctPrintSpec: ctPrintSpec.trim(), ctSizeSpec: ctSizeSpec.trim(),
+        ctProductionCost: Number(ctProductionCost) || 0, ctExpressCost: Number(ctExpressCost) || 0,
+        ctNotes: ctNotes.trim(),
+        convertedFromSampleId: preset.convertedFromSampleId || "", // 일반샘플에서 🧪전환으로 만들어진 경우 원본 추적용
+      } : {}),
+      stockItemId: usePicked ? pickedStock.id : null, // App의 addSample이 이 값을 보고 재고를 신청수량만큼 차감
+      stockQty: usePicked ? (Number(stockQty) || 1) : null,
+      ...(usePicked ? { invoiceQty: Number(stockQty) || 1 } : {}), // 샘플비 인보이스 기본 수량에도 동일하게 반영(Firestore엔 undefined를 못 넣으므로 조건부로만 포함)
     });
     onClose();
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <h2 className="text-base font-bold text-slate-800">🧪 신규 샘플 발송 등록</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
-        <div className="p-6 space-y-3">
+        <div className="p-6 space-y-3 overflow-y-auto flex-1">
+          <Field label="샘플 유형" hint="어떤 단계의 샘플인지 먼저 선택해주세요">
+            <div className="flex gap-2">
+              {SAMPLE_TYPE_OPTIONS.map((t) => (
+                <button
+                  key={t} type="button"
+                  onClick={() => { setSampleType(t); if (t === "ct") { setStockLocation("china"); setPickedStock(null); } }}
+                  className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium border flex items-center justify-center gap-1.5 " +
+                    (sampleType === t
+                      ? (t === "ct" ? "bg-purple-600 text-white border-purple-600" : "bg-[#1E3A8A] text-white border-[#1E3A8A]")
+                      : "border-slate-200 text-slate-600 hover:bg-slate-50")}
+                >
+                  <span>{sampleType === t ? "●" : "○"}</span>{t === "ct" ? "2차 CT맞춤제작 샘플" : "1차 일반확인 샘플"}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5">
+              {sampleType === "ct"
+                ? "중국 공장에서 새로 제작하는 맞춤 샘플입니다. 한국 본사 재고 차감 없이 중국 발주로 자동 처리됩니다."
+                : "이미 보유 중인 규격품을 고객사에 확인용으로 발송하는 건입니다."}
+            </p>
+          </Field>
           <Field label="📄 발송된 제안서 선택" hint="선택하면 고객사명/요청제품/담당직원이 자동으로 채워집니다">
             <select className={inputCls} value={linkedProposalId} onChange={(e) => applyProposal(e.target.value)}>
               <option value="">(선택 안 함 — 직접 입력)</option>
@@ -6027,13 +6080,39 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
               <input className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="예: 크림용기 50g 화이트" />
             )}
           </Field>
-          <Field label="재고 위치">
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setStockLocation("korea")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium border " + (stockLocation === "korea" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇰🇷 한국 본사 재고 있음</button>
-              <button type="button" onClick={() => setStockLocation("china")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium border " + (stockLocation === "china" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇨🇳 재고 없음(중국 발주)</button>
+          {sampleType === "general" ? (
+            <Field label="재고 위치">
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setStockLocation("korea")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium border " + (stockLocation === "korea" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇰🇷 한국 본사 재고 있음</button>
+                <button type="button" onClick={() => setStockLocation("china")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium border " + (stockLocation === "china" ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "border-slate-200 text-slate-600")}>🇨🇳 재고 없음(중국 발주)</button>
+              </div>
+            </Field>
+          ) : (
+            <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-4 space-y-3">
+              <div className="text-xs font-semibold text-purple-700">🧪 CT 맞춤제작 사양</div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="바디 조색 (팬톤)"><input className={inputCls} value={ctBodyPantone} onChange={(e) => setCtBodyPantone(e.target.value)} placeholder="예: PANTONE 7541 C" /></Field>
+                <Field label="캡 조색 (팬톤)"><input className={inputCls} value={ctCapPantone} onChange={(e) => setCtCapPantone(e.target.value)} placeholder="예: PANTONE Black C" /></Field>
+              </div>
+              <Field label="인쇄 사양" hint="실크 / 박 / 증착 등">
+                <input className={inputCls} value={ctPrintSpec} onChange={(e) => setCtPrintSpec(e.target.value)} placeholder="예: 실크 2도(무광 화이트) + 금박 로고" />
+              </Field>
+              <Field label="맞춤 규격 / 길이">
+                <input className={inputCls} value={ctSizeSpec} onChange={(e) => setCtSizeSpec(e.target.value)} placeholder="예: 40파이 × 150ml, 튜브 길이 135mm" />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="CT 제작 실비 (₩)"><input type="number" className={inputCls} value={ctProductionCost} onChange={(e) => setCtProductionCost(e.target.value)} placeholder="0" /></Field>
+                <Field label="특송비 (₩)"><input type="number" className={inputCls} value={ctExpressCost} onChange={(e) => setCtExpressCost(e.target.value)} placeholder="0" /></Field>
+              </div>
+              {(Number(ctProductionCost) || Number(ctExpressCost)) ? (
+                <div className="text-xs text-purple-700 font-semibold">예상 청구 합계: {won((Number(ctProductionCost) || 0) + (Number(ctExpressCost) || 0))}</div>
+              ) : null}
+              <Field label="기타 요청사항">
+                <textarea className={inputCls} rows={2} value={ctNotes} onChange={(e) => setCtNotes(e.target.value)} placeholder="공장 전달용 특이사항을 자유롭게 적어주세요" />
+              </Field>
             </div>
-          </Field>
-          {stockLocation === "korea" && (
+          )}
+          {sampleType === "general" && stockLocation === "korea" && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setShowStockPicker(true)} className="text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium whitespace-nowrap">📦 한국 샘플 재고 현황 보기/선택</button>
@@ -6075,9 +6154,9 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
         {showStockPicker && (
           <StockPickerModal stock={sampleStock} productName={productName} onClose={() => setShowStockPicker(false)} onPick={(s, qty) => { setPickedStock(s); setProductName(s.productName); setStockQty(qty); setShowStockPicker(false); }} />
         )}
-        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 shrink-0">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
-          <button onClick={save} disabled={!canSave} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">등록</button>
+          <button onClick={save} disabled={!canSave} className={"px-5 py-2 rounded-lg text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed " + (sampleType === "ct" ? "bg-purple-600" : "bg-[#1E3A8A]")}>{sampleType === "ct" ? "CT샘플 등록" : "등록"}</button>
         </div>
       </div>
     </div>
@@ -6715,6 +6794,8 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
   const [showStockManage, setShowStockManage] = useState(false);
   const [showFeeSettings, setShowFeeSettings] = useState(false);
   const [filter, setFilter] = useState("전체");
+  const [typeFilter, setTypeFilter] = useState("전체"); // "전체" | "general" | "ct" — 진행단계 필터와 독립적으로 동작(AND 조건)
+  const [ctPreset, setCtPreset] = useState(null); // 🧪CT전환 버튼으로 등록모달을 열 때 넘겨줄 프리필 데이터
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 20;
   const [detailSample, setDetailSample] = useState(null); // "📋" 버튼 클릭시 진행상황(4단계 확인 테이블)을 보여줄 샘플
@@ -6726,10 +6807,27 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
     const created = await onCreate(rec);
     if (created) { setInvoiceViewMode("edit"); setInvoiceSampleId(created.id); }
   };
-  const filtered = (samples || []).filter((s) => filter === "전체" || s.status === filter);
+  // 🧪 CT전환: 일반샘플 행의 업체정보/제품정보를 그대로 물려받아 CT샘플 등록모달을 연다(원본 일반샘플은 그대로 보존됨)
+  const openCtConversion = (e, s) => {
+    e.stopPropagation();
+    setCtPreset({
+      sampleType: "ct",
+      clientName: s.clientName || "",
+      productName: s.productName || "",
+      image: s.image || "",
+      assignee: s.assignee || "",
+      linkedProposalId: s.linkedProposalId || "",
+      convertedFromSampleId: s.id,
+    });
+    setShowCreate(true);
+  };
+  const filtered = (samples || []).filter((s) =>
+    (filter === "전체" || s.status === filter) &&
+    (typeFilter === "전체" || getSampleType(s) === typeFilter)
+  );
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pagedFiltered = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { setPage(1); }, [filter]);
+  useEffect(() => { setPage(1); }, [filter, typeFilter]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
   const toggleFlag = (e, s, field) => { e.stopPropagation(); onUpdate(s, { [field]: !s[field] }); };
   const handleDeleteRow = (e, s) => {
@@ -6749,6 +6847,19 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
           </div>
           {onBack && <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 whitespace-nowrap">← 돌아가기</button>}
         </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 mb-3">
+        {["전체", ...SAMPLE_TYPE_OPTIONS].map((t) => {
+          const count = t === "전체" ? (samples || []).length : (samples || []).filter((s) => getSampleType(s) === t).length;
+          const active = typeFilter === t;
+          const activeCls = t === "ct" ? "bg-purple-600 text-white border-purple-600" : "bg-[#1E3A8A] text-white border-[#1E3A8A]";
+          return (
+            <button key={t} onClick={() => setTypeFilter(t)} className={"text-xs px-4 py-2 rounded-lg font-semibold border " + (active ? activeCls : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50")}>
+              {t === "전체" ? "전체" : SAMPLE_TYPE_LABELS[t]} <span className={"ml-1 font-normal " + (active ? "text-white/70" : "text-slate-400")}>{count}</span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="flex items-center justify-between mb-4">
@@ -6780,7 +6891,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
               <col className="w-[80px]" />{/* 7 고객확인 */}
               <col className="w-[112px]" />{/* 8 청구금액 */}
               <col className="w-[80px]" />{/* 9 입금확인 */}
-              <col className="w-[112px]" />{/* 10 관리 */}
+              <col className="w-[132px]" />{/* 10 관리 */}
             </colgroup>
             <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
               <th className="text-center px-3 py-3 font-medium">요청일자</th>
@@ -6802,7 +6913,10 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
                     <div style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }}>{s.clientName}</div>
                   </td>
                   <td className="px-3 py-3 align-middle text-slate-600" title={s.productName}>
-                    <div style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }}>{s.productName}</div>
+                    <div style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }}>
+                      <span className={"inline-block text-[10px] px-1.5 py-0.5 rounded font-bold mr-1 align-middle " + SAMPLE_TYPE_BADGES[getSampleType(s)].cls}>{SAMPLE_TYPE_BADGES[getSampleType(s)].label}</span>
+                      {s.productName}
+                    </div>
                   </td>
                   <td className="px-3 py-3 align-middle text-center text-slate-600">{s.invoiceQty || "-"}</td>
                   <td className="px-3 py-3 align-middle text-center text-slate-500 truncate" title={s.shippingMethod || "-"}>{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
@@ -6824,9 +6938,12 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
                     <span className={"inline-block w-5 h-5 rounded-full text-xs leading-5 " + (s.paymentConfirmed ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-300")}>✓</span>
                   </td>
                   <td className="px-3 py-3 align-middle text-center whitespace-nowrap">
-                    <button onClick={(e) => { e.stopPropagation(); setInvoiceViewMode("view"); setInvoiceSampleId(s.id); }} title="조회(읽기전용)" className="text-slate-400 hover:text-[#1E3A8A] mr-1.5">👁️</button>
-                    <button onClick={(e) => { e.stopPropagation(); setInvoiceViewMode("edit"); setInvoiceSampleId(s.id); }} title="수정" className="text-slate-400 hover:text-[#1E3A8A] mr-1.5">✏️</button>
-                    <button onClick={(e) => { e.stopPropagation(); setDetailSample(s); }} title="진행상황 보기" className="text-slate-400 hover:text-[#1E3A8A] mr-1.5">📋</button>
+                    <button onClick={(e) => { e.stopPropagation(); setInvoiceViewMode("view"); setInvoiceSampleId(s.id); }} title="조회(읽기전용)" className="text-slate-400 hover:text-[#1E3A8A] mr-1">👁️</button>
+                    <button onClick={(e) => { e.stopPropagation(); setInvoiceViewMode("edit"); setInvoiceSampleId(s.id); }} title="수정" className="text-slate-400 hover:text-[#1E3A8A] mr-1">✏️</button>
+                    <button onClick={(e) => { e.stopPropagation(); setDetailSample(s); }} title="진행상황 보기" className="text-slate-400 hover:text-[#1E3A8A] mr-1">📋</button>
+                    {getSampleType(s) === "general" && (
+                      <button onClick={(e) => openCtConversion(e, s)} title="🧪 2차 CT맞춤제작 샘플로 전환 등록 (원본 일반샘플은 그대로 유지)" className="text-slate-400 hover:text-purple-600 mr-1">🧪</button>
+                    )}
                     {isAdmin && <button onClick={(e) => handleDeleteRow(e, s)} title="삭제" className="text-red-400 hover:text-red-600">🗑️</button>}
                   </td>
                 </tr>
@@ -6837,7 +6954,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
 
-      {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} initialProposalId={pendingProposalId} onClose={() => { setShowCreate(false); setPendingProposalId(null); }} onSave={handleCreateSample} />}
+      {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} initialProposalId={pendingProposalId} presetData={ctPreset} onClose={() => { setShowCreate(false); setPendingProposalId(null); setCtPreset(null); }} onSave={handleCreateSample} />}
       {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onSaveEdits={onSaveStockEdits} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
       {showFeeSettings && (
         <ShippingFeeSettingsModal
