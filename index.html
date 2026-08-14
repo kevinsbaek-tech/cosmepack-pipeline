@@ -2055,16 +2055,46 @@ const TASK_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "진행중
 const TASK_CHANNEL_OPTIONS = ["카카오톡", "카카오채널", "이메일", "전화", "기타"];
 
 // ===== 4단계 · 샘플 진행 =====
-const SAMPLE_STATUS_OPTIONS = ["요청", "발주", "입고", "발송"];
-const SAMPLE_STATUS_LABELS = { "요청": "📥 고객요청", "발주": "🛒 주문발주", "입고": "📦 입고완료", "발송": "🚚 발송완료" };
+const SAMPLE_STATUS_OPTIONS = ["요청", "발주", "입고", "발송", "수령"];
+const SAMPLE_STATUS_LABELS = { "요청": "📥 고객요청", "발주": "🛒 주문발주", "입고": "📦 입고완료", "발송": "🚚 발송완료", "수령": "🏁 고객수령" };
 const SAMPLE_STATUS_COLORS = {
   "요청": "bg-red-50 text-red-600 border-red-200",
   "발주": "bg-amber-50 text-amber-700 border-amber-200",
   "입고": "bg-blue-50 text-blue-700 border-blue-200",
   "발송": "bg-emerald-50 text-emerald-700 border-emerald-200",
+  "수령": "bg-indigo-50 text-indigo-700 border-indigo-200",
 };
-const SAMPLE_STATUS_DATE_FIELD = { "요청": "requestDate", "발주": "orderDate", "입고": "stockInDate", "발송": "dispatchDate" };
-const SAMPLE_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "발주": "orderConfirmedBy", "입고": "stockInConfirmedBy", "발송": "dispatchConfirmedBy" };
+const SAMPLE_STATUS_DATE_FIELD = { "요청": "requestDate", "발주": "orderDate", "입고": "stockInDate", "발송": "dispatchDate", "수령": "deliveredDate" };
+const SAMPLE_STATUS_CONFIRMER_FIELD = { "요청": "requestConfirmedBy", "발주": "orderConfirmedBy", "입고": "stockInConfirmedBy", "발송": "dispatchConfirmedBy", "수령": "deliveredConfirmedBy" };
+// statusLogs 객체의 키 — 한글 상태값을 영문 키로 매핑해 저장한다(요청받은 데이터 모델 그대로)
+const SAMPLE_STATUS_LOG_KEY = { "요청": "request", "발주": "order", "입고": "received", "발송": "shipped", "수령": "delivered" };
+
+/* 단계 전환시 항상 이 헬퍼로 patch를 만든다 — 어느 화면(목록 select / 상세모달 타임라인 / 인보이스 발송완료)에서
+   바꾸든 담당직원+처리일시가 동일한 규칙으로 statusLogs에 남도록 한 곳에 모아둔 것.
+   기존 단계별 날짜/확인직원 필드(requestDate·orderConfirmedBy 등)도 비어있을 때만 함께 채워 하위호환을 유지한다. */
+function buildSampleStatusPatch(sample, status, worker) {
+  const now = nowDateTimeStr();
+  const name = worker || "";
+  const logKey = SAMPLE_STATUS_LOG_KEY[status];
+  const logs = { ...((sample && sample.statusLogs) || {}) };
+  if (logKey) logs[logKey] = { date: now, worker: name };
+  const patch = { status, statusLogs: logs, lastStatusAt: now, lastStatusBy: name };
+  const dateField = SAMPLE_STATUS_DATE_FIELD[status];
+  if (dateField && sample && !sample[dateField]) patch[dateField] = todayDisplay();
+  const confirmerField = SAMPLE_STATUS_CONFIRMER_FIELD[status];
+  if (confirmerField && sample && !sample[confirmerField] && name) patch[confirmerField] = name;
+  return patch;
+}
+// 목록 배지 툴팁용 — 마지막 단계 변경 일시/담당자를 "최종 변경: ... (담당자)" 문구로 만들어 반환
+function sampleLastStatusText(s) {
+  if (!s) return "";
+  const logKey = SAMPLE_STATUS_LOG_KEY[s.status];
+  const log = (s.statusLogs && logKey && s.statusLogs[logKey]) || null;
+  const date = s.lastStatusAt || (log && log.date) || "";
+  const worker = s.lastStatusBy || (log && log.worker) || "";
+  if (!date && !worker) return "단계 변경 이력이 아직 없습니다";
+  return `최종 변경: ${date || "-"}${worker ? ` (${worker})` : ""}`;
+}
 const DEFAULT_SAMPLE_SHIPPING_FEES = { "일반": 2500, "항공": 15000 }; // 배송비 설정 모달에서 수정 가능한 기본값
 
 /* ===================== 샘플 유형(1차 일반 / 2차 CT맞춤제작) =====================
@@ -2077,6 +2107,20 @@ const SAMPLE_TYPE_BADGES = {
   ct: { label: "CT", cls: "bg-purple-100 text-purple-700" },
 };
 const getSampleType = (s) => (s && s.sampleType === "ct" ? "ct" : "general");
+
+/* 목록의 "배송방식" 표기 규칙.
+   CT 맞춤샘플은 중국 공장에서 제작 후 항공 특송으로만 발송되므로 항상 "항공특송"으로 표기한다.
+   ⚠️ 저장값(shippingMethod)은 이 시스템의 정식 키인 "항공"을 그대로 쓴다 — 배송비 설정 테이블(shippingFees)과
+   상세모달의 배송방식 select가 전부 "일반"/"항공" 키를 기준으로 동작하기 때문에, 여기에 "항공특송"이라는
+   문자열을 저장해버리면 금액 조회가 0원이 되고 select도 "미선택"으로 떨어진다. 표기만 바꾸는 이유가 이것.
+   CT의 실제 특송비는 배송비 설정이 아니라 CT 인보이스의 "항공 특송비"에서 건별로 입력받으므로 금액은 붙이지 않는다. */
+function sampleShippingText(s, shippingFees) {
+  const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
+  const method = s && s.shippingMethod;
+  if (getSampleType(s) === "ct") return method === "일반" ? `일반 (${(fees["일반"] || 0).toLocaleString("ko-KR")}원)` : "항공특송";
+  if (!method) return `일반 (${(fees["일반"] || 0).toLocaleString("ko-KR")}원)`; // 미지정 일반샘플은 기본 배송조건으로 안내
+  return `${method} (${(fees[method] || 0).toLocaleString("ko-KR")}원)`;
+}
 const DEFAULT_SAMPLE_SHIPPING_FEE_NOTES = {
   "일반": "일반 국내택배비 2,500원, 입금확인 후 7일 소요",
   "항공": "항공특송료 15,000원, 급송 (2~3일 소요)",
@@ -6028,7 +6072,8 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
     await onSave({
       sampleType, // "general" | "ct" — 목록 필터/배지의 기준
       clientName: clientName.trim(), productName: productName.trim(), image: productImage || "", stockLocation: isCt ? "china" : stockLocation, assignee,
-      status: "요청", requestDate, orderDate: "", stockInDate: "", dispatchDate: "", shippingMethod: "", notes: "",
+      // CT 맞춤샘플은 항공 특송 발송이 원칙이라 등록·CT전환 시점에 배송방식을 "항공"으로 자동 지정한다(목록엔 "항공특송"으로 표기됨)
+      status: "요청", requestDate, orderDate: "", stockInDate: "", dispatchDate: "", shippingMethod: isCt ? "항공" : "", notes: "",
       linkedProposalId: linkedProposalId || "",
       ...(isCt ? {
         ctBodyPantone: ctBodyPantone.trim(), ctCapPantone: ctCapPantone.trim(),
@@ -6260,7 +6305,8 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
   };
   const [showSendModal, setShowSendModal] = useState(false);
   const sendComplete = (channel) => {
-    if (onUpdate) onUpdate(sample, { sentBy: sample.assignee || "", sentAt: nowDateTimeStr(), sentChannel: channel, customerConfirmed: true }); // 발송완료 처리시 고객확인도 자동으로 체크됨
+    // 발송완료 처리시 고객확인 자동체크 + 진행단계도 "발송"으로 전환하며 담당자·일시를 statusLogs에 기록
+    if (onUpdate) onUpdate(sample, { ...buildSampleStatusPatch(sample, "발송", sample.assignee || ""), sentBy: sample.assignee || "", sentAt: nowDateTimeStr(), sentChannel: channel, customerConfirmed: true });
     setShowSendModal(false);
   };
   const [showStockPicker, setShowStockPicker] = useState(false);
@@ -6316,7 +6362,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
           {/* 좌측: 편집 폼 */}
           <fieldset disabled={readOnly} className="p-5 border-r border-slate-100 space-y-2.5 overflow-y-auto" style={{ border: 0 }}>
             <Field label="진행상태">
-              <select className={inputCls} value={sample.status} onChange={(e) => onUpdate && onUpdate(sample, { status: e.target.value })}>
+              <select className={inputCls} value={sample.status} title={sampleLastStatusText(sample)} onChange={(e) => onUpdate && onUpdate(sample, buildSampleStatusPatch(sample, e.target.value, sample.assignee || ""))}>
                 {SAMPLE_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{SAMPLE_STATUS_LABELS[s]}</option>)}
               </select>
             </Field>
@@ -6513,7 +6559,9 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
   const [unitPrice, setUnitPrice] = useState(draft.unitPrice != null ? draft.unitPrice : (Number(sample.ctProductionCost) || 0));
   const [expressFee, setExpressFee] = useState(draft.expressFee != null ? draft.expressFee : (Number(sample.ctExpressCost) || 0));
   // 제품 행의 "비고"는 더 이상 자유입력이 아니라 예상 제작완료일자에서 자동 생성된다(날짜 미지정시 안내문구로 폴백)
-  const productRemarkText = completionDate ? `예상완료: ${completionDate}` : "입금 후 약 15일 소요";
+  // CT는 수량에 비례하는 단가 개념이 아니라 "건당 맞춤 제작 실비(고정 총액)"로 청구된다 → 곱셈 없이 입력값을 그대로 금액으로 사용
+  const [customNote, setCustomNote] = useState(draft.customNote != null ? draft.customNote : ""); // 좌측 폼의 자유 메모 — 비고 셀 윗줄에 노출
+  const expectedText = completionDate ? `예상완료: ${completionDate}` : "예상완료: 입금 후 약 15일";
   const [expressRemark, setExpressRemark] = useState(draft.expressRemark != null ? draft.expressRemark : "항공 특송");
   const [greetingLines, setGreetingLines] = useState(draft.greetingLines || CT_GREETING_LINES);
   const [footerLines, setFooterLines] = useState(draft.footerLines || CT_FOOTER_LINES);
@@ -6525,7 +6573,9 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fallbackImage]);
 
-  const productAmt = (Number(qty) || 0) * (Number(unitPrice) || 0);
+  const productAmt = Number(unitPrice) || 0; // ⚠️ 수량을 곱하지 않는다(맞춤 제작 실비 총액 그대로)
+  // "단가(ea)" 칸에는 총액을 수량으로 나눈 환산 단가를 참고용으로 표기(수량 0/1이면 의미 없으므로 "-")
+  const unitConverted = (Number(qty) || 0) > 1 ? productAmt / Number(qty) : null;
   const supplyTotal = productAmt + (Number(expressFee) || 0);
   const vat = Math.round(supplyTotal * 0.1);
   const grandTotal = supplyTotal + vat;
@@ -6542,7 +6592,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
       ctInvoiceDraft: {
         clientName, writeDate, productImage, productName, spec,
         qty: Number(qty) || 1, unitPrice: Number(unitPrice) || 0, expressFee: Number(expressFee) || 0,
-        completionDate, expressRemark, greetingLines, footerLines,
+        completionDate, customNote, expressRemark, greetingLines, footerLines,
       },
     });
   };
@@ -6556,7 +6606,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
   const [showSendModal, setShowSendModal] = useState(false);
   const sendComplete = (channel) => {
     if (onUpdate) onUpdate(sample, {
-      status: "발송",
+      ...buildSampleStatusPatch(sample, "발송", sample.assignee || ""), // status + statusLogs(담당자·일시) 동시 기록
       sentBy: sample.assignee || "",
       sentAt: nowDateTimeStr(),
       sentChannel: channel,
@@ -6614,10 +6664,15 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
             </Field>
             <div className="grid grid-cols-2 gap-2">
               <Field label="주문수량"><input type="number" min="1" className={inputCls} value={qty} onChange={(e) => setQty(Number(e.target.value) || 1)} /></Field>
-              <Field label="CT 제작 실비(단가)"><input type="number" className={inputCls} value={unitPrice} onChange={(e) => setUnitPrice(Number(e.target.value) || 0)} /></Field>
+              <Field label="CT 제작 실비(총액)" hint="수량을 곱하지 않고 그대로 청구됩니다">
+                <input type="number" className={inputCls} value={unitPrice} onChange={(e) => setUnitPrice(Number(e.target.value) || 0)} />
+              </Field>
             </div>
             <Field label="항공 특송비"><input type="number" className={inputCls} value={expressFee} onChange={(e) => setExpressFee(Number(e.target.value) || 0)} /></Field>
             <Field label="특송비 비고"><input className={inputCls} value={expressRemark} onChange={(e) => setExpressRemark(e.target.value)} /></Field>
+            <Field label="비고 (추가 메모)" hint="인보이스 비고란의 예상완료일자 윗줄에 표기됩니다">
+              <textarea rows="2" className={inputCls} value={customNote} onChange={(e) => setCustomNote(e.target.value)} placeholder="예: 조색 확정 후 제작 착수" />
+            </Field>
             <div className="rounded-lg bg-purple-50 border border-purple-200 p-3 text-xs space-y-1">
               <div className="flex justify-between"><span className="text-slate-500">공급가액</span><span className="font-semibold">{won(supplyTotal)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">부가가치세(10%)</span><span>{won(vat)}</span></div>
@@ -6666,18 +6721,21 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
                   <th className="border border-slate-400 px-2 py-2.5 w-14">주문수량</th>
                   <th className="border border-slate-400 px-2 py-2.5 w-20">단가(ea)</th>
                   <th className="border border-slate-400 px-2 py-2.5 w-24">금액(₩)</th>
-                  <th className="border border-slate-400 px-2 py-2.5 w-24">비고</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-40 min-w-[145px]">비고</th>
                 </tr></thead>
                 <tbody>
                   <tr style={{ height: "64px" }}>
                     <td className="border border-slate-400 text-center">1</td>
                     <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} loading="lazy" className="w-12 h-12 object-contain mx-auto" /> : "-"}</td>
                     <td className="border border-slate-400 px-2">{productName}</td>
-                    <td className="border border-slate-400 px-2 whitespace-pre-line text-[10px]">{spec}</td>
+                    <td className="border border-slate-400 px-2 py-2 align-top whitespace-pre-wrap text-xs" style={{ wordBreak: "keep-all" }}>{spec}</td>
                     <td className="border border-slate-400 text-center">{qty}</td>
-                    <td className="border border-slate-400 text-right px-2">{won(unitPrice)}</td>
+                    <td className="border border-slate-400 text-right px-2">{unitConverted != null ? won(unitConverted) : "-"}</td>
                     <td className="border border-slate-400 text-right px-2">{won(productAmt)}</td>
-                    <td className="border border-slate-400 text-center text-[10px]">{productRemarkText}</td>
+                    <td className="border border-slate-400 text-center px-2 text-[11px] leading-snug">
+                      {customNote ? <div className="mb-0.5 whitespace-pre-wrap">{customNote}</div> : null}
+                      <div className="whitespace-nowrap">{expectedText}</div>
+                    </td>
                   </tr>
                   <tr style={{ height: "42px" }}>
                     <td className="border border-slate-400 text-center">2</td>
@@ -6759,11 +6817,18 @@ function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecr
   };
   const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
   const stepIndex = SAMPLE_STATUS_OPTIONS.indexOf(sample.status);
+  // 단계 버튼 클릭 → 상태 전환 + 처리일시/담당직원(로그인 사용자) 자동 기록
   const setStatus = (status) => {
-    const dateField = SAMPLE_STATUS_DATE_FIELD[status];
-    const patch = { status };
-    if (dateField && !sample[dateField]) patch[dateField] = todayStr(); // 그 단계로 처음 넘어갈 때 오늘 날짜를 자동으로 채워줌(이후 수정 가능)
-    onUpdate(sample, patch);
+    onUpdate(sample, buildSampleStatusPatch(sample, status, currentUserName));
+  };
+  // 각 단계의 기록(일시·담당자)을 statusLogs에서 꺼내되, 없으면 기존 날짜/확인직원 필드로 폴백(옛 데이터 호환)
+  const stepLog = (s) => {
+    const logKey = SAMPLE_STATUS_LOG_KEY[s];
+    const log = (sample.statusLogs && logKey && sample.statusLogs[logKey]) || null;
+    const date = (log && log.date) || sample[SAMPLE_STATUS_DATE_FIELD[s]] || "";
+    const worker = (log && log.worker) || sample[SAMPLE_STATUS_CONFIRMER_FIELD[s]] || "";
+    if (!date && !worker) return null;
+    return `${date || "-"}${worker ? ` · ${worker}` : ""}`;
   };
   // 단계별 행(진행일/확인직원)의 입력값 — 아직 [확인]을 안 누른 값은 여기서만 임시로 들고 있다가 확인버튼 클릭시 한번에 반영
   const [pendingDates, setPendingDates] = useState({});
@@ -6776,7 +6841,7 @@ function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecr
     const confirmerField = SAMPLE_STATUS_CONFIRMER_FIELD[status];
     const dateValue = getDate(dateField) || todayStr();
     const confirmerValue = getConfirmer(confirmerField) || currentUserName || "백상선";
-    onUpdate(sample, { status, [dateField]: dateValue, [confirmerField]: confirmerValue });
+    onUpdate(sample, { ...buildSampleStatusPatch(sample, status, confirmerValue), [dateField]: dateValue, [confirmerField]: confirmerValue });
   };
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-4">
@@ -6791,16 +6856,24 @@ function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecr
         </div>
       </div>
 
-      {/* 4단계 서브 파이프라인 진행바 */}
-      <div className="flex items-center gap-1 mb-3">
-        {SAMPLE_STATUS_OPTIONS.map((s, i) => (
-          <React.Fragment key={s}>
-            <button onClick={() => setStatus(s)} title={SAMPLE_STATUS_LABELS[s]} className={"flex-1 text-[11px] px-1 py-2 rounded-lg font-bold text-center whitespace-nowrap " + (i <= stepIndex ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-400")}>
-              {SAMPLE_STATUS_LABELS[s]}
-            </button>
-            {i < SAMPLE_STATUS_OPTIONS.length - 1 && <div className={"w-1.5 h-0.5 shrink-0 " + (i < stepIndex ? "bg-[#1E3A8A]" : "bg-slate-200")} />}
-          </React.Fragment>
-        ))}
+      {/* 5단계 서브 파이프라인 타임라인 — 버튼 클릭시 즉시 전환되고, 완료된 단계 아래에 "일시 · 담당자"가 캡션으로 남는다 */}
+      <div className="flex items-start gap-1 mb-3">
+        {SAMPLE_STATUS_OPTIONS.map((s, i) => {
+          const caption = stepLog(s);
+          return (
+            <React.Fragment key={s}>
+              <div className="flex-1 min-w-0">
+                <button onClick={() => setStatus(s)} title={`${SAMPLE_STATUS_LABELS[s]}로 전환 (담당자·일시 자동 기록)`} className={"w-full text-[11px] px-1 py-2 rounded-lg font-bold text-center whitespace-nowrap " + (i <= stepIndex ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-400 hover:bg-slate-200")}>
+                  {SAMPLE_STATUS_LABELS[s]}
+                </button>
+                <div className={"text-[9px] leading-tight text-center mt-1 " + (caption ? (i <= stepIndex ? "text-emerald-600" : "text-slate-400") : "text-transparent")} style={{ wordBreak: "keep-all" }}>
+                  {caption || "-"}
+                </div>
+              </div>
+              {i < SAMPLE_STATUS_OPTIONS.length - 1 && <div className={"w-1.5 h-0.5 shrink-0 mt-4 " + (i < stepIndex ? "bg-[#1E3A8A]" : "bg-slate-200")} />}
+            </React.Fragment>
+          );
+        })}
       </div>
       <div className="text-[11px] text-center text-slate-500 mb-3">현재 단계: <b className="text-[#1E3A8A]">{SAMPLE_STATUS_LABELS[sample.status]}</b></div>
 
@@ -6869,7 +6942,7 @@ function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecr
       <div className="flex gap-2">
         <button onClick={() => setShowInvoice(true)} className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-medium">📄 샘플비 인보이스 자동 생성</button>
         <button onClick={() => setShowAnnounce(true)} className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5 font-medium">💬 고객 안내문 생성</button>
-        {sample.status === "발송" && !sample.orderConverted && (
+        {(sample.status === "발송" || sample.status === "수령") && !sample.orderConverted && (
           <button
             onClick={() => {
               if (!window.confirm(`"${sample.clientName}" 건을 실제로 본품 계약·발주가 확정되어 5단계로 전환하시겠습니까?\n(파이프라인이 종결(Completed) 처리됩니다)`)) return;
@@ -7189,11 +7262,12 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
                     </div>
                   </td>
                   <td className="px-3 py-3 align-middle text-center text-slate-600">{s.invoiceQty || "-"}</td>
-                  <td className="px-3 py-3 align-middle text-center text-slate-500 truncate" title={s.shippingMethod || "-"}>{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
+                  <td className="px-3 py-3 align-middle text-center text-slate-500 truncate whitespace-nowrap" title={sampleShippingText(s, shippingFees)}>{sampleShippingText(s, shippingFees)}</td>
                   <td className="px-3 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
                     <select
                       value={s.status}
-                      onChange={(e) => onUpdate(s, { status: e.target.value })}
+                      title={sampleLastStatusText(s)}
+                      onChange={(e) => onUpdate(s, buildSampleStatusPatch(s, e.target.value, currentUserName))}
                       className={"text-[10px] px-2 py-1 rounded-full font-semibold border-none outline-none cursor-pointer " + (SAMPLE_STATUS_COLORS[s.status] || "bg-slate-50 text-slate-500")}
                     >
                       {SAMPLE_STATUS_OPTIONS.map((st) => <option key={st} value={st}>{SAMPLE_STATUS_LABELS[st]}</option>)}
@@ -8177,7 +8251,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setSampleList((prev) => prev.map((s) => (s.id === sample.id ? { ...s, ...patch } : s)));
     try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsUpdate(COLLECTIONS.samples, sample.id, patch); } catch (e) { console.error(e); }
     // "발송완료" 단계로 처음 전환되는 순간 한국 본사 재고에서 신청수량만큼 자동 차감(같은 샘플이 재확인되어도 중복차감 안되도록 stockDeducted 플래그로 방지)
-    if (patch.status === "발송" && sample.stockLocation === "korea" && !sample.stockDeducted) {
+    // ("수령"으로 곧바로 건너뛴 경우에도 발송이 일어난 것이므로 동일하게 차감한다 — stockDeducted 플래그로 중복차감은 계속 방지됨)
+    if ((patch.status === "발송" || patch.status === "수령") && sample.stockLocation === "korea" && !sample.stockDeducted) {
       const stockItem = sampleStockList.find((si) => si.productName === sample.productName);
       const needQty = Number(sample.invoiceQty) || 1;
       if (stockItem) {
