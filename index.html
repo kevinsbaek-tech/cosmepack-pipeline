@@ -1502,13 +1502,14 @@ const SUPPLIER = {
 };
 
 const TERMS = [
-  "원화 가격은 부가세 별도 가격입니다.",
-  "본 견적은 상품대금 + 국제 운송료 + 관세 + 기타 수입부대비용이 모두 포함된 인천항 도착 기준 금액입니다. 단, 인천항 도착 후 고객사 지정창고까지의 국내 운송비는 별도이며, 요청 시 인천항-고객사 지정창고까지의 내륙 운송을 실비로 대행해드릴 수 있습니다.",
-  "본 단가는 단순 제품 출고가가 아닌, 상품대금·운송료·관세가 포함된 인천항 도착 기준 금액으로, 국내 도착 전 주요 비용이 포함되어 있어 고객사는 별도 수입 진행 부담 없이 제품 입고 계획을 세우실 수 있습니다.",
-  "예상 제작기간은 주문 확정 후 약 30~35일 정도 소요됩니다.",
-  "결제 조건은 주문 확정 시 30%, 제품 생산 완료 후 출고 전 70%입니다.",
-  "제품 입고 후 샘플 기준과 상이한 불량이 확인될 경우, 사진 및 수량 확인 후 협의하여 환불 또는 차감 정산으로 처리해드립니다.",
-  "본 제안서의 유효기간은 30일입니다. 해외 제작 특성상 원재료 및 환율 변동에 의하여 유효기간이 지난 후에 주문하시는 경우, 다시 제안서 및 견적서를 보내드리는 점 양해 부탁드립니다.",
+  "원화 가격은 부가세 별도 금액입니다.",
+  "본 견적은 상품대금 + 국제 운송료 + 관세 + 기타 수입부대비용이 모두 포함된 인천항 도착 기준 금액입니다. 단, 인천항 도착(통관 완료) 후 고객사 지정 창고까지의 국내 내륙 운송비는 별도이며, 요청 시 지정 장소까지의 운송을 실비로 대행해 드릴 수 있습니다.",
+  "본 단가는 단순 제품 출고가가 아닌 상품대금·국제 운송료·관세가 포함되어 있어, 고객사에서는 별도의 수입 진행 부담 없이 안정적으로 완제품 입고 계획을 세우실 수 있습니다.",
+  "예상 제작 기간은 발주 및 주문 확정 후 비고란에 표기되어 있는 기간을 기준으로 합니다.",
+  "기본 결제 조건은 주문 확정 시 30%, 중국 현지 검품 승인 후 출고 전 60%, 국내 지정 장소 납품 및 검수 완료 후 10% 조건입니다.",
+  "입고 후 샘플 기준과 상이한 불량이 확인될 경우, 사진/동영상 등 증빙 확인 후 양 사 협의를 통해 대금 차감 정산, 차기 생산 보충, 재제작 등으로 신속히 처리해 드립니다.",
+  "[표준 계약 안내] 본 견적에 따른 주문 확정 및 정식 거래 진행 시, 양 사의 권익 보호와 원활한 품질 관리를 위해 당사의 '표준 화장품 용기 공급계약서'(선적 전 현지 검품 절차, 수량 오차 허용, 품질 보증 기준 등)가 적용됩니다. 동봉(첨부)해 드린 계약서 안을 함께 검토 및 참조해 주시기 바랍니다.",
+  "본 제안서의 유효기간은 발행일로부터 30일입니다. 해외 제작 특성상 원자재 가격 및 환율 변동에 따라 유효기간 경과 후 주문 시 견적 금액이 재산정될 수 있는 점 양해 부탁드립니다.",
 ];
 
 const GREETING = [
@@ -2772,7 +2773,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
       <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "880px", maxWidth: "880px" }}>
         <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">{data.readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다"}</span>
         <div className="flex items-center gap-2">
-          {data.id && (
+          {!data.minimalHeader && data.id && (
             data.sentBy ? (
               <span className="text-xs px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 font-medium whitespace-nowrap">
                 [발송완료] {data.sentChannel || "-"} | {formatCreatedAt(data.sentAt)}
@@ -2787,8 +2788,10 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
               {savedFlash ? "✅ 저장되었습니다" : `💾 ${isInvoice ? "인보이스" : "제안서"} 저장`}
             </button>
           )}
-          <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
-          {onSendComplete && data.id && (
+          {!data.minimalHeader && (
+            <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
+          )}
+          {!data.minimalHeader && onSendComplete && data.id && (
             <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90">🚀 발송완료</button>
           )}
         </div>
@@ -3404,12 +3407,14 @@ function ProposalEditStage({ draftItems, setDraftItems, removeDraftItem, clientI
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] no-print">
         <div className="max-w-5xl mx-auto px-6 py-4 flex justify-end gap-3">
-          {!readOnly && (
+          {!readOnly && !isEditingExisting && (
             <button onClick={onSave} className="px-5 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
               {isAdmin ? "✅ 최종 승인 및 저장" : "📤 대표님 검토 요청 (저장)"}
             </button>
           )}
-          <button onClick={onPrint} className="px-5 py-2.5 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 transition-opacity">🖨 PDF 미리보기 / 인쇄</button>
+          <button onClick={onPrint} className="px-5 py-2.5 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 transition-opacity">
+            {isEditingExisting ? "📄 PDF 미리보기" : "🖨 PDF 미리보기 / 인쇄"}
+          </button>
         </div>
       </div>
     </main>
@@ -9244,14 +9249,14 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                         ),
                       },
                       {
-                        label: "총 부대비용", value: won(totalExtraCost), sub: "물류비·관세 합계",
+                        label: "총 부대비용", value: won(totalExtraCost),
                         calc: (
                           <span className="text-xs text-slate-500 leading-relaxed mt-2 block">
-                            해운운송료({(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM) {won(cbmAmount)}<br />
-                            B/L {won(logistics.blFee)}<br />
-                            원산지 {won(logistics.originFee)}<br />
-                            관세사 {won(logistics.brokerFee)}<br />
-                            관세(총액) {won(totalCustomsKrw)}<br />
+                            해운운송료 총액({(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM) {won(cbmAmount)}<br />
+                            B/L 총액 {won(logistics.blFee)}<br />
+                            원산지발급비 총액 {won(logistics.originFee)}<br />
+                            관세사비용 총액 {won(logistics.brokerFee)}<br />
+                            관세 총액 {won(totalCustomsKrw)}<br />
                             &nbsp;= {won(totalExtraCost)}
                           </span>
                         ),
@@ -9410,9 +9415,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             const totalAmount = draftItems.reduce((s, i) => s + i.totalPrice, 0);
             const totalCbm = draftItems.reduce((s, i) => s + i.cbm, 0);
             // 이미 저장된 제안서를 수정하는 중이면(editingProposalId 있음) 그 원본 레코드의 id·코드·발송상태 등도 함께 실어준다 —
-            // 그래야 이 미리보기에서도 "💾 저장"/"🚀 발송완료" 버튼이 정상적으로 뜨고 실제 저장이 그 제안서에 반영된다.
+            // 그래야 이 미리보기에서도 "💾 저장" 버튼이 정상적으로 뜨고 실제 저장이 그 제안서에 반영된다.
+            // 수정 모드에서 열 때는 minimalHeader를 켜서 [닫기]/[💾 제안서 저장] 2개만 남기고 발송상태배지·발송완료·인쇄 버튼은 숨긴다.
             const original = editingProposalId ? proposalList.find((p) => p.id === editingProposalId) : null;
-            setPdfData({ ...(original || {}), ...clientInfo, items: draftItems, totalAmount, totalCbm, validUntil: (original && original.validUntil) || addDays(30), readOnly: proposalReadOnly });
+            setPdfData({ ...(original || {}), ...clientInfo, items: draftItems, totalAmount, totalCbm, validUntil: (original && original.validUntil) || addDays(30), readOnly: proposalReadOnly, minimalHeader: !!editingProposalId });
           }}
         />
       )}
