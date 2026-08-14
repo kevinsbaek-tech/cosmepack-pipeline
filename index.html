@@ -6662,6 +6662,9 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
             <Field label="규격 및 사양" hint="CT 등록시 입력한 팬톤·인쇄·규격이 자동으로 채워집니다">
               <textarea className={inputCls} rows={4} value={spec} onChange={(e) => setSpec(e.target.value)} />
             </Field>
+            <Field label="비고 (추가 메모)" hint="인보이스 테이블의 비고란(예상완료일자 위)에 표기됩니다">
+              <textarea rows="2" className={inputCls} value={customNote} onChange={(e) => setCustomNote(e.target.value)} placeholder="예: 조색 확정 후 제작 착수" />
+            </Field>
             <div className="grid grid-cols-2 gap-2">
               <Field label="주문수량"><input type="number" min="1" className={inputCls} value={qty} onChange={(e) => setQty(Number(e.target.value) || 1)} /></Field>
               <Field label="CT 제작 실비(총액)" hint="수량을 곱하지 않고 그대로 청구됩니다">
@@ -6670,9 +6673,6 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
             </div>
             <Field label="항공 특송비"><input type="number" className={inputCls} value={expressFee} onChange={(e) => setExpressFee(Number(e.target.value) || 0)} /></Field>
             <Field label="특송비 비고"><input className={inputCls} value={expressRemark} onChange={(e) => setExpressRemark(e.target.value)} /></Field>
-            <Field label="비고 (추가 메모)" hint="인보이스 비고란의 예상완료일자 윗줄에 표기됩니다">
-              <textarea rows="2" className={inputCls} value={customNote} onChange={(e) => setCustomNote(e.target.value)} placeholder="예: 조색 확정 후 제작 착수" />
-            </Field>
             <div className="rounded-lg bg-purple-50 border border-purple-200 p-3 text-xs space-y-1">
               <div className="flex justify-between"><span className="text-slate-500">공급가액</span><span className="font-semibold">{won(supplyTotal)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">부가가치세(10%)</span><span>{won(vat)}</span></div>
@@ -6724,17 +6724,17 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
                   <th className="border border-slate-400 px-2 py-2.5 w-40 min-w-[145px]">비고</th>
                 </tr></thead>
                 <tbody>
-                  <tr style={{ height: "64px" }}>
-                    <td className="border border-slate-400 text-center">1</td>
-                    <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} loading="lazy" className="w-12 h-12 object-contain mx-auto" /> : "-"}</td>
-                    <td className="border border-slate-400 px-2">{productName}</td>
-                    <td className="border border-slate-400 px-2 py-2 align-top whitespace-pre-wrap text-xs" style={{ wordBreak: "keep-all" }}>{spec}</td>
-                    <td className="border border-slate-400 text-center">{qty}</td>
-                    <td className="border border-slate-400 text-right px-2">{unitConverted != null ? won(unitConverted) : "-"}</td>
-                    <td className="border border-slate-400 text-right px-2">{won(productAmt)}</td>
-                    <td className="border border-slate-400 text-center px-2 text-[11px] leading-snug">
-                      {customNote ? <div className="mb-0.5 whitespace-pre-wrap">{customNote}</div> : null}
-                      <div className="whitespace-nowrap">{expectedText}</div>
+                  <tr>{/* 높이 고정 없음 — 규격·비고가 길어지면 행이 자동으로 늘어난다 */}
+                    <td className="border border-slate-400 text-center align-top py-2">1</td>
+                    <td className="border border-slate-400 text-center align-top p-1.5">{productImage ? <img src={productImage} loading="lazy" className="w-12 h-12 object-contain mx-auto" /> : "-"}</td>
+                    <td className="border border-slate-400 px-2 py-2 align-top break-words">{productName}</td>
+                    <td className="border border-slate-400 py-2 px-2 text-left align-top whitespace-pre-wrap break-words text-xs leading-relaxed">{spec}</td>
+                    <td className="border border-slate-400 text-center align-top py-2">{qty}</td>
+                    <td className="border border-slate-400 text-right align-top py-2 px-2">{unitConverted != null ? won(unitConverted) : "-"}</td>
+                    <td className="border border-slate-400 text-right align-top py-2 px-2">{won(productAmt)}</td>
+                    <td className="border border-slate-400 py-2 px-2 text-center align-top whitespace-pre-wrap text-xs leading-relaxed">
+                      {customNote ? <div className="mb-1 break-words">{customNote}</div> : null}
+                      <div className="font-medium text-slate-700 whitespace-nowrap">{expectedText}</div>
                     </td>
                   </tr>
                   <tr style={{ height: "42px" }}>
