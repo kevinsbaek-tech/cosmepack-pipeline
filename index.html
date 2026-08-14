@@ -8436,6 +8436,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     if (!editingItemId) return;
     const prevItem = draftItems.find((it) => it.id === editingItemId);
     const previousUnitPrice = prevItem ? prevItem.unitPrice : 0;
+    const previousMarginRate = prevItem && prevItem.calcSnapshot ? prevItem.calcSnapshot.marginRate : null; // 수정 직전 적용 마진율(비율값, 0.25=25%) — 없던 이전버전 저장건이면 null
     const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
     const guideFinishingTexts = guideSelectedIds.map((id) => guideTexts[id]).filter(Boolean);
     const notes = composeNotes({ spec, finishing, leadTime, cbm, extraOptions, selectedFinishingItems: calc.selectedFinishingItems, finishingApplyMode, guideFinishingTexts });
@@ -8452,7 +8453,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       factory: itemFactory, wechatGroup: itemWechatGroup,
       quantity: Number(quantity) || 0, unitPrice: calc.proposedPrice, totalPrice: calc.totalProposal,
       cbm: Number(cbm) || 0, notes, calcSnapshot,
-      previousUnitPrice, modifiedBy: actorName, modifiedAt: nowDateTimeStr(),
+      // 누를 때마다 덮어쓰지 않고 배열에 계속 추가(push) — 몇 차 수정인지(round)까지 함께 기록해 전체 이력을 나중에 그대로 보여줄 수 있다.
+      historyList: [...(prevItem && prevItem.historyList ? prevItem.historyList : []), {
+        round: (prevItem && prevItem.historyList ? prevItem.historyList.length : 0) + 1,
+        modifiedBy: actorName, modifiedAt: nowDateTimeStr(), previousMarginRate, previousUnitPrice,
+      }],
     };
     upsertProductRecord(patchedItem);
     const nextItems = draftItems.map((it) => (it.id === editingItemId ? { ...it, ...patchedItem } : it));
@@ -9104,10 +9109,31 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                     label="원화 원가" value={won(calc.unitCostKrw)} sub="상품대금×환율"
                     tooltip={`위안화 원가(¥${calc.unitRmb.toFixed(2)}${calc.finishingRmbPerUnit > 0 ? ` = 기본 ¥${(calc.unitRmb - calc.finishingRmbPerUnit).toFixed(2)} + 후가공 ¥${calc.finishingRmbPerUnit.toFixed(2)}` : ""}) × ${fmtRate(exRate.rmbToKrw)}원 = ${won(calc.unitCostKrw)}`}
                   />
-                  <ResultBox
-                    label="물류비" value={won(calc.logisticsPerUnit)} sub="CBM운송료 등 /수량"
-                    tooltip={`[중국내 운송료(¥${(Number(rmbShip) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}×${fmtRate(exRate.rmbToKrw)}원 = ${won((Number(rmbShip) || 0) * Number(exRate.rmbToKrw))}) + CBM 부대비용(${won(((Number(cbm) || 0) * logistics.cbmRate + logistics.blFee + logistics.originFee + logistics.brokerFee) - (Number(rmbShip) || 0) * Number(exRate.rmbToKrw))})] ÷ 수량(${(Number(quantity) || 0).toLocaleString("ko-KR")}개) = ${won(calc.logisticsPerUnit)}`}
-                  />
+                  {(() => {
+                    const totalShipKrw = (Number(rmbShip) || 0) * Number(exRate.rmbToKrw);
+                    const cbmOverhead = (Number(cbm) || 0) * logistics.cbmRate + logistics.blFee + logistics.originFee + logistics.brokerFee;
+                    const totalLogistics = totalShipKrw + cbmOverhead;
+                    const qtyLabel = (Number(quantity) || 0).toLocaleString("ko-KR");
+                    const line1Parts = [
+                      `(${(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM × ${won(logistics.cbmRate)})`,
+                      `${won(logistics.blFee)}`,
+                      `${won(logistics.originFee)}`,
+                      `${won(logistics.brokerFee)}`,
+                    ];
+                    if (totalShipKrw > 0) line1Parts.push(`${won(totalShipKrw)}(중국내운송료)`);
+                    return (
+                      <ResultBox
+                        label="물류비" value={won(calc.logisticsPerUnit)}
+                        sub={
+                          <span className="leading-relaxed">
+                            {line1Parts.join(" + ")} = {won(totalLogistics)}
+                            <br />
+                            {won(totalLogistics)} / 수량({qtyLabel}개) = 개당 {won(calc.logisticsPerUnit)}
+                          </span>
+                        }
+                      />
+                    );
+                  })()}
                   <ResultBox
                     label="관세" value={won(calc.customsPerUnit)} sub={`(원가+물류비)×${customsRate}%`}
                     tooltip={`(상품대금 ${won(calc.unitCostKrw)} + 물류비 ${won(calc.logisticsPerUnit)}) × ${customsRate}% = ${won(calc.customsPerUnit)}`}
@@ -9195,12 +9221,17 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               </Card>
               {editingItemId && (() => {
                 const editingItem = draftItems.find((it) => it.id === editingItemId);
+                const historyList = (editingItem && editingItem.historyList) || [];
                 return (
                   <div>
                     <button onClick={saveItemEditAndPersist} className="w-full py-3 rounded-xl bg-[#1E3A8A] text-white text-sm font-semibold hover:opacity-90">💾 수정후 저장</button>
-                    {editingItem && editingItem.modifiedBy && (
-                      <div className="text-xs text-slate-500 mt-2 text-center">
-                        최종 수정: {displayStaffName(editingItem.modifiedBy)} | {editingItem.modifiedAt} | (수정 전 개당 제안가: {won(editingItem.previousUnitPrice)})
+                    {historyList.length > 0 && (
+                      <div className="bg-slate-50 p-3 rounded-lg text-xs space-y-1 mt-2">
+                        {historyList.map((h) => (
+                          <div key={h.round} className="text-slate-500">
+                            · [{h.round}차 수정] {displayStaffName(h.modifiedBy)} | {h.modifiedAt} | (수정 전 마진율: {h.previousMarginRate != null ? pct(h.previousMarginRate * 100) : "-"} | 수정 전 개당 제안가: {won(h.previousUnitPrice)})
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
