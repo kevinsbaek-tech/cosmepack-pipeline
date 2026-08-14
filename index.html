@@ -2142,7 +2142,7 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
   );
 }
 
-function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkApprovePending, onDedupe, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
+function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkApprovePending, onDedupe, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
   const [search, setSearch] = useState("");
   const [periodFilter, setPeriodFilter] = useState("전체");
   const [customFrom, setCustomFrom] = useState("");
@@ -2282,7 +2282,12 @@ function ProposalListView({ proposals, onBack, onOpenPdf, onView, onLoad, onCopy
     <div className="max-w-7xl mx-auto px-6 py-8">
       <div className="flex items-center justify-between mb-6">
         <div><h2 className="text-lg font-bold text-slate-800">📋 제안서 관리 목록</h2><p className="text-xs text-slate-500 mt-1">전체 {proposals.length}건 · 검색결과 {filtered.length}건</p></div>
-        <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
+        <div className="flex items-center gap-2">
+          {onNewProposal && (
+            <button onClick={onNewProposal} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-medium shadow-sm hover:bg-indigo-700">+ 신규 제안서 작성</button>
+          )}
+          <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
+        </div>
       </div>
 
       <div className="bg-white border border-slate-300 shadow-sm rounded-xl p-4 mb-6 flex flex-wrap gap-3 items-center">
@@ -3027,6 +3032,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
   const [rmbCost, setRmbCost] = useState("");
   const [quantity, setQuantity] = useState("");
   const [totalShippingRmb, setTotalShippingRmb] = useState("");
+  const [inspectionRmb, setInspectionRmb] = useState(""); // 검품비용(RMB) 총액 — "기존 데이터에서 선택" 팝업 및 2단계 제안가계산으로 자동 연동됨
   const [factory, setFactory] = useState("");
   const [factoryContact, setFactoryContact] = useState("");
   const [wechatGroup, setWechatGroup] = useState("");
@@ -3058,6 +3064,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
         cbm: tier.cbm,
         rmbCost: tier.factoryPriceRmb,
         shippingRmb: tier.shippingRmb,
+        inspectionRmb: tier.inspectionRmb || 0,
         factory: p.factory || "",
         wechatGroup: p.wechatGroup || "",
       }));
@@ -3069,6 +3076,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
     if (row.qty) setQuantity(row.qty);
     if (row.rmbCost) setRmbCost(row.rmbCost);
     if (row.shippingRmb) setTotalShippingRmb(row.shippingRmb);
+    if (row.inspectionRmb) setInspectionRmb(row.inspectionRmb);
     if (row.cbm) setSpec((prev) => (prev ? prev + `\n예상 CBM: ${row.cbm}` : `예상 CBM: ${row.cbm}`));
     setShowRmbPicker(false);
   };
@@ -3098,6 +3106,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
   }, [pickedProduct]);
 
   const unitShippingPreview = Number(quantity) > 0 ? Number(totalShippingRmb || 0) / Number(quantity) : 0;
+  const unitInspectionPreview = Number(quantity) > 0 ? Number(inspectionRmb || 0) / Number(quantity) : 0;
 
   const submit = () => {
     if (!name.trim() || !rmbCost) return;
@@ -3106,9 +3115,10 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
       id: Date.now(), image, name, rmbCost: Number(rmbCost), quantity: qty,
       totalShippingRmb: Number(totalShippingRmb) || 0,
       unitShippingRmb: qty > 0 ? (Number(totalShippingRmb) || 0) / qty : 0,
+      inspectionRmb: Number(inspectionRmb) || 0,
       factory, factoryContact, wechatGroup, link, factoryLink, spec, category,
     });
-    setImage(""); setName(""); setRmbCost(""); setQuantity(""); setTotalShippingRmb("");
+    setImage(""); setName(""); setRmbCost(""); setQuantity(""); setTotalShippingRmb(""); setInspectionRmb("");
     setFactory(""); setFactoryContact(""); setWechatGroup(""); setLink(""); setFactoryLink(""); setSpec(""); setCategory("");
   };
 
@@ -3196,6 +3206,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
                           <th className="text-right px-3 py-2 font-medium">CBM</th>
                           <th className="text-right px-3 py-2 font-medium">단가(RMB)</th>
                           <th className="text-right px-3 py-2 font-medium">운송료</th>
+                          <th className="text-right px-3 py-2 font-medium">검품비용</th>
                           <th className="text-left px-3 py-2 font-medium">공장명</th>
                           <th className="text-left px-3 py-2 font-medium">위챗 단체방명</th>
                           <th></th>
@@ -3208,6 +3219,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
                               <td className="px-3 py-2 text-right whitespace-nowrap">{row.cbm || "-"}</td>
                               <td className="px-3 py-2 text-right whitespace-nowrap">{row.rmbCost}</td>
                               <td className="px-3 py-2 text-right whitespace-nowrap">{row.shippingRmb || "-"}</td>
+                              <td className="px-3 py-2 text-right whitespace-nowrap">{row.inspectionRmb || 0}</td>
                               <td className="px-3 py-2">{row.factory || "-"}</td>
                               <td className="px-3 py-2">{row.wechatGroup || "-"}</td>
                               <td className="px-3 py-2"><button onClick={() => pickFromRmbPicker(row)} className="text-[#1D4ED8] hover:underline font-medium whitespace-nowrap">선택 →</button></td>
@@ -3223,9 +3235,14 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
             </Field>
             <Field label="수량" hint="개"><input type="number" className={inputCls} value={quantity} onChange={(e) => setQuantity(e.target.value)} /></Field>
           </div>
-          <Field label="중국 내 운송료" hint={`총 RMB · 개당 자동환산 ${unitShippingPreview ? rmb(unitShippingPreview) + "/개" : ""}`}>
-            <input type="number" className={inputCls} value={totalShippingRmb} onChange={(e) => setTotalShippingRmb(e.target.value)} placeholder="예: 200 (총액, RMB)" />
-          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="중국 내 운송료" hint={`총 RMB · 개당 자동환산 ${unitShippingPreview ? rmb(unitShippingPreview) + "/개" : ""}`}>
+              <input type="number" className={inputCls} value={totalShippingRmb} onChange={(e) => setTotalShippingRmb(e.target.value)} placeholder="예: 200 (총액, RMB)" />
+            </Field>
+            <Field label="검품비용" hint={`총 RMB · 개당 자동환산 ${unitInspectionPreview ? rmb(unitInspectionPreview) + "/개" : ""}`}>
+              <input type="number" className={inputCls} value={inspectionRmb} onChange={(e) => setInspectionRmb(e.target.value)} placeholder="예: 200 (총액, RMB)" />
+            </Field>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <Field label="위챗 단체방명" hint="발주 추적용"><input className={inputCls} value={wechatGroup} onChange={(e) => setWechatGroup(e.target.value)} placeholder="예: 潮迪塑料-BKBRO" /></Field>
             <Field label="공장명"><input className={inputCls} value={factory} onChange={(e) => setFactory(e.target.value)} placeholder="예: 广州潮迪塑料制品有限公司" /></Field>
@@ -7188,7 +7205,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setCategory(sourcingItem.category || CATEGORIES[0]); // 불러온 제품의 카테고리를 그대로 반영 — category state가 바뀌면 관세율/마진율/후가공목록이 전부 자동으로 다시 계산됨
     setQuantity(sourcingItem.quantity || 3000);
     setRmbBase(sourcingItem.rmbCost || 0);
-    setRmbBox(0); setRmbInspect(0);
+    setRmbBox(0); setRmbInspect(sourcingItem.inspectionRmb || 0);
     setRmbShip(Number((sourcingItem.totalShippingRmb || 0).toFixed(4)));
     setItemFactory(sourcingItem.factory || "");
     setItemWechatGroup(sourcingItem.wechatGroup || "");
@@ -7201,6 +7218,20 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setEditingProposalHistory(null);
     setActiveStep(2);
     setToast("가격조사 데이터가 제안서 작성으로 전달되었습니다.");
+  };
+  // "📄제안서" 목록의 "+ 신규 제안서 작성" 버튼 — 혹시 이전에 어떤 제안서를 수정하던 중이었더라도 그 잔여 상태(수정중이던 품목/고객정보/편집대상id)를
+  // 완전히 비우고, 완전히 새 제안서를 작성하는 화면으로 이동한다.
+  const startNewProposal = () => {
+    setDraftItems([]);
+    setPendingQueue([]);
+    setClientInfo({ clientName: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" });
+    setEditingItemId(null);
+    resetItemForm();
+    setEditingProposalId(null);
+    setProposalReadOnly(false);
+    setEditingProposalHistory(null);
+    setView("pipeline");
+    setActiveStep(3);
   };
 
   const sendBulkToProposal = (sourcingList) => {
@@ -8755,7 +8786,15 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <ProposalListView
           isAdmin={isAdmin}
           proposals={proposalList}
-          onBack={() => setView("pipeline")}
+          onBack={() => {
+            // 목록으로 돌아갈 때 "어떤 제안서를 수정중이었는지" 연결정보만 안전하게 정리한다(작성중이던 품목/고객정보 자체는 그대로 유지 —
+            // 다음에 다시 3단계로 들어가면 예전 제안서 id와 잘못 엮여 덮어써지는 사고를 막기 위함)
+            setEditingProposalId(null);
+            setProposalReadOnly(false);
+            setEditingProposalHistory(null);
+            setView("pipeline");
+          }}
+          onNewProposal={startNewProposal}
           onOpenPdf={(p) => setPdfData({ ...p, readOnly: true })}
           onCreateSample={createSampleFromProposal}
           onCreateInvoice={openInvoiceEditor}
