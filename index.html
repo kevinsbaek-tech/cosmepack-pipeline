@@ -9191,27 +9191,36 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 <div className="grid grid-cols-3 gap-3 mb-3">
                   <ResultBox
                     label="원화 원가" value={won(calc.unitCostKrw)}
-                    sub={`위안화 단가(¥${calc.unitRmb.toFixed(2)}) × 환율(${fmtRate(exRate.rmbToKrw)}원) = ${won(calc.unitCostKrw)}`}
+                    sub={
+                      <span className="text-xs text-slate-500 leading-normal mt-2 block">
+                        위안화 공장원가(개당) ¥{(Number(rmbBase) || 0).toFixed(2)}<br />
+                        위안화 박스비용(개당) ¥{calc.boxPerUnit.toFixed(2)}<br />
+                        위안화 검품비용(개당) ¥{calc.inspectPerUnit.toFixed(2)}<br />
+                        위안화 중국내운송료(개당) ¥{calc.shipPerUnit.toFixed(2)}<br />
+                        {calc.finishingRmbPerUnit > 0 && <>위안화 후가공(개당) ¥{calc.finishingRmbPerUnit.toFixed(2)}<br /></>}
+                        &nbsp;= 위안화 합계 ¥{calc.unitRmb.toFixed(2)}
+                        <br /><br />
+                        위안화 단가(¥{calc.unitRmb.toFixed(2)}) × 환율({fmtRate(exRate.rmbToKrw)}원) = 개당 {won(calc.unitCostKrw)}
+                      </span>
+                    }
                   />
                   {(() => {
                     const totalShipKrw = (Number(rmbShip) || 0) * Number(exRate.rmbToKrw);
                     const cbmOverhead = (Number(cbm) || 0) * logistics.cbmRate + logistics.blFee + logistics.originFee + logistics.brokerFee;
                     const totalLogistics = totalShipKrw + cbmOverhead;
                     const qtyLabel = (Number(quantity) || 0).toLocaleString("ko-KR");
-                    const line1Parts = [
-                      `(${(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM × 해운단가 ${won(logistics.cbmRate)})`,
-                      `B/L ${won(logistics.blFee)}`,
-                      `원산지 ${won(logistics.originFee)}`,
-                      `관세사 ${won(logistics.brokerFee)}`,
-                    ];
-                    if (totalShipKrw > 0) line1Parts.push(`중국내운송료 ${won(totalShipKrw)}`);
                     return (
                       <ResultBox
                         label="물류비" value={won(calc.logisticsPerUnit)}
                         sub={
-                          <span className="leading-relaxed">
-                            {line1Parts.join(" + ")} = {won(totalLogistics)}
-                            <br />
+                          <span className="text-xs text-slate-500 leading-normal mt-2 block">
+                            {(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM × 해운단가 {won(logistics.cbmRate)}<br />
+                            B/L {won(logistics.blFee)}<br />
+                            원산지 {won(logistics.originFee)}<br />
+                            관세사 {won(logistics.brokerFee)}<br />
+                            {totalShipKrw > 0 && <>중국내운송료 {won(totalShipKrw)}<br /></>}
+                            &nbsp;= {won(totalLogistics)}
+                            <br /><br />
                             총물류비({won(totalLogistics)}) / 수량({qtyLabel}개) = 개당 {won(calc.logisticsPerUnit)}
                           </span>
                         }
