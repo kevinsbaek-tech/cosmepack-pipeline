@@ -1544,6 +1544,14 @@ function extractDateFromFileName(fileName) {
   return m[1];
 }
 function addDays(days) { const d = new Date(); d.setDate(d.getDate() + days); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }
+// 기준일(YYYY-MM-DD 문자열)로부터 N일 뒤를 같은 형식으로 반환 — 오늘이 아니라 "작성일자" 등 임의 기준일에서 계산할 때 사용
+function addDaysFrom(baseDateStr, days) {
+  const base = baseDateStr ? new Date(baseDateStr) : new Date();
+  if (isNaN(base.getTime())) return addDays(days);
+  base.setDate(base.getDate() + days);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())}`;
+}
 function nowDateTimeStr() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -6453,7 +6461,9 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
 const CT_GREETING_LINES = [
   "◎ 귀사의 무궁한 발전을 진심으로 기원합니다.",
   "◎ 귀사가 요청하신 본품 양산 대비용 '맞춤형 CT(내용물 적합성 테스트) 샘플' 제작에 대한 인보이스를 보내드립니다.",
-  "◎ [CT 샘플 제작 안내 및 페이백(Pay-back) 혜택]\n    본 CT 샘플은 단순 기성품 발송이 아니며, 완벽한 본품 양산을 위해 중국 현지 공장에서 본품과 100% 동일한 원료 비율 및 후가공(조색/인쇄 등) 맞춤 스펙으로 별도 생산 투입됩니다. 이에 따라 초기 맞춤 제작 실비가 청구됩니다.\n    단, 결제하신 CT 샘플 제작비용은 향후 해당 품목의 '본품 양산 발주(기본 MOQ 이상)' 진행 시, 총 발주 대금에서 100% 전액 차감(페이백) 처리되어 결과적으로 무상 제공됩니다.",
+  "◎ [CT 샘플 제작 안내 및 페이백(Pay-back) 혜택]",
+  // ↑제목줄과 분리된 본문 — "◎"로 시작하지 않는 줄은 렌더링시 자동으로 pl-5 들여쓰기가 적용된다
+  "본 CT 샘플은 단순 기성품 발송이 아니며, 완벽한 본품 양산을 위해 중국 현지 공장에서 본품과 100% 동일한 원료 비율 및 후가공(조색/인쇄 등) 맞춤 스펙으로 별도 생산 투입됩니다. 이에 따라 초기 맞춤 제작 실비가 청구됩니다.\n단, 결제하신 CT 샘플 제작비용은 향후 해당 품목의 '본품 양산 발주(기본 MOQ 이상)' 진행 시, 총 발주 대금에서 100% 전액 차감(페이백) 처리되어 결과적으로 무상 제공됩니다.",
   "◎ 사업자등록증 사본과 이메일주소를 보내주시면, 세금계산서 발행을 하여드립니다.",
   "◎ 입금 확인 후 즉시 중국 현지 공장에 샘플 제작이 발주(투입)됩니다.",
 ];
@@ -6485,7 +6495,16 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
   const draft = sample.ctInvoiceDraft || {}; // 일반 인보이스(invoiceDraft)와 저장 키를 분리 — 서로 덮어쓰지 않게
 
   const [clientName, setClientName] = useState(draft.clientName || sample.clientName || "");
-  const [writeDate, setWriteDate] = useState(draft.writeDate || todayStr());
+  // todayStr()은 "20260815"처럼 대시가 없어 <input type="date">가 값을 못 읽는다 → 대시 형식(todayDisplay)을 써야 달력에 정상 표시됨
+  const [writeDate, setWriteDate] = useState(draft.writeDate || todayDisplay());
+  // 예상 제작완료일자 — 작성일자 +15일이 기본값(하단 참고사항의 "약 15일 소요"와 동일 기준), 달력으로 직접 수정 가능
+  const [completionDate, setCompletionDate] = useState(draft.completionDate || addDaysFrom(draft.writeDate || todayDisplay(), 15));
+  const [completionTouched, setCompletionTouched] = useState(!!draft.completionDate); // 직접 고친 적 있으면 작성일자 변경시 자동 재계산하지 않음
+  // 작성일자를 바꾸면 완료일자도 따라 +15일로 재계산(단, 사용자가 완료일자를 직접 건드렸으면 그 값을 그대로 존중)
+  const changeWriteDate = (v) => {
+    setWriteDate(v);
+    if (!completionTouched) setCompletionDate(addDaysFrom(v, 15));
+  };
   const [productImage, setProductImage] = useState(draft.productImage || fallbackImage);
   const [productName, setProductName] = useState(draft.productName || sample.productName || "");
   const [spec, setSpec] = useState(draft.spec != null ? draft.spec : buildCtSpecText(sample));
@@ -6493,7 +6512,8 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
   // CT 제작 실비 / 항공 특송비 — 등록 모달에서 입력한 값이 기본으로 채워지고 여기서 다시 조정 가능
   const [unitPrice, setUnitPrice] = useState(draft.unitPrice != null ? draft.unitPrice : (Number(sample.ctProductionCost) || 0));
   const [expressFee, setExpressFee] = useState(draft.expressFee != null ? draft.expressFee : (Number(sample.ctExpressCost) || 0));
-  const [productRemark, setProductRemark] = useState(draft.productRemark != null ? draft.productRemark : "본품 발주시 전액 차감");
+  // 제품 행의 "비고"는 더 이상 자유입력이 아니라 예상 제작완료일자에서 자동 생성된다(날짜 미지정시 안내문구로 폴백)
+  const productRemarkText = completionDate ? `예상완료: ${completionDate}` : "입금 후 약 15일 소요";
   const [expressRemark, setExpressRemark] = useState(draft.expressRemark != null ? draft.expressRemark : "항공 특송");
   const [greetingLines, setGreetingLines] = useState(draft.greetingLines || CT_GREETING_LINES);
   const [footerLines, setFooterLines] = useState(draft.footerLines || CT_FOOTER_LINES);
@@ -6522,7 +6542,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
       ctInvoiceDraft: {
         clientName, writeDate, productImage, productName, spec,
         qty: Number(qty) || 1, unitPrice: Number(unitPrice) || 0, expressFee: Number(expressFee) || 0,
-        productRemark, expressRemark, greetingLines, footerLines,
+        completionDate, expressRemark, greetingLines, footerLines,
       },
     });
   };
@@ -6531,33 +6551,62 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
+  // 🚀 발송완료 — 일반 인보이스(SampleInvoiceModal)의 sendComplete와 같은 패치에 진행단계(status)까지 함께 갱신한다.
+  // SAMPLE_STATUS_LABELS["발송"]이 곧 "🚚 발송완료"이므로, 진행단계 값으로는 "발송"을 넣는 것이 이 시스템의 정식 표기다.
+  const [showSendModal, setShowSendModal] = useState(false);
+  const sendComplete = (channel) => {
+    if (onUpdate) onUpdate(sample, {
+      status: "발송",
+      sentBy: sample.assignee || "",
+      sentAt: nowDateTimeStr(),
+      sentChannel: channel,
+      customerConfirmed: true, // 발송완료시 목록의 "고객확인"도 자동 체크(일반 인보이스와 동일 동작)
+    });
+    setShowSendModal(false);
+  };
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4" onClick={onClose}>
+      {/* 상단 툴바 — 일반 인보이스/제안서 미리보기와 동일 구조: 좌측 조회·편집 배너, 우측 [상태배지][닫기][저장][인쇄][발송완료] */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
         <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">
-          🧪 CT 맞춤샘플 인보이스 — {readOnly ? "조회 전용" : "텍스트를 클릭하면 바로 수정할 수 있습니다"}
+          {readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ CT 맞춤샘플 인보이스 — 텍스트를 클릭하면 바로 수정할 수 있습니다"}
         </span>
         <div className="flex items-center gap-2">
-          <span className="text-xs px-3 py-2 rounded-lg bg-purple-50 text-purple-700 font-semibold whitespace-nowrap">[CT 맞춤제작]</span>
-          <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
-          {onUpdate && !readOnly && (
-            <button onClick={handleSaveClick} className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{savedFlash ? "✅ 저장되었습니다" : "💾 저장"}</button>
+          {sample.sentBy ? (
+            <span className="text-xs px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 font-medium whitespace-nowrap">
+              [발송완료] {sample.sentChannel || "-"} | {formatCreatedAt(sample.sentAt)}
+            </span>
+          ) : (
+            <span className="text-xs px-3 py-2 rounded-lg bg-slate-100 text-slate-500 font-medium whitespace-nowrap">[미발송]</span>
           )}
-          <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
+          <button onClick={onClose} className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap">닫기</button>
+          {onUpdate && !readOnly && (
+            <button onClick={handleSaveClick} className="bg-white hover:bg-slate-50 text-indigo-700 border border-indigo-300 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap">{savedFlash ? "✅ 저장되었습니다" : "💾 저장"}</button>
+          )}
+          <button onClick={() => { persistToSample(); window.print(); }} className="bg-blue-900 hover:bg-blue-950 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
+          {onUpdate && (
+            <button onClick={() => setShowSendModal(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 whitespace-nowrap">🚀 발송완료</button>
+          )}
         </div>
       </div>
+      {showSendModal && (
+        <SendCompleteModal onClose={() => setShowSendModal(false)} onConfirm={sendComplete} />
+      )}
       {savedFlash && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-emerald-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg shadow-lg no-print">✅ 성공적으로 저장되었습니다.</div>
       )}
 
       <div className="bg-white rounded-xl mx-auto overflow-hidden" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
-        <div className="grid" style={{ gridTemplateColumns: "340px 1fr", maxHeight: "84vh" }}>
+        <div className="grid items-start" style={{ gridTemplateColumns: "340px 1fr" }}>
           {/* 좌측: 입력폼 */}
-          <fieldset disabled={readOnly} className="p-5 border-r border-slate-200 overflow-y-auto no-print">
+          <fieldset disabled={readOnly} className="p-5 border-r border-slate-200 overflow-y-auto max-h-[calc(100vh-120px)] pr-2 no-print" style={{ minHeight: 0 }}>
             <div className="text-sm font-bold text-slate-800 mb-3">🧪 CT 샘플 인보이스 입력</div>
             <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
-            <Field label="작성일자"><input type="date" className={inputCls} value={writeDate} onChange={(e) => setWriteDate(e.target.value)} /></Field>
+            <Field label="작성일자"><input type="date" className={inputCls} value={writeDate} onChange={(e) => changeWriteDate(e.target.value)} /></Field>
+            <Field label="예상 제작완료일자" hint="작성일자 +15일이 기본값입니다">
+              <input type="date" className={inputCls} value={completionDate} onChange={(e) => { setCompletionDate(e.target.value); setCompletionTouched(true); }} />
+            </Field>
             <Field label="📷 제품 사진"><ImageUpload value={productImage} onChange={setProductImage} /></Field>
             <Field label="제품명"><input className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)} /></Field>
             <Field label="규격 및 사양" hint="CT 등록시 입력한 팬톤·인쇄·규격이 자동으로 채워집니다">
@@ -6568,7 +6617,6 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
               <Field label="CT 제작 실비(단가)"><input type="number" className={inputCls} value={unitPrice} onChange={(e) => setUnitPrice(Number(e.target.value) || 0)} /></Field>
             </div>
             <Field label="항공 특송비"><input type="number" className={inputCls} value={expressFee} onChange={(e) => setExpressFee(Number(e.target.value) || 0)} /></Field>
-            <Field label="제품 비고"><input className={inputCls} value={productRemark} onChange={(e) => setProductRemark(e.target.value)} /></Field>
             <Field label="특송비 비고"><input className={inputCls} value={expressRemark} onChange={(e) => setExpressRemark(e.target.value)} /></Field>
             <div className="rounded-lg bg-purple-50 border border-purple-200 p-3 text-xs space-y-1">
               <div className="flex justify-between"><span className="text-slate-500">공급가액</span><span className="font-semibold">{won(supplyTotal)}</span></div>
@@ -6579,7 +6627,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
           </fieldset>
 
           {/* 우측: 엑셀 표준서식과 동일한 레이아웃의 미리보기(화면 표시 + 인쇄시 그대로 출력) */}
-          <div className="p-5 overflow-y-auto bg-slate-50">
+          <div className="p-5 overflow-y-auto max-h-[calc(100vh-120px)] pr-2 bg-slate-50" style={{ minHeight: 0 }}>
             <div id="sample-invoice-print" className="bg-white mx-auto p-7 text-[12px]" style={{ width: "210mm", minHeight: "297mm", color: "#111827", lineHeight: 1.7 }}>
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
@@ -6605,7 +6653,8 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
 
               {greetingLines.map((line, i) => (
                 <p key={i} contentEditable={!readOnly} suppressContentEditableWarning onBlur={(e) => updateGreeting(i, e.currentTarget.textContent)}
-                  className="mb-2 whitespace-pre-line rounded px-1 -mx-1 hover:bg-amber-50 focus:bg-amber-50 outline-none" style={{ lineHeight: 1.8 }}>{line}</p>
+                  className={"mb-2 whitespace-pre-line rounded px-1 -mx-1 hover:bg-amber-50 focus:bg-amber-50 outline-none " + (String(line).trim().startsWith("◎") ? "" : "pl-5")}
+                  style={{ lineHeight: 1.8 }}>{line}</p>
               ))}
 
               <table className="w-full border-collapse border border-slate-400 text-[11px] mb-4 mt-2">
@@ -6628,7 +6677,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
                     <td className="border border-slate-400 text-center">{qty}</td>
                     <td className="border border-slate-400 text-right px-2">{won(unitPrice)}</td>
                     <td className="border border-slate-400 text-right px-2">{won(productAmt)}</td>
-                    <td className="border border-slate-400 text-center text-[10px]">{productRemark}</td>
+                    <td className="border border-slate-400 text-center text-[10px]">{productRemarkText}</td>
                   </tr>
                   <tr style={{ height: "42px" }}>
                     <td className="border border-slate-400 text-center">2</td>
