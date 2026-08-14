@@ -8430,6 +8430,44 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   };
 
   const removeDraftItem = (id) => setDraftItems((prev) => prev.filter((i) => i.id !== id));
+  // "💾 수정후 저장" — 품목을 draftItems에 반영하는 것에 더해, 변경 전 단가(previousUnitPrice)·수정자(modifiedBy)·수정일시(modifiedAt)를
+  // 그 품목에 함께 기록해두고, 지금 편집 중인 제안서가 이미 저장된 건이면(editingProposalId) 그 문서에도 즉시 반영한다.
+  const saveItemEditAndPersist = async () => {
+    if (!editingItemId) return;
+    const prevItem = draftItems.find((it) => it.id === editingItemId);
+    const previousUnitPrice = prevItem ? prevItem.unitPrice : 0;
+    const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
+    const guideFinishingTexts = guideSelectedIds.map((id) => guideTexts[id]).filter(Boolean);
+    const notes = composeNotes({ spec, finishing, leadTime, cbm, extraOptions, selectedFinishingItems: calc.selectedFinishingItems, finishingApplyMode, guideFinishingTexts });
+    const calcSnapshot = {
+      rmbBase: Number(rmbBase) || 0, rmbBox: Number(rmbBox) || 0, rmbInspect: Number(rmbInspect) || 0, rmbShip: Number(rmbShip) || 0,
+      customsRate: Number(customsRate) || 0, marginOverride, marginRate: calc.marginRate, autoMarginRate: calc.autoMarginRate,
+      unitCostKrw: calc.unitCostKrw, logisticsPerUnit: calc.logisticsPerUnit, customsPerUnit: calc.customsPerUnit,
+      totalCostPerUnit: calc.totalCostPerUnit, profitPerUnit: calc.profitPerUnit, profitRate: calc.profitRate,
+      totalProfit: calc.totalProfit, totalRmbPayment: calc.totalRmbPayment,
+      exRateSnapshot: { ...exRate },
+    };
+    const patchedItem = {
+      image: productImage, productName, specSize, material, category,
+      factory: itemFactory, wechatGroup: itemWechatGroup,
+      quantity: Number(quantity) || 0, unitPrice: calc.proposedPrice, totalPrice: calc.totalProposal,
+      cbm: Number(cbm) || 0, notes, calcSnapshot,
+      previousUnitPrice, modifiedBy: actorName, modifiedAt: nowDateTimeStr(),
+    };
+    upsertProductRecord(patchedItem);
+    const nextItems = draftItems.map((it) => (it.id === editingItemId ? { ...it, ...patchedItem } : it));
+    setDraftItems(nextItems);
+
+    // 지금 이 화면이 이미 저장된 기존 제안서를 수정하는 흐름이면(editingProposalId 있음), 그 원본 문서에도 바로 반영한다.
+    if (editingProposalId) {
+      const nextTotalAmount = nextItems.reduce((s, it) => s + (it.totalPrice || 0), 0);
+      const patch = { items: nextItems, totalAmount: nextTotalAmount, updatedAt: nowDateTimeStr(), updatedBy: actorName };
+      setProposalList((prev) => prev.map((p) => (p.id === editingProposalId ? { ...p, ...patch } : p)));
+      try { if (FIREBASE_ENABLED && typeof editingProposalId === "string") await fsUpdate(COLLECTIONS.proposals, editingProposalId, patch); } catch (e) { console.error(e); }
+    }
+    setToast("✅ 제안가가 성공적으로 수정후 저장되었습니다.");
+  };
+
   const openClientModal = (mode) => { if (draftItems.length === 0) { setToast("먼저 품목을 추가해주세요."); return; } setClientModal({ open: true, mode }); };
 
   const handleClientSubmit = (info) => {
@@ -9047,11 +9085,13 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 </div>
               </Card>
               <div className="flex gap-2">
-                <button onClick={addItemToDraft} className={"flex-1 py-3 rounded-xl border-2 border-dashed text-sm font-semibold transition-colors " + (editingItemId ? "border-emerald-400 text-emerald-700 hover:bg-emerald-50" : "border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5")}>
-                  {editingItemId ? "✓ 수정 반영" : "＋ 이 품목을 제안서에 추가"}
-                </button>
+                {!editingItemId && (
+                  <button onClick={addItemToDraft} className="flex-1 py-3 rounded-xl border-2 border-dashed text-sm font-semibold transition-colors border-[#1E3A8A]/30 text-[#1E3A8A] hover:bg-[#1E3A8A]/5">
+                    ＋ 이 품목을 제안서에 추가
+                  </button>
+                )}
                 {editingItemId && (
-                  <button onClick={cancelEditItem} className="px-4 rounded-xl border border-slate-200 text-slate-500 text-sm hover:bg-slate-50">취소</button>
+                  <button onClick={cancelEditItem} className="w-full py-3 rounded-xl border border-slate-200 text-slate-500 text-sm hover:bg-slate-50">✕ 이 품목 수정 취소</button>
                 )}
               </div>
             </div>
@@ -9076,6 +9116,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 <div className="text-center text-slate-300 text-xs mb-3">＋ ／ ＝</div>
                 <ResultBox
                   label="개당 총원가" value={won(calc.totalCostPerUnit)} accent="text-[#1E3A8A]"
+                  sub={`${won(calc.unitCostKrw)} + ${won(calc.logisticsPerUnit)} + ${won(calc.customsPerUnit)} = ${won(calc.totalCostPerUnit)}`}
                   tooltip={`원화 원가 ${won(calc.unitCostKrw)} + 물류비 ${won(calc.logisticsPerUnit)} + 관세 ${won(calc.customsPerUnit)} = ${won(calc.totalCostPerUnit)}`}
                 />
               </Card>
@@ -9152,6 +9193,19 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                   })()}
                 </div>
               </Card>
+              {editingItemId && (() => {
+                const editingItem = draftItems.find((it) => it.id === editingItemId);
+                return (
+                  <div>
+                    <button onClick={saveItemEditAndPersist} className="w-full py-3 rounded-xl bg-[#1E3A8A] text-white text-sm font-semibold hover:opacity-90">💾 수정후 저장</button>
+                    {editingItem && editingItem.modifiedBy && (
+                      <div className="text-xs text-slate-500 mt-2 text-center">
+                        최종 수정: {displayStaffName(editingItem.modifiedBy)} | {editingItem.modifiedAt} | (수정 전 개당 제안가: {won(editingItem.previousUnitPrice)})
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </main>
 
