@@ -2142,7 +2142,7 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
   );
 }
 
-function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkApprovePending, onDedupe, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
+function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
   const [search, setSearch] = useState("");
   const [periodFilter, setPeriodFilter] = useState("전체");
   const [customFrom, setCustomFrom] = useState("");
@@ -2319,24 +2319,6 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
         >
           🔔 검토대기 제안서 ({pendingCount}건)
         </button>
-        {isAdmin && (
-          <button
-            onClick={onBulkApprovePending}
-            disabled={pendingCount === 0}
-            className="text-xs px-3 py-2 rounded-lg font-medium whitespace-nowrap bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            ✅ 검토대기 전체 승인 ({pendingCount}건)
-          </button>
-        )}
-        {isAdmin && onDedupe && (
-          <button
-            onClick={onDedupe}
-            title="같은 제목+고객사로 중복 등록된 제안서를 찾아 1건만 남기고 정리합니다"
-            className="text-xs px-3 py-2 rounded-lg font-medium whitespace-nowrap border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
-          >
-            🧹 중복 제안서 정리
-          </button>
-        )}
         {isAdmin && onBulkCompressImages && (
           <button
             onClick={onBulkCompressImages}
@@ -2801,7 +2783,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           )}
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
           {!data.readOnly && onSave && data.id && (
-            <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{savedFlash ? "✅ 저장되었습니다" : "💾 저장"}</button>
+            <button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 shadow-sm whitespace-nowrap">
+              {savedFlash ? "✅ 저장되었습니다" : `💾 ${isInvoice ? "인보이스" : "제안서"} 저장`}
+            </button>
           )}
           <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
           {onSendComplete && data.id && (
@@ -7083,7 +7067,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setPreviewState((prev) => (prev && prev.id === id ? { ...prev, ...fullPatch } : prev));
     try {
       if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(collectionName, id, fullPatch);
-      setToast("✅ 성공적으로 저장되었습니다.");
+      setToast(previewMode === "invoice" ? "✅ 성공적으로 저장되었습니다." : "✅ 해당 제안서가 제안서 관리목록에 추가되었습니다.");
     } catch (e) {
       console.error(e);
       setToast("저장 중 오류가 발생했습니다. (화면에는 반영됨)");
@@ -7906,49 +7890,6 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   // 관리자(대표님)가 제안서를 조회/수정 모드로 열었을 때, 아직 "검토대기" 상태면 자동으로 "수정중"으로 전환
   const markUnderReviewIfNeeded = (p) => {
     if (isAdmin && getReviewStatus(p) === "검토대기") updateReviewStatus(p, "수정중");
-  };
-
-  // "검토대기" 상태인 제안서를 전부 한번에 "승인완료"로 일괄 전환 (관리자 전용)
-  const bulkApprovePendingProposals = async () => {
-    const targets = proposalList.filter((p) => getReviewStatus(p) === "검토대기");
-    if (targets.length === 0) { setToast("검토대기 중인 제안서가 없습니다."); return; }
-    if (!window.confirm(`검토대기 중인 제안서 ${targets.length}건을 전부 승인완료로 변경할까요?`)) return;
-    const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
-    const extra = { updatedAt: nowDateTimeStr(), updatedBy: actorName };
-    for (const p of targets) {
-      await updateReviewStatus(p, "승인완료", extra);
-    }
-    setToast(`검토대기 제안서 ${targets.length}건을 전부 승인완료로 변경했습니다.`);
-  };
-
-  // 제안서 목록 중복 정리 — 제목(proposalTitle)+고객사명이 같은 제안서가 여러 건이면(같은 엑셀 재업로드 등으로 중복 생성된 경우)
-  // 1건만 남기고 나머지를 삭제한다. 우선순위: 검토상태가 더 진행된 것(발송완료>승인완료>검토중>검토대기) 우선 보존, 그다음 최신 작성일 우선 보존.
-  const dedupeProposals = async () => {
-    const groups = {};
-    proposalList.forEach((p) => {
-      const key = `${p.proposalTitle || ""}__${p.clientName || ""}`;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(p);
-    });
-    const toDelete = [];
-    Object.values(groups).forEach((group) => {
-      if (group.length <= 1) return;
-      const sorted = [...group].sort((a, b) => {
-        const ra = REVIEW_STATUS_OPTIONS.indexOf(getReviewStatus(a));
-        const rb = REVIEW_STATUS_OPTIONS.indexOf(getReviewStatus(b));
-        if (ra !== rb) return rb - ra; // 검토상태가 더 진행된 쪽 우선 보존
-        return String(b.createdAt || "").localeCompare(String(a.createdAt || "")); // 그다음 최신 작성일 우선 보존
-      });
-      toDelete.push(...sorted.slice(1));
-    });
-    if (toDelete.length === 0) { setToast("제목+고객사명이 중복된 제안서가 없습니다."); return; }
-    if (!window.confirm(`제목·고객사명이 같은 중복 제안서 ${toDelete.length}건을 삭제할까요? (검토상태가 더 진행됐거나 가장 최신인 1건만 남깁니다)`)) return;
-    const deleteIds = new Set(toDelete.map((x) => x.id));
-    setProposalList((prev) => prev.filter((x) => !deleteIds.has(x.id)));
-    for (const p of toDelete) {
-      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsDelete(COLLECTIONS.proposals, p.id); } catch (e) { console.error(e); }
-    }
-    setToast(`중복된 제안서 ${toDelete.length}건을 정리했습니다.`);
   };
 
   // 날짜(YYYYMMDD) 기준 다음 제안번호를 계산. 같은 날짜로 여러 파일이 연속 처리될 때(ZIP 일괄 업로드 등)도
@@ -8867,8 +8808,6 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             await updateReviewStatus(p, newReviewStatus, extra);
             setToast(`검토상태가 "${REVIEW_STATUS_LABELS[newReviewStatus]}"(으)로 변경되었습니다.`);
           }}
-          onBulkApprovePending={bulkApprovePendingProposals}
-          onDedupe={dedupeProposals}
           onBulkCompressImages={bulkCompressProposalImages} bulkCompressProgress={bulkCompressProgress}
           onBulkDelete={bulkDeleteProposals}
         />
@@ -9205,20 +9144,18 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                     }
                   />
                   {(() => {
-                    const totalShipKrw = (Number(rmbShip) || 0) * Number(exRate.rmbToKrw);
-                    const cbmOverhead = (Number(cbm) || 0) * logistics.cbmRate + logistics.blFee + logistics.originFee + logistics.brokerFee;
-                    const totalLogistics = totalShipKrw + cbmOverhead;
+                    const cbmAmount = (Number(cbm) || 0) * logistics.cbmRate;
+                    const totalLogistics = cbmAmount + logistics.blFee + logistics.originFee + logistics.brokerFee;
                     const qtyLabel = (Number(quantity) || 0).toLocaleString("ko-KR");
                     return (
                       <ResultBox
                         label="물류비" value={won(calc.logisticsPerUnit)}
                         sub={
                           <span className="text-xs text-slate-500 leading-normal mt-2 block">
-                            {(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM × 해운단가 {won(logistics.cbmRate)}<br />
+                            {(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM × 해운단가 {won(logistics.cbmRate)} = {won(cbmAmount)}<br />
                             B/L {won(logistics.blFee)}<br />
                             원산지 {won(logistics.originFee)}<br />
                             관세사 {won(logistics.brokerFee)}<br />
-                            {totalShipKrw > 0 && <>중국내운송료 {won(totalShipKrw)}<br /></>}
                             &nbsp;= {won(totalLogistics)}
                             <br /><br />
                             총물류비({won(totalLogistics)}) / 수량({qtyLabel}개) = 개당 {won(calc.logisticsPerUnit)}
@@ -9270,27 +9207,54 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               <Card title="③ 총 주문 이익 요약">
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   {(() => {
-                    const qtyLabel = (Number(quantity) || 0).toLocaleString("ko-KR");
-                    const totalShipKrw = (Number(rmbShip) || 0) * Number(exRate.rmbToKrw);
-                    const totalCustomsKrw = calc.customsPerUnit * (Number(quantity) || 0);
-                    const totalCbmKrw = calc.totalOverhead - totalShipKrw - totalCustomsKrw;
-                    const overheadParts = [
-                      totalShipKrw ? `운송 ${won(totalShipKrw)}` : null,
-                      totalCbmKrw ? `CBM ${won(totalCbmKrw)}` : null,
-                      totalCustomsKrw ? `관세 ${won(totalCustomsKrw)}` : null,
-                    ].filter(Boolean).join(" + ");
+                    const qty = Number(quantity) || 0;
+                    const qtyLabel = qty.toLocaleString("ko-KR");
+                    const totalCustomsKrw = calc.customsPerUnit * qty;
+
+                    // 총 상품 중국비용 = 공장원가(개당×수량) + 박스비용(합계) + 검품비용(합계) + 중국내운송료(합계) — 전부 위안화 기준으로 합산 후 환율 적용
+                    const factoryPriceRmb = Number(rmbBase) || 0;
+                    const boxTotalRmb = Number(rmbBox) || 0;
+                    const inspectionFeeRmb = Number(rmbInspect) || 0;
+                    const chinaFreightRmb = Number(rmbShip) || 0;
+                    const factoryTotalRmb = factoryPriceRmb * qty;
+                    const totalChinaCostRmb = factoryTotalRmb + boxTotalRmb + inspectionFeeRmb + chinaFreightRmb;
+                    const totalChinaCostKrw = totalChinaCostRmb * Number(exRate.rmbToKrw);
+
+                    // 총 부대비용 = ①카드 물류비(CBM해운+B/L+원산지+관세사) 총액 + 관세 총액 (중국내운송료는 위 "총 상품 중국비용"에 이미 포함되어 여기선 제외)
+                    const cbmAmount = (Number(cbm) || 0) * logistics.cbmRate;
+                    const totalExtraCost = cbmAmount + logistics.blFee + logistics.originFee + logistics.brokerFee + totalCustomsKrw;
+
                     const boxes = [
                       {
                         label: "총 제안금액", value: won(calc.totalProposal),
                         calc: `${won(calc.proposedPrice)} × ${qtyLabel}개`,
                       },
                       {
-                        label: "총 상품 공장원가", value: won(calc.totalFactoryCost), sub: "공장 순수 원가",
-                        calc: `¥${(Number(rmbBase) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })} × @${fmtRate(exRate.rmbToKrw)}원 × ${qtyLabel}개`,
+                        label: "총 상품 중국비용", value: won(totalChinaCostKrw), sub: "공장원가+박스+검품+중국내운송료",
+                        calc: (
+                          <span className="text-xs text-slate-500 leading-relaxed mt-2 block">
+                            공장원가(개당) ¥{factoryPriceRmb.toFixed(2)} × {qtyLabel}개 = ¥{factoryTotalRmb.toFixed(2)}<br />
+                            위안화 박스비용(합계) ¥{boxTotalRmb.toFixed(2)}<br />
+                            위안화 검품비용(합계) ¥{inspectionFeeRmb.toFixed(2)}<br />
+                            위안화 중국내운송료(합계) ¥{chinaFreightRmb.toFixed(2)}<br />
+                            &nbsp;= 위안화 합계 ¥{totalChinaCostRmb.toFixed(2)}
+                            <br /><br />
+                            위안화 합계(¥{totalChinaCostRmb.toFixed(2)}) × 환율({fmtRate(exRate.rmbToKrw)}원) = ₩{Math.round(totalChinaCostKrw).toLocaleString("ko-KR")}
+                          </span>
+                        ),
                       },
                       {
-                        label: "총 부대비용", value: won(calc.totalOverhead), sub: "운송·관세·물류 합계",
-                        calc: overheadParts || "-",
+                        label: "총 부대비용", value: won(totalExtraCost), sub: "물류비·관세 합계",
+                        calc: (
+                          <span className="text-xs text-slate-500 leading-relaxed mt-2 block">
+                            해운운송료({(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM) {won(cbmAmount)}<br />
+                            B/L {won(logistics.blFee)}<br />
+                            원산지 {won(logistics.originFee)}<br />
+                            관세사 {won(logistics.brokerFee)}<br />
+                            관세(총액) {won(totalCustomsKrw)}<br />
+                            &nbsp;= {won(totalExtraCost)}
+                          </span>
+                        ),
                       },
                       {
                         label: "개당 예상이익", value: won(calc.profitPerUnit), accent: "text-emerald-600",
@@ -9298,7 +9262,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                       },
                       {
                         label: "총 예상이익 (이익률)", value: won(calc.totalProfit), sub: pct(calc.profitRate), accent: "text-emerald-600",
-                        calc: `${won(calc.totalProposal)} - ${won(calc.totalCostPerUnit * (Number(quantity) || 0))} = ${won(calc.totalProfit)} (${pct(calc.profitRate)})`,
+                        calc: `${won(calc.totalProposal)} - ${won(calc.totalCostPerUnit * qty)} = ${won(calc.totalProfit)} (${pct(calc.profitRate)})`,
                       },
                     ];
                     return boxes.map((b) => (
@@ -9306,7 +9270,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                         <div className="text-xs text-slate-500 mb-1">{b.label}</div>
                         <div className={"text-lg font-bold " + (b.accent || "text-slate-800")}>{b.value}</div>
                         {b.sub && <div className="text-xs text-slate-400 mt-0.5">{b.sub}</div>}
-                        <div className="text-xs text-slate-500 mt-1">{b.calc}</div>
+                        {typeof b.calc === "string" ? <div className="text-xs text-slate-500 mt-1">{b.calc}</div> : b.calc}
                       </div>
                     ));
                   })()}
