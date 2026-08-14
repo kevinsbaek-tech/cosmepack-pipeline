@@ -1660,7 +1660,7 @@ function ResultBox({ label, value, sub, accent, tooltip }) {
         {tooltip && <span className="text-slate-300 text-[10px] leading-none">ⓘ</span>}
       </div>
       <div className={"text-lg font-bold " + (accent || "text-slate-800")}>{value}</div>
-      {sub && <div className="text-xs text-slate-400 mt-0.5">{sub}</div>}
+      {sub && <div className="text-xs text-slate-500 mt-1 leading-relaxed">{sub}</div>}
       {tooltip && open && (
         <div className="calc-tooltip absolute z-50 left-0 top-full mt-2 w-72 px-3 py-2.5 rounded-lg bg-slate-900 text-white text-[11px] leading-relaxed shadow-xl" style={{ pointerEvents: "none" }}>
           <div className="absolute -top-1.5 left-4 w-3 h-3 bg-slate-900 rotate-45" />
@@ -9106,8 +9106,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               <Card title="① 개당 원가 Breakdown">
                 <div className="grid grid-cols-3 gap-3 mb-3">
                   <ResultBox
-                    label="원화 원가" value={won(calc.unitCostKrw)} sub="상품대금×환율"
-                    tooltip={`위안화 원가(¥${calc.unitRmb.toFixed(2)}${calc.finishingRmbPerUnit > 0 ? ` = 기본 ¥${(calc.unitRmb - calc.finishingRmbPerUnit).toFixed(2)} + 후가공 ¥${calc.finishingRmbPerUnit.toFixed(2)}` : ""}) × ${fmtRate(exRate.rmbToKrw)}원 = ${won(calc.unitCostKrw)}`}
+                    label="원화 원가" value={won(calc.unitCostKrw)}
+                    sub={`위안화 단가(¥${calc.unitRmb.toFixed(2)}) × 환율(${fmtRate(exRate.rmbToKrw)}원) = ${won(calc.unitCostKrw)}`}
                   />
                   {(() => {
                     const totalShipKrw = (Number(rmbShip) || 0) * Number(exRate.rmbToKrw);
@@ -9115,12 +9115,12 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                     const totalLogistics = totalShipKrw + cbmOverhead;
                     const qtyLabel = (Number(quantity) || 0).toLocaleString("ko-KR");
                     const line1Parts = [
-                      `(${(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM × ${won(logistics.cbmRate)})`,
-                      `${won(logistics.blFee)}`,
-                      `${won(logistics.originFee)}`,
-                      `${won(logistics.brokerFee)}`,
+                      `(${(Number(cbm) || 0).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}CBM × 해운단가 ${won(logistics.cbmRate)})`,
+                      `B/L ${won(logistics.blFee)}`,
+                      `원산지 ${won(logistics.originFee)}`,
+                      `관세사 ${won(logistics.brokerFee)}`,
                     ];
-                    if (totalShipKrw > 0) line1Parts.push(`${won(totalShipKrw)}(중국내운송료)`);
+                    if (totalShipKrw > 0) line1Parts.push(`중국내운송료 ${won(totalShipKrw)}`);
                     return (
                       <ResultBox
                         label="물류비" value={won(calc.logisticsPerUnit)}
@@ -9128,15 +9128,15 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                           <span className="leading-relaxed">
                             {line1Parts.join(" + ")} = {won(totalLogistics)}
                             <br />
-                            {won(totalLogistics)} / 수량({qtyLabel}개) = 개당 {won(calc.logisticsPerUnit)}
+                            총물류비({won(totalLogistics)}) / 수량({qtyLabel}개) = 개당 {won(calc.logisticsPerUnit)}
                           </span>
                         }
                       />
                     );
                   })()}
                   <ResultBox
-                    label="관세" value={won(calc.customsPerUnit)} sub={`(원가+물류비)×${customsRate}%`}
-                    tooltip={`(상품대금 ${won(calc.unitCostKrw)} + 물류비 ${won(calc.logisticsPerUnit)}) × ${customsRate}% = ${won(calc.customsPerUnit)}`}
+                    label="관세" value={won(calc.customsPerUnit)}
+                    sub={`(원화원가 ${won(calc.unitCostKrw)} + 개당물류비 ${won(calc.logisticsPerUnit)}) × 관세율(${customsRate}%) = ${won(calc.customsPerUnit)}`}
                   />
                 </div>
                 <div className="text-center text-slate-300 text-xs mb-3">＋ ／ ＝</div>
