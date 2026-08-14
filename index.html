@@ -6798,8 +6798,12 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
               {pagedFiltered.map((s, idx) => (
                 <tr key={s.id} onClick={() => { setInvoiceViewMode("view"); setInvoiceSampleId(s.id); }} className={"cursor-pointer hover:bg-[#1E3A8A]/5 " + (idx % 2 === 1 ? "bg-slate-50/40" : "")}>
                   <td className="px-3 py-3 align-middle text-center whitespace-nowrap text-slate-500">{s.requestDate || "-"}</td>
-                  <td className="px-3 py-3 align-middle font-medium" style={{ color: "#111827", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.clientName}>{s.clientName}</td>
-                  <td className="px-3 py-3 align-middle text-slate-600" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }} title={s.productName}>{s.productName}</td>
+                  <td className="px-3 py-3 align-middle font-medium" style={{ color: "#111827" }} title={s.clientName}>
+                    <div style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }}>{s.clientName}</div>
+                  </td>
+                  <td className="px-3 py-3 align-middle text-slate-600" title={s.productName}>
+                    <div style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "keep-all" }}>{s.productName}</div>
+                  </td>
                   <td className="px-3 py-3 align-middle text-center text-slate-600">{s.invoiceQty || "-"}</td>
                   <td className="px-3 py-3 align-middle text-center text-slate-500 truncate" title={s.shippingMethod || "-"}>{s.shippingMethod ? `${s.shippingMethod} (${((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)[s.shippingMethod] || 0).toLocaleString("ko-KR")}원)` : "-"}</td>
                   <td className="px-3 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
