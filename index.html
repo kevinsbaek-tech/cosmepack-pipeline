@@ -6445,6 +6445,221 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
   );
 }
 
+/* ===================== CT 맞춤샘플 전용 인보이스 (CT CUSTOM SAMPLE INVOICE) =====================
+   sampleType === "ct" 인 건에서만 열린다. 일반 SAMPLE INVOICE(SampleInvoiceModal)와는
+   상단 안내문(페이백 혜택 고지)·품목표 컬럼(규격 및 사양)·하단 참고사항(CT 필수 테스트 고지)이 모두 다르므로
+   같은 컴포넌트에 분기를 넣지 않고 별도 컴포넌트로 분리했다. 인쇄는 기존과 동일하게
+   #sample-invoice-print id를 그대로 재사용하므로 @media print 규칙을 새로 추가할 필요가 없다. */
+const CT_GREETING_LINES = [
+  "◎ 귀사의 무궁한 발전을 진심으로 기원합니다.",
+  "◎ 귀사가 요청하신 본품 양산 대비용 '맞춤형 CT(내용물 적합성 테스트) 샘플' 제작에 대한 인보이스를 보내드립니다.",
+  "◎ [CT 샘플 제작 안내 및 페이백(Pay-back) 혜택]\n    본 CT 샘플은 단순 기성품 발송이 아니며, 완벽한 본품 양산을 위해 중국 현지 공장에서 본품과 100% 동일한 원료 비율 및 후가공(조색/인쇄 등) 맞춤 스펙으로 별도 생산 투입됩니다. 이에 따라 초기 맞춤 제작 실비가 청구됩니다.\n    단, 결제하신 CT 샘플 제작비용은 향후 해당 품목의 '본품 양산 발주(기본 MOQ 이상)' 진행 시, 총 발주 대금에서 100% 전액 차감(페이백) 처리되어 결과적으로 무상 제공됩니다.",
+  "◎ 사업자등록증 사본과 이메일주소를 보내주시면, 세금계산서 발행을 하여드립니다.",
+  "◎ 입금 확인 후 즉시 중국 현지 공장에 샘플 제작이 발주(투입)됩니다.",
+];
+const CT_FOOTER_LINES = [
+  "1. 예상 제작 일정 : 입금 확인 및 최종 사양(조색 팬톤 번호, 인쇄 AI 파일) 확정일로부터 약 15일 소요됩니다.",
+  "2. 배송 소요 기간 : 제작 완료 및 현지 개별 전수 검품(QC) 완료 직후 항공 특송 발송 (약 2~3일 소요)",
+  "3. 내용물 적합성(CT) 필수 테스트 고지:\n    - 샘플 수령 후 실제 내용물 충진을 통한 누유, 토출감, 제형 화학 반응 여부를 반드시 자체 테스트해 주시기 바랍니다.\n    - 사전 적합성 테스트 미진행 또는 임의 승인으로 인해 양산 후 발생하는 제형 반응 문제에 대해서는 당사의 귀책 사유로 인정되지 않습니다.",
+  "4. 본 인보이스의 유효기간은 발행일로부터 30일입니다.",
+  "5. 당사에 의뢰하여 주시면, 최고의 품질과 서비스로 최선을 다하겠습니다.",
+];
+
+// CT 사양 필드들(팬톤/인쇄/규격)을 인보이스 "규격 및 사양" 칸에 들어갈 한 덩어리 문구로 조립
+function buildCtSpecText(s) {
+  if (!s) return "";
+  const parts = [];
+  if (s.ctSizeSpec) parts.push(s.ctSizeSpec);
+  if (s.ctBodyPantone) parts.push(`바디 조색: ${s.ctBodyPantone}`);
+  if (s.ctCapPantone) parts.push(`캡 조색: ${s.ctCapPantone}`);
+  if (s.ctPrintSpec) parts.push(`인쇄: ${s.ctPrintSpec}`);
+  return parts.join("\n");
+}
+
+function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpdate, onClose, readOnly }) {
+  const matchedProduct = (products || []).find((p) => p.name === sample.productName);
+  const linkedProposal = (proposals || []).find((p) => String(p.id) === String(sample.linkedProposalId));
+  const proposalItem = linkedProposal && (linkedProposal.items || []).find((it) => it.productName === sample.productName);
+  const pickImg = (obj) => (obj && (obj.image || obj.imageUrl || obj.productImg || obj.photo)) || "";
+  const fallbackImage = pickImg(sample) || pickImg(matchedProduct) || pickImg(proposalItem) || pickImg(linkedProposal);
+  const draft = sample.ctInvoiceDraft || {}; // 일반 인보이스(invoiceDraft)와 저장 키를 분리 — 서로 덮어쓰지 않게
+
+  const [clientName, setClientName] = useState(draft.clientName || sample.clientName || "");
+  const [writeDate, setWriteDate] = useState(draft.writeDate || todayStr());
+  const [productImage, setProductImage] = useState(draft.productImage || fallbackImage);
+  const [productName, setProductName] = useState(draft.productName || sample.productName || "");
+  const [spec, setSpec] = useState(draft.spec != null ? draft.spec : buildCtSpecText(sample));
+  const [qty, setQty] = useState(draft.qty || sample.invoiceQty || 1);
+  // CT 제작 실비 / 항공 특송비 — 등록 모달에서 입력한 값이 기본으로 채워지고 여기서 다시 조정 가능
+  const [unitPrice, setUnitPrice] = useState(draft.unitPrice != null ? draft.unitPrice : (Number(sample.ctProductionCost) || 0));
+  const [expressFee, setExpressFee] = useState(draft.expressFee != null ? draft.expressFee : (Number(sample.ctExpressCost) || 0));
+  const [productRemark, setProductRemark] = useState(draft.productRemark != null ? draft.productRemark : "본품 발주시 전액 차감");
+  const [expressRemark, setExpressRemark] = useState(draft.expressRemark != null ? draft.expressRemark : "항공 특송");
+  const [greetingLines, setGreetingLines] = useState(draft.greetingLines || CT_GREETING_LINES);
+  const [footerLines, setFooterLines] = useState(draft.footerLines || CT_FOOTER_LINES);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  // 모달이 열린 뒤 뒤늦게 제안서/제품 사진을 찾은 경우까지 반영(사용자가 직접 지우면 더 이상 덮어쓰지 않음)
+  useEffect(() => {
+    if (!productImage && fallbackImage) setProductImage(fallbackImage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fallbackImage]);
+
+  const productAmt = (Number(qty) || 0) * (Number(unitPrice) || 0);
+  const supplyTotal = productAmt + (Number(expressFee) || 0);
+  const vat = Math.round(supplyTotal * 0.1);
+  const grandTotal = supplyTotal + vat;
+
+  const updateGreeting = (i, text) => setGreetingLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
+  const updateFooter = (i, text) => setFooterLines((prev) => prev.map((v, idx) => (idx === i ? text : v)));
+
+  // 좌측 입력값 + 미리보기에서 고친 문구를 전부 샘플 레코드에 저장 — 인쇄/저장시 자동 호출
+  const persistToSample = () => {
+    if (!onUpdate || readOnly) return;
+    onUpdate(sample, {
+      invoiceQty: Number(qty) || 1,
+      invoiceAmount: grandTotal, // 목록의 "청구금액" 열에 그대로 반영됨
+      ctInvoiceDraft: {
+        clientName, writeDate, productImage, productName, spec,
+        qty: Number(qty) || 1, unitPrice: Number(unitPrice) || 0, expressFee: Number(expressFee) || 0,
+        productRemark, expressRemark, greetingLines, footerLines,
+      },
+    });
+  };
+  const handleSaveClick = () => {
+    persistToSample();
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4" onClick={onClose}>
+      <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
+        <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">
+          🧪 CT 맞춤샘플 인보이스 — {readOnly ? "조회 전용" : "텍스트를 클릭하면 바로 수정할 수 있습니다"}
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs px-3 py-2 rounded-lg bg-purple-50 text-purple-700 font-semibold whitespace-nowrap">[CT 맞춤제작]</span>
+          <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
+          {onUpdate && !readOnly && (
+            <button onClick={handleSaveClick} className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{savedFlash ? "✅ 저장되었습니다" : "💾 저장"}</button>
+          )}
+          <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
+        </div>
+      </div>
+      {savedFlash && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-emerald-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg shadow-lg no-print">✅ 성공적으로 저장되었습니다.</div>
+      )}
+
+      <div className="bg-white rounded-xl mx-auto overflow-hidden" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
+        <div className="grid" style={{ gridTemplateColumns: "340px 1fr", maxHeight: "84vh" }}>
+          {/* 좌측: 입력폼 */}
+          <fieldset disabled={readOnly} className="p-5 border-r border-slate-200 overflow-y-auto no-print">
+            <div className="text-sm font-bold text-slate-800 mb-3">🧪 CT 샘플 인보이스 입력</div>
+            <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
+            <Field label="작성일자"><input type="date" className={inputCls} value={writeDate} onChange={(e) => setWriteDate(e.target.value)} /></Field>
+            <Field label="📷 제품 사진"><ImageUpload value={productImage} onChange={setProductImage} /></Field>
+            <Field label="제품명"><input className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)} /></Field>
+            <Field label="규격 및 사양" hint="CT 등록시 입력한 팬톤·인쇄·규격이 자동으로 채워집니다">
+              <textarea className={inputCls} rows={4} value={spec} onChange={(e) => setSpec(e.target.value)} />
+            </Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="주문수량"><input type="number" min="1" className={inputCls} value={qty} onChange={(e) => setQty(Number(e.target.value) || 1)} /></Field>
+              <Field label="CT 제작 실비(단가)"><input type="number" className={inputCls} value={unitPrice} onChange={(e) => setUnitPrice(Number(e.target.value) || 0)} /></Field>
+            </div>
+            <Field label="항공 특송비"><input type="number" className={inputCls} value={expressFee} onChange={(e) => setExpressFee(Number(e.target.value) || 0)} /></Field>
+            <Field label="제품 비고"><input className={inputCls} value={productRemark} onChange={(e) => setProductRemark(e.target.value)} /></Field>
+            <Field label="특송비 비고"><input className={inputCls} value={expressRemark} onChange={(e) => setExpressRemark(e.target.value)} /></Field>
+            <div className="rounded-lg bg-purple-50 border border-purple-200 p-3 text-xs space-y-1">
+              <div className="flex justify-between"><span className="text-slate-500">공급가액</span><span className="font-semibold">{won(supplyTotal)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">부가가치세(10%)</span><span>{won(vat)}</span></div>
+              <div className="flex justify-between border-t border-purple-200 pt-1 mt-1"><span className="font-semibold text-purple-700">총 합계금액</span><span className="font-bold text-purple-700">{won(grandTotal)}</span></div>
+            </div>
+            <p className="text-[11px] text-slate-400 pt-2">💡 우측 미리보기의 인사말·참고사항은 텍스트를 클릭하면 직접 고쳐 쓸 수 있습니다.</p>
+          </fieldset>
+
+          {/* 우측: 엑셀 표준서식과 동일한 레이아웃의 미리보기(화면 표시 + 인쇄시 그대로 출력) */}
+          <div className="p-5 overflow-y-auto bg-slate-50">
+            <div id="sample-invoice-print" className="bg-white mx-auto p-7 text-[12px]" style={{ width: "210mm", minHeight: "297mm", color: "#111827", lineHeight: 1.7 }}>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <div className="text-xl font-bold tracking-wider mb-3">CT CUSTOM SAMPLE INVOICE</div>
+                  <div className="mb-1.5">{clientName} <span className="ml-1">貴下</span></div>
+                  <div className="mb-1.5">청구금액 : <b>{won(grandTotal)}</b> <span className="text-slate-400">(부가세 포함)</span></div>
+                  <div>작성일자 : {writeDate} <span className="text-slate-400">(유효기간:30일)</span></div>
+                </div>
+                <div>
+                  <div className="flex justify-end mb-2"><img src={supplierLogo || DEFAULT_LOGO} className="h-10 object-contain" alt="㈜비케이브로" /></div>
+                  <table className="border border-slate-300 text-[11px] w-full" style={{ borderCollapse: "collapse" }}>
+                    <tbody>
+                      <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50 font-semibold" rowSpan={6}>공급자</td><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">사업자NO</td><td className="border border-slate-300 px-2 py-1.5" colSpan={2}>452-81-02979</td></tr>
+                      <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">업체명</td><td className="border border-slate-300 px-2 py-1.5">㈜ 비케이브로</td><td className="border border-slate-300 px-1 py-1.5 bg-slate-50">대표 백상선 (인)</td></tr>
+                      <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">주소</td><td className="border border-slate-300 px-2 py-1.5" colSpan={2}>경기도 고양시 일산동구 문봉길 44-75</td></tr>
+                      <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">업태</td><td className="border border-slate-300 px-2 py-1.5">도매업</td><td className="border border-slate-300 px-1 py-1.5 bg-slate-50">종목 기타무역</td></tr>
+                      <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">전화</td><td className="border border-slate-300 px-2 py-1.5">031.977.7322</td><td className="border border-slate-300 px-1 py-1.5 bg-slate-50">팩스 031.977.6322</td></tr>
+                      <tr><td className="border border-slate-300 px-2 py-1.5 bg-slate-50">입금계좌</td><td className="border border-slate-300 px-2 py-1.5" colSpan={2}>국민은행 024837-04-007281 ㈜비케이브로</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {greetingLines.map((line, i) => (
+                <p key={i} contentEditable={!readOnly} suppressContentEditableWarning onBlur={(e) => updateGreeting(i, e.currentTarget.textContent)}
+                  className="mb-2 whitespace-pre-line rounded px-1 -mx-1 hover:bg-amber-50 focus:bg-amber-50 outline-none" style={{ lineHeight: 1.8 }}>{line}</p>
+              ))}
+
+              <table className="w-full border-collapse border border-slate-400 text-[11px] mb-4 mt-2">
+                <thead><tr className="bg-slate-100">
+                  <th className="border border-slate-400 px-2 py-2.5 w-8">No</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-16">제품사진</th>
+                  <th className="border border-slate-400 px-2 py-2.5">제품명</th>
+                  <th className="border border-slate-400 px-2 py-2.5">규격 및 사양</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-14">주문수량</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-20">단가(ea)</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-24">금액(₩)</th>
+                  <th className="border border-slate-400 px-2 py-2.5 w-24">비고</th>
+                </tr></thead>
+                <tbody>
+                  <tr style={{ height: "64px" }}>
+                    <td className="border border-slate-400 text-center">1</td>
+                    <td className="border border-slate-400 text-center p-1.5">{productImage ? <img src={productImage} loading="lazy" className="w-12 h-12 object-contain mx-auto" /> : "-"}</td>
+                    <td className="border border-slate-400 px-2">{productName}</td>
+                    <td className="border border-slate-400 px-2 whitespace-pre-line text-[10px]">{spec}</td>
+                    <td className="border border-slate-400 text-center">{qty}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(unitPrice)}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(productAmt)}</td>
+                    <td className="border border-slate-400 text-center text-[10px]">{productRemark}</td>
+                  </tr>
+                  <tr style={{ height: "42px" }}>
+                    <td className="border border-slate-400 text-center">2</td>
+                    <td className="border border-slate-400"></td>
+                    <td className="border border-slate-400 px-2">특송비</td>
+                    <td className="border border-slate-400 px-2 text-[10px]">1KG 미만</td>
+                    <td className="border border-slate-400 text-center">{expressFee ? 1 : 0}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(expressFee)}</td>
+                    <td className="border border-slate-400 text-right px-2">{won(expressFee)}</td>
+                    <td className="border border-slate-400 text-center text-[10px]">{expressRemark}</td>
+                  </tr>
+                  <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>합　계</td><td className="border border-slate-400 text-right px-2 font-semibold">{won(supplyTotal)}</td><td className="border border-slate-400"></td></tr>
+                  <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>부가가치세</td><td className="border border-slate-400 text-right px-2">{won(vat)}</td><td className="border border-slate-400"></td></tr>
+                  <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-bold" colSpan={6}>합계금액</td><td className="border border-slate-400 text-right px-2 font-bold">{won(grandTotal)}</td><td className="border border-slate-400"></td></tr>
+                </tbody>
+              </table>
+
+              <div className="font-semibold mb-1.5">◎ 참고사항</div>
+              {footerLines.map((line, i) => (
+                <p key={i} contentEditable={!readOnly} suppressContentEditableWarning onBlur={(e) => updateFooter(i, e.currentTarget.textContent)}
+                  className="mb-1.5 whitespace-pre-line rounded px-1 -mx-1 hover:bg-amber-50 focus:bg-amber-50 outline-none">{line}</p>
+              ))}
+              <div className="text-right pr-4 mt-6 font-semibold">㈜ 비케이브로</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ShippingFeeSettingsModal({ shippingFees, shippingFeeNotes, onSave, onClose }) {
   const [normalFee, setNormalFee] = useState((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)["일반"]);
   const [airFee, setAirFee] = useState((shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES)["항공"]);
@@ -6653,7 +6868,13 @@ function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecr
       </div>
 
       {showAnnounce && <SampleAnnounceModal shippingFees={fees} onClose={() => setShowAnnounce(false)} />}
-      {showInvoice && <SampleInvoiceModal sample={sample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={fees} shippingFeeNotes={shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />}
+      {showInvoice && (
+        getSampleType(sample) === "ct" ? (
+          <CtSampleInvoiceModal sample={sample} products={products} proposals={proposals} supplierLogo={supplierLogo} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />
+        ) : (
+          <SampleInvoiceModal sample={sample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={fees} shippingFeeNotes={shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />
+        )
+      )}
 
     </div>
   );
@@ -6965,7 +7186,11 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
         />
       )}
       {invoiceSample && (
-        <SampleInvoiceModal readOnly={invoiceViewMode === "view"} sample={invoiceSample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
+        getSampleType(invoiceSample) === "ct" ? (
+          <CtSampleInvoiceModal readOnly={invoiceViewMode === "view"} sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
+        ) : (
+          <SampleInvoiceModal readOnly={invoiceViewMode === "view"} sample={invoiceSample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
+        )
       )}
       {detailSample && (
         <SampleDetailModal onClose={() => setDetailSample(null)}>
