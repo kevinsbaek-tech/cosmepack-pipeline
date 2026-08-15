@@ -6727,6 +6727,91 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
   );
 }
 
+/* 샘플 인보이스(일반/CT 공용) 고객 승인링크 발송 모달
+   kind: "sample"(1차 일반샘플) | "ct"(2차 CT 맞춤제작) — 두 안내문은 취지가 완전히 달라 분기한다.
+   금액·수량은 모달을 여는 쪽에서 실시간 계산값을 그대로 넘겨받는다(저장 전 값도 문구에 반영). */
+function SampleApprovalSendModal({ sample, kind, qty, grandTotal, expectedDate, onClose }) {
+  const isCt = kind === "ct";
+  const link = `${window.location.origin}/agree?type=${isCt ? "ct" : "sample"}&id=${sample.id}`;
+  const clientName = sample.clientName || "고객사";
+  const productName = sample.productName || (isCt ? "CT 맞춤 품목" : "요청 품목");
+  const amount = Number(grandTotal) || 0;
+  const count = Number(qty) || 1;
+
+  // 고객사에 그대로 나가는 표준 문구 — 임의로 줄이지 말 것
+  const message = isCt
+    ? `[ (주)비케이브로 · 코스메팩 ]\n` +
+      `화장품 용기 CT 맞춤제작 샘플 인보이스 발행 및 안내\n\n` +
+      `안녕하세요, ${clientName} 담당자님.\n` +
+      `화장품 용기 전문 공급사 (주)비케이브로 (코스메팩)입니다.\n\n` +
+      `귀사가 요청하신 본품 양산 대비용 '맞춤형 CT(내용물 적합성 테스트) 샘플' 제작 인보이스를 발행해 드립니다.\n\n` +
+      `본 CT 샘플은 본품과 100% 동일한 원료 비율 및 조색/인쇄 스펙으로 중국 현지 공장에서 별도 특별 생산 투입되며, 결제해 주신 CT 샘플 실비는 향후 '본품 양산 발주(기본 MOQ 이상)' 진행 시 전액 100% 페이백(차감) 처리됩니다.\n\n` +
+      `▶ 맞춤 품목: ${productName} (${count.toLocaleString()}개)\n` +
+      `▶ 총 청구금액: ₩${amount.toLocaleString()} (부가세 포함, 항공특송 포함)\n` +
+      `▶ 입금 계좌: 국민은행 024837-04-007281 (주)비케이브로\n` +
+      `▶ 예상 완료일: ${expectedDate ? `${expectedDate} (입금 확인 기준)` : "입금 확인 후 약 15일 소요"} (국제 항공특송 직배송)\n\n` +
+      `🔗 CT 샘플 인보이스 확인 및 승인하기:\n${link}\n\n` +
+      `※ 입금 확인 즉시 현지 공장에 맞춤 제작이 투입됩니다. 추가 문의사항은 언제든지 연락 주시기 바랍니다.\n\n` +
+      `감사합니다.\n` +
+      `- (주)비케이브로 (코스메팩) 드림 -`
+    : `[ (주)비케이브로 · 코스메팩 ]\n` +
+      `화장품 용기 일반 샘플 인보이스 발행 및 발송 안내\n\n` +
+      `안녕하세요, ${clientName} 담당자님.\n` +
+      `화장품 용기 전문 공급사 (주)비케이브로 (코스메팩)입니다.\n\n` +
+      `요청하신 용기 일반 샘플 발송 건에 대한 인보이스를 발행해 드립니다.\n\n` +
+      `당사는 원활한 샘플 공급을 위해 실비 수준의 샘플비 및 운송료를 청구하고 있으며, 해당 비용은 향후 본품 양산 주문 시 전액 차감(공제) 처리해 드립니다.\n\n` +
+      `▶ 요청 품목: ${productName} (${count.toLocaleString()}개)\n` +
+      `▶ 청구 금액: ₩${amount.toLocaleString()} (부가세 포함)\n` +
+      `▶ 입금 계좌: 국민은행 024837-04-007281 (주)비케이브로\n` +
+      `▶ 발송 안내: 입금 확인 후 즉시 출고 진행 (발송 익일 송장번호 안내)\n\n` +
+      `🔗 샘플 인보이스 확인 및 승인하기:\n${link}\n\n` +
+      `※ 문의사항이 있으시면 언제든지 카카오 채널 또는 당사(031-977-7322)로 연락 주시기 바랍니다.\n\n` +
+      `감사합니다.\n` +
+      `- (주)비케이브로 (코스메팩) 드림 -`;
+
+  const [copied, setCopied] = useState("");
+  const copy = (text, label) => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(""), 2000); });
+    } else {
+      window.prompt("아래 내용을 복사해 주세요.", text);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">📲 {isCt ? "CT 맞춤샘플" : "일반 샘플"} 인보이스 승인요청 발송</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-3 overflow-y-auto flex-1">
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs space-y-1">
+            <div className="flex justify-between"><span className="text-slate-500">수신 고객사</span><span className="font-semibold text-slate-800">{clientName}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">품목</span><span className="text-right">{productName}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">수량</span><span>{count.toLocaleString()}개</span></div>
+            <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="font-semibold text-slate-700">청구금액</span><span className="font-bold text-[#1E3A8A]">{won(amount)} <span className="font-normal text-slate-400">(부가세 포함)</span></span></div>
+          </div>
+
+          <Field label="승인 링크">
+            <div className="flex gap-2">
+              <input readOnly value={link} className={inputCls + " flex-1"} onFocus={(e) => e.target.select()} />
+              <button onClick={() => copy(link, "link")} className="px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold whitespace-nowrap">{copied === "link" ? "✅ 복사됨" : "링크 복사"}</button>
+            </div>
+          </Field>
+
+          <Field label="안내 문구 (카톡·문자 붙여넣기용)">
+            <textarea readOnly rows={16} value={message} className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y bg-slate-50" onFocus={(e) => e.target.select()} />
+          </Field>
+
+          <button onClick={() => copy(message, "msg")} className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold">{copied === "msg" ? "✅ 복사되었습니다" : "💬 안내 문구 전체 복사"}</button>
+          <p className="text-[11px] text-slate-400">복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onUpdate, onClose, readOnly }) {
   const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
   const matchedProduct = (products || []).find((p) => p.name === sample.productName);
@@ -6814,6 +6899,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
+  const [showApprovalSend, setShowApprovalSend] = useState(false); // 📲 고객 승인링크 발송 모달
   const [showSendModal, setShowSendModal] = useState(false);
   const sendComplete = (channel) => {
     // 발송완료 처리시 고객확인 자동체크 + 진행단계도 "발송"으로 전환하며 담당자·일시를 statusLogs에 기록
@@ -6855,6 +6941,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
           {onUpdate && !readOnly && (
             <button onClick={handleSaveClick} className="px-4 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 whitespace-nowrap">{savedFlash ? "✅ 저장되었습니다" : "💾 저장"}</button>
           )}
+          <button onClick={() => setShowApprovalSend(true)} className="px-4 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📲 고객 승인링크</button>
           <button onClick={() => { persistToSample(); window.print(); }} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
           {onUpdate && <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">🚀 발송완료</button>}
         </div>
@@ -6864,6 +6951,9 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
       )}
       {showSendModal && (
         <SendCompleteModal onClose={() => setShowSendModal(false)} onConfirm={sendComplete} />
+      )}
+      {showApprovalSend && (
+        <SampleApprovalSendModal sample={sample} kind="sample" qty={qty} grandTotal={grandTotal} onClose={() => setShowApprovalSend(false)} />
       )}
       {showStockPicker && (
         <StockPickerModal stock={sampleStock} productName={productName} onClose={() => setShowStockPicker(false)} onPick={pickStockForInvoice} />
@@ -7114,6 +7204,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
   };
   // 🚀 발송완료 — 일반 인보이스(SampleInvoiceModal)의 sendComplete와 같은 패치에 진행단계(status)까지 함께 갱신한다.
   // SAMPLE_STATUS_LABELS["발송"]이 곧 "🚚 발송완료"이므로, 진행단계 값으로는 "발송"을 넣는 것이 이 시스템의 정식 표기다.
+  const [showApprovalSend, setShowApprovalSend] = useState(false); // 📲 고객 승인링크 발송 모달
   const [showSendModal, setShowSendModal] = useState(false);
   const sendComplete = (channel) => {
     if (onUpdate) onUpdate(sample, {
@@ -7145,6 +7236,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
           {onUpdate && !readOnly && (
             <button onClick={handleSaveClick} className="bg-white hover:bg-slate-50 text-indigo-700 border border-indigo-300 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap">{savedFlash ? "✅ 저장되었습니다" : "💾 저장"}</button>
           )}
+          <button onClick={() => setShowApprovalSend(true)} className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 whitespace-nowrap">📲 고객 승인링크</button>
           <button onClick={() => { persistToSample(); window.print(); }} className="bg-blue-900 hover:bg-blue-950 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 whitespace-nowrap">🖨️ 인쇄 / PDF로 저장</button>
           {onUpdate && (
             <button onClick={() => setShowSendModal(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 whitespace-nowrap">🚀 발송완료</button>
@@ -7153,6 +7245,9 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
       </div>
       {showSendModal && (
         <SendCompleteModal onClose={() => setShowSendModal(false)} onConfirm={sendComplete} />
+      )}
+      {showApprovalSend && (
+        <SampleApprovalSendModal sample={sample} kind="ct" qty={qty} grandTotal={grandTotal} expectedDate={completionDate} onClose={() => setShowApprovalSend(false)} />
       )}
       {savedFlash && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-emerald-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg shadow-lg no-print">✅ 성공적으로 저장되었습니다.</div>
@@ -10935,6 +11030,125 @@ function ContractOnlySignPage({ clientId }) {
 }
 
 // #고객동의?건=<id> 해시에서 인보이스 ID를 뽑아낸다(고객이 받는 링크)
+/* 고객용 샘플 인보이스 열람·승인 페이지 (일반/CT 공용)
+   링크: /agree?type=sample&id=<샘플ID> · /agree?type=ct&id=<샘플ID>
+   ⚠️ 샘플 인보이스 서식(SampleInvoiceModal/CtSampleInvoiceModal)은 좌측 편집폼이 붙은 관리자 모달이라
+   그대로 재사용하면 고객에게 편집 UI가 노출된다. 그래서 여기서는 readOnly로 띄우고
+   onUpdate를 넘기지 않아(=저장 불가) 조회 전용으로만 동작시킨다. */
+function SampleApprovalPage({ sampleId, kind }) {
+  const [sample, setSample] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [agree, setAgree] = useState(false);
+  const [signerName, setSignerName] = useState("");
+  const [signature, setSignature] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const isCt = kind === "ct";
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!FIREBASE_ENABLED || !db) { setError("문서 저장소에 연결할 수 없습니다."); setLoading(false); return; }
+        const snap = await db.collection(COLLECTIONS.samples).doc(sampleId).get();
+        if (!alive) return;
+        if (!snap.exists) { setError("요청하신 문서를 찾을 수 없습니다. 링크를 다시 확인해 주세요."); setLoading(false); return; }
+        const rec = { id: snap.id, ...snap.data() };
+        setSample(rec);
+        setSignerName(rec.clientCeo || "");
+        if (rec.consentStatus === "승인완료") setDone(true);
+        setLoading(false);
+      } catch (e) {
+        console.error(e);
+        if (alive) { setError("문서를 불러오는 중 오류가 발생했습니다."); setLoading(false); }
+      }
+    })();
+    return () => { alive = false; };
+  }, [sampleId]);
+
+  const canSubmit = agree && !!signature && signerName.trim() && !submitting;
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    const patch = {
+      consentStatus: "승인완료",
+      consentAt: nowDateTimeStr(),
+      consentSignerName: signerName.trim(),
+      consentSignature: signature,
+    };
+    try {
+      await fsUpdate(COLLECTIONS.samples, sampleId, patch);
+      setSample((prev) => ({ ...prev, ...patch })); // 관리자 목록은 fsSubscribe로 실시간 갱신
+      setDone(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (e) {
+      console.error(e);
+      alert("승인 저장에 실패했습니다. 통신 상태를 확인한 뒤 다시 시도해 주세요.");
+    }
+    setSubmitting(false);
+  };
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-slate-400">문서를 불러오는 중입니다...</div>;
+  if (error) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+      <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-md text-sm text-slate-600 text-center">{error}</div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-100 pb-10">
+      <div className="no-print bg-[#1E3A8A] text-white px-4 py-3 sticky top-0 z-40 shadow">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-bold truncate">㈜비케이브로 · {isCt ? "CT 맞춤제작 샘플" : "일반 샘플"} 인보이스</div>
+            <div className="text-[11px] text-white/70 truncate">{sample.clientName || ""} 貴中</div>
+          </div>
+          {done && <span className="text-[11px] bg-emerald-500 px-2.5 py-1 rounded-full whitespace-nowrap shrink-0">✅ 승인 완료</span>}
+        </div>
+      </div>
+
+      {done && (
+        <div className="no-print max-w-5xl mx-auto px-4 pt-4">
+          <div className="bg-white border-2 border-emerald-500 rounded-xl p-5 text-center">
+            <div className="text-lg font-bold text-emerald-700 mb-1">샘플 인보이스 승인이 정상 완료되었습니다.</div>
+            <div className="text-xs text-slate-500 mb-1">승인 일시 : {sample.consentAt || "-"} · 승인자 : {sample.consentSignerName || "-"}</div>
+            <div className="text-xs text-slate-500 mb-3">{isCt ? "입금 확인 즉시 현지 공장에 맞춤 제작이 투입됩니다." : "입금 확인 후 즉시 출고가 진행됩니다."}</div>
+            <button onClick={() => window.print()} className="bg-[#1E3A8A] text-white text-sm font-semibold px-5 py-2.5 rounded-lg hover:opacity-90">📄 PDF 다운로드 / 인쇄</button>
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-5xl mx-auto px-4 py-4">
+        {isCt
+          ? <CtSampleInvoiceModal sample={sample} products={[]} proposals={[]} supplierLogo="" onClose={() => {}} readOnly />
+          : <SampleInvoiceModal sample={sample} products={[]} proposals={[]} sampleStock={[]} supplierLogo="" onClose={() => {}} readOnly />}
+      </div>
+
+      {!done && (
+        <div className="no-print max-w-5xl mx-auto px-4">
+          <div className="bg-white rounded-xl shadow-lg border border-slate-200 p-5">
+            <div className="text-sm font-bold text-slate-800 mb-3">🚀 샘플 인보이스 승인</div>
+            <label className="flex items-start gap-2 mb-3 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
+              <span className="text-xs text-slate-700">샘플 내역(<b>품목, 수량, 청구금액</b>)을 확인하였으며 {isCt ? "CT 맞춤제작 진행" : "샘플 발송"}에 동의합니다.</span>
+            </label>
+            <Field label="승인자 성함 (대표자/담당자)">
+              <input className={inputCls} value={signerName} onChange={(e) => setSignerName(e.target.value)} placeholder="예: 홍길동" />
+            </Field>
+            <div className="text-xs font-semibold text-slate-500 mt-3 mb-1.5">서명 방식 선택</div>
+            <SignaturePad onChange={setSignature} />
+            <button onClick={submit} disabled={!canSubmit}
+              className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold py-3 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed">
+              {submitting ? "승인 처리 중..." : "🚀 샘플 인보이스 승인 완료"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* 고객용 링크 라우팅 — 두 가지 형식을 모두 인식한다.
    ① 정식: /agree?type=contract&clientId=XXX  또는 ?type=invoice&invoiceId=XXX
    ② 구버전 해시: #계약서서명?업체=XXX / #고객동의?건=XXX (이미 발송한 링크 호환) */
@@ -10944,6 +11158,7 @@ function parseCustomerRoute() {
     const type = (q.get("type") || "").toLowerCase();
     if (type === "contract" && q.get("clientId")) return { kind: "contract", id: q.get("clientId") };
     if (type === "invoice" && (q.get("invoiceId") || q.get("id"))) return { kind: "invoice", id: q.get("invoiceId") || q.get("id") };
+    if ((type === "sample" || type === "ct") && q.get("id")) return { kind: type, id: q.get("id") }; // 샘플/CT 샘플 인보이스 승인
   } catch (e) { /* URLSearchParams 미지원 환경은 해시로 폴백 */ }
   const raw = decodeURIComponent(window.location.hash || "").trim();
   const mc = /^#계약서서명\?업체=(.+)$/.exec(raw);
@@ -11234,6 +11449,9 @@ function Root() {
   }
   if (customerRoute.kind === "contract") {
     return <ContractOnlySignPage clientId={customerRoute.id} />;
+  }
+  if (customerRoute.kind === "sample" || customerRoute.kind === "ct") {
+    return <SampleApprovalPage sampleId={customerRoute.id} kind={customerRoute.kind} />;
   }
   if (FIREBASE_ENABLED && authError) {
     return <div className="min-h-screen flex items-center justify-center bg-[#F5F7FA] p-6"><div className="bg-white border border-red-200 rounded-xl p-6 max-w-md text-sm text-red-600">{authError}</div></div>;
