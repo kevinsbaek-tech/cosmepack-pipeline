@@ -8944,6 +8944,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     if (!window.confirm(`"${iv.clientName}" 인보이스(${iv.code})를 삭제할까요?`)) return;
     setInvoiceList((prev) => prev.filter((x) => x.id !== iv.id));
     try { if (FIREBASE_ENABLED && typeof iv.id === "string") await fsDelete(COLLECTIONS.invoices, iv.id); } catch (e) { console.error(e); }
+    // 원본 제안서의 검토상태 재판정 — 샘플이 남아있으면 [샘플진행], 아무 연결도 없으면 [발송완료]로 복구
+    await restoreProposalStatusAfterUnlink(iv.proposalId, { excludeInvoiceId: iv.id });
   };
   const [productToView, setProductToView] = useState(null);
   // 날짜별(YYYYMMDD) 제안번호 순번 카운터. useState가 아닌 ref를 쓰는 이유:
@@ -9637,10 +9639,38 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       }
     }
   };
+  // 연결된 샘플/인보이스가 삭제되어 제안서와의 연결이 끊겼을 때, "남아있는 연결"을 다시 판정해 검토상태를 되돌린다.
+  //   · 인보이스가 아직 남아있음 → [인보이스] 유지
+  //   · 샘플만 남아있음         → [샘플진행] 유지
+  //   · 연결이 하나도 없음      → [발송완료]로 복구  ← 이것이 이 함수의 핵심 목적
+  // ⚠️ 삭제 직후엔 setState(setSampleList/setInvoiceList)가 아직 반영되지 않았을 수 있으므로,
+  //    방금 지운 건은 excludeSampleId/excludeInvoiceId로 목록에서 직접 제외하고 계산한다.
+  // ⚠️ 자동 전환으로 붙은 상태([샘플진행]/[인보이스])일 때만 손댄다 —
+  //    [긴급승인]·[고객승인완료]처럼 사람이 판단해 붙인 상태는 절대 되돌리지 않는다.
+  const restoreProposalStatusAfterUnlink = async (proposalId, opts) => {
+    if (!proposalId) return;
+    const { excludeSampleId, excludeInvoiceId } = opts || {};
+    const target = (proposalList || []).find((p) => p && String(p.id) === String(proposalId));
+    if (!target) return;
+    const current = getReviewStatus(target);
+    if (current !== "샘플진행" && current !== "인보이스") return;
+    const remainSamples = (sampleList || []).filter(
+      (s) => s && String(s.linkedProposalId) === String(proposalId) && String(s.id) !== String(excludeSampleId)
+    );
+    const remainInvoices = (invoiceList || []).filter(
+      (iv) => iv && String(iv.proposalId) === String(proposalId) && String(iv.id) !== String(excludeInvoiceId)
+    );
+    const next = remainInvoices.length > 0 ? "인보이스" : remainSamples.length > 0 ? "샘플진행" : "발송완료";
+    if (next === current) return; // 바뀔 게 없으면 불필요한 쓰기를 하지 않는다
+    await updateReviewStatus(target, next);
+    setToast(`제안서 ${target.code || ""} 검토상태를 [${current}] → [${next}]로 되돌렸습니다.`);
+  };
   const deleteSample = async (sample) => {
     if (!window.confirm("해당 샘플 요청 항목을 삭제하시겠습니까?")) return;
     setSampleList((prev) => prev.filter((s) => s.id !== sample.id));
     try { if (FIREBASE_ENABLED && typeof sample.id === "string") await fsDelete(COLLECTIONS.samples, sample.id); } catch (e) { console.error(e); }
+    // 이 샘플이 제안서에서 파생된 건이라면, 남은 연결을 재판정해 검토상태를 복구한다(연결이 모두 사라졌으면 [발송완료])
+    await restoreProposalStatusAfterUnlink(sample.linkedProposalId, { excludeSampleId: sample.id });
   };
   // 샘플 진행건 특이사항/소통 메모 — 작성자+작성일시 자동기록, 배열로 누적
   const addSampleMemo = async (sample, text) => {
