@@ -1520,6 +1520,20 @@ const CONTRACT_ARTICLES = [
   { title: "제12조 (관할법원)", body: '본 계약과 관련한 분쟁의 관할법원은 "을"의 본사 소재지 관할 법원(수원지방법원 고양지원)으로 한다.' },
 ];
 
+/* 저장된 계약서와 코드 기본값(CONTRACT_ARTICLES)을 병합한다.
+   ⚠️ 조문 본문이 비어있던 구버전에서 인보이스를 한 번이라도 저장했다면, 그 "빈 조문 12개"가 DB에 남아
+   그대로 불러와지면서 화면이 텅 비어 보인다. 그래서 단순히 "저장본이 있으면 저장본"이 아니라,
+   **조문별로 저장본 내용이 실제로 있을 때만** 저장본을 쓰고 비어있으면 코드 기본값(원문)으로 채운다. */
+function mergeContractArticles(stored) {
+  const list = Array.isArray(stored) ? stored : [];
+  return CONTRACT_ARTICLES.map((def, i) => {
+    const s = list[i] || {};
+    const body = typeof s.body === "string" && s.body.trim() ? s.body : def.body;
+    const title = typeof s.title === "string" && s.title.trim() ? s.title : def.title;
+    return { title, body };
+  });
+}
+
 const TERMS = [
   "원화 가격은 부가세 별도 금액입니다.",
   "본 견적은 상품대금 + 국제 운송료 + 관세 + 기타 수입부대비용이 모두 포함된 인천항 도착 기준 금액입니다. 단, 인천항 도착(통관 완료) 후 고객사 지정 창고까지의 국내 내륙 운송비는 별도이며, 요청 시 지정 장소까지의 운송을 실비로 대행해 드릴 수 있습니다.",
@@ -2806,7 +2820,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   const [supplier, setSupplier] = useState(SUPPLIER);
   // 인보이스 모드에서만 쓰는 문서 탭 — "invoice"(인보이스 서식) | "contract"(화장품용기 공급계약서)
   const [docTab, setDocTab] = useState("invoice");
-  const [contractArticles, setContractArticles] = useState(CONTRACT_ARTICLES);
+  const [contractArticles, setContractArticles] = useState(mergeContractArticles(null));
   const [contractDate, setContractDate] = useState(todayDisplay()); // 계약체결일자
   const [clientCeo, setClientCeo] = useState(""); // (갑) 대표자명
   const [clientName, setClientName] = useState("");
@@ -2820,7 +2834,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setSupplier(SUPPLIER);
     setClientName(data.clientName || "");
     setDocTab("invoice"); // 모달을 새로 열 때는 항상 인보이스 탭부터
-    setContractArticles((data.contractArticles && data.contractArticles.length) ? data.contractArticles : CONTRACT_ARTICLES);
+    setContractArticles(mergeContractArticles(data.contractArticles));
     setContractDate(data.contractDate || todayDisplay());
     setClientCeo(data.clientCeo || "");
     setValidUntil(data.validUntil || "");
@@ -2881,56 +2895,75 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4" id="pdf-preview-overlay">
-      <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "880px", maxWidth: "880px" }}>
-        <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">{data.readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다"}</span>
-        <div className="flex items-center gap-2">
+    <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto px-4 pb-8" id="pdf-preview-overlay">
+      {/* ── 상단 고정 헤더 바 ──────────────────────────────────────────────
+          예전엔 [안내문구 + 버튼줄]과 [서식 탭줄]이 별개 블록이라 버튼이 많아지면
+          880px 폭 안에서 줄바꿈되며 세로로 찌그러지고, 탭줄이 본문 위에 겹쳐 보였다.
+          → 화면 폭 전체를 쓰는 sticky 단일 바로 통합하고, 모든 그룹에 flex-row +
+          whitespace-nowrap + shrink-0을 걸어 어떤 폭에서도 가로 한 줄을 유지시킨다. */}
+      <div className="no-print sticky top-0 z-50 -mx-4 mb-4 bg-slate-900 text-white px-6 py-3 flex flex-row items-center justify-between gap-4 border-b border-slate-700 shadow-lg">
+
+        {/* 1) 좌측: 제목 + 서식 전환 세그먼트 탭 */}
+        <div className="flex flex-row items-center gap-4 shrink-0 whitespace-nowrap">
+          <span className="font-bold text-base text-slate-100 flex items-center gap-1.5">
+            {isInvoice ? "📄 인보이스 & 계약서" : "📄 제품공급제안서"}
+          </span>
+          {isInvoice && (
+            <div className="flex flex-row bg-slate-800 p-1 rounded-lg border border-slate-700">
+              {[["invoice", "📄 인보이스 서식"], ["contract", "📜 공급계약서 서식"]].map(([key, label]) => (
+                <button key={key} onClick={() => setDocTab(key)}
+                  className={"px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap " + (docTab === key ? "bg-indigo-600 text-white shadow" : "text-slate-300 hover:text-white")}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 2) 중앙: 발송상태 배지 + 편집 안내(폭이 부족하면 안내문구부터 숨겨 버튼을 보호) */}
+        <div className="flex flex-row items-center gap-2 min-w-0">
           {!data.minimalHeader && data.id && (
             data.sentBy ? (
-              <span className="text-xs px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 font-medium whitespace-nowrap">
-                [발송완료] {data.sentChannel || "-"} | {formatCreatedAt(data.sentAt)}
+              <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700 font-medium whitespace-nowrap">
+                ✅ 발송완료 ({data.sentChannel || "-"} | {formatCreatedAt(data.sentAt)})
               </span>
             ) : (
-              <span className="text-xs px-3 py-2 rounded-lg bg-slate-100 text-slate-500 font-medium whitespace-nowrap">[미발송]</span>
+              <span className="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-600 font-medium whitespace-nowrap">미발송</span>
             )
           )}
-          <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white text-slate-600 text-sm font-medium hover:bg-slate-50">닫기</button>
+          <span className="text-xs text-slate-400 whitespace-nowrap hidden xl:inline">
+            {data.readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다"}
+          </span>
+        </div>
+
+        {/* 3) 우측: 액션 버튼 그룹 */}
+        <div className="flex flex-row items-center gap-2 whitespace-nowrap shrink-0">
           {!data.readOnly && onSave && data.id && (
-            <button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 shadow-sm whitespace-nowrap">
-              {savedFlash ? "✅ 저장되었습니다" : `💾 ${isInvoice ? "인보이스" : "제안서"} 저장`}
+            <button onClick={handleSave} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">
+              {savedFlash ? "✅ 저장되었습니다" : "💾 저장"}
             </button>
           )}
           {!data.minimalHeader && !isInvoice && (
-            <button onClick={handlePrint} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">🖨 인쇄 / PDF로 저장</button>
+            <button onClick={handlePrint} className="bg-blue-800 hover:bg-blue-900 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">🖨 인쇄 / PDF</button>
           )}
-          {/* 인보이스 모드에서는 인보이스/계약서를 각각 단독 출력할 수 있게 버튼을 분리한다 */}
           {!data.minimalHeader && isInvoice && (
             <>
-              <button onClick={() => printDoc("invoice")} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📄 인보이스 인쇄 / PDF</button>
-              <button onClick={() => printDoc("contract")} className="px-4 py-2 rounded-lg bg-slate-700 text-white text-sm font-medium hover:opacity-90 whitespace-nowrap">📜 공급계약서 인쇄 / PDF</button>
+              <button onClick={() => printDoc("invoice")} className="bg-blue-800 hover:bg-blue-900 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">📄 인보이스 인쇄</button>
+              <button onClick={() => printDoc("contract")} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">📜 계약서 인쇄</button>
             </>
           )}
           {!data.minimalHeader && onSendComplete && data.id && (
-            <button onClick={() => setShowSendModal(true)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90">🚀 발송완료</button>
+            <button onClick={() => setShowSendModal(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">🚀 발송완료</button>
           )}
+          <button onClick={onClose} className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3 py-2 rounded-lg border border-slate-600">✕ 닫기</button>
         </div>
       </div>
+
       {showSendModal && (
         <SendCompleteModal
           onClose={() => setShowSendModal(false)}
           onConfirm={(channel) => { onSendComplete(data.id, channel); setShowSendModal(false); }}
         />
-      )}
-
-      {isInvoice && (
-        <div className="no-print mx-auto mb-3 flex gap-2" style={{ width: "880px", maxWidth: "880px" }}>
-          {[["invoice", "📄 인보이스 서식"], ["contract", "📜 공급계약서 서식"]].map(([key, label]) => (
-            <button key={key} onClick={() => setDocTab(key)}
-              className={"px-4 py-2 rounded-lg text-sm font-semibold border " + (docTab === key ? "bg-white text-[#1E3A8A] border-white shadow" : "bg-white/20 text-white border-white/30 hover:bg-white/30")}>
-              {label}
-            </button>
-          ))}
-        </div>
       )}
 
       <div className="proposal-modal-content mx-auto bg-white shadow-xl p-10 text-sm" id="pdf-page" style={{ color: DARK, width: "880px", maxWidth: "880px", display: isInvoice && docTab === "contract" ? "none" : "block" }}>
@@ -3050,6 +3083,15 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           style={{ color: DARK, width: "880px", maxWidth: "880px", display: docTab === "contract" ? "block" : "none" }}>
           <fieldset disabled={!!data.readOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
 
+            {!data.readOnly && (
+              <div className="no-print flex justify-end mb-2">
+                <button type="button"
+                  onClick={() => { if (window.confirm("모든 조문을 표준 계약서 원문으로 되돌립니다. 이 인보이스에서 직접 수정한 조문 내용은 사라집니다. 계속할까요?")) setContractArticles(mergeContractArticles(null)); }}
+                  className="text-[11px] px-2.5 py-1 rounded border border-slate-300 text-slate-500 hover:bg-slate-50">
+                  ↺ 표준 계약서 원문으로 되돌리기
+                </button>
+              </div>
+            )}
             <div className="text-center mb-8">
               <h1 className="text-2xl font-bold tracking-[0.3em]" style={{ color: DARK }}>화장품용기 공급계약서</h1>
             </div>
