@@ -2053,11 +2053,12 @@ const STATUS_COLORS = {
 
 // 직원 작성 → 대표님 검토/수정 → 최종 승인 → 발송 결재 워크플로우 (제안서 진행상태(STATUS_OPTIONS)와는 별개의 축)
 // "샘플진행"/"인보이스"는 각각 4단계 샘플요청·5단계 인보이스발행 액션이 일어날 때 자동으로만 전환되는 상태 — 드롭다운으로 직접 선택할 수는 없다(발송완료와 동일한 방식)
-const REVIEW_STATUS_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료", "발송완료", "샘플진행", "인보이스"];
+const REVIEW_STATUS_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료", "발송완료", "샘플진행", "인보이스", "고객동의완료"];
 // 목록 드롭다운에서 각 권한이 "직접 선택"할 수 있는 상태 — 발송완료/샘플진행/인보이스는 그 누구도 드롭다운으로 선택 불가(오직 해당 액션 버튼 경로로만 전환됨)
 const REVIEW_STATUS_STAFF_OPTIONS = ["작성중", "검토대기"];
 const REVIEW_STATUS_ADMIN_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료"];
-const REVIEW_STATUS_AUTO_ONLY = ["발송완료", "샘플진행", "인보이스"]; // 드롭다운에서 절대 선택 불가, 읽기전용 배지로만 표시
+// 고객동의완료는 고객이 서명 페이지에서 직접 서명해야만 붙는 상태라 직원이 임의로 선택할 수 없다
+const REVIEW_STATUS_AUTO_ONLY = ["발송완료", "샘플진행", "인보이스", "고객동의완료"]; // 드롭다운에서 절대 선택 불가, 읽기전용 배지로만 표시
 // ===== 업무지시 & 소통방 =====
 const TASK_STATUS_OPTIONS = ["요청", "진행중", "완료"];
 const TASK_STATUS_LABELS = { "요청": "📥 요청", "진행중": "⏳ 진행중", "완료": "✅ 완료" };
@@ -2158,6 +2159,7 @@ const REVIEW_STATUS_COLORS = {
   "발송완료": "bg-purple-50 text-purple-700",
   "샘플진행": "bg-blue-100 text-blue-700",
   "인보이스": "bg-purple-100 text-purple-700",
+  "고객동의완료": "bg-emerald-500 text-white",
 };
 // 작성자/발송자 등 사람 이름 뒤에 직급이 붙어 저장된 경우(예: "이수림 과장") 화면에는 실명만 깔끔하게 보여준다.
 // 저장된 원본 값은 건드리지 않고 표시할 때만 잘라내는 방식 — 계정관리에서 이름을 고치면 그게 바로 반영되고, 이 함수는 옛 기록에 남은 직급 접미사만 화면에서 정리해준다.
@@ -2881,6 +2883,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   };
   const handlePrint = () => printDoc(isInvoice ? docTab : "invoice");
   // 계약서 하단 날짜 — "2026-08-15" → "2026 년 08 월 15 일" (계약서 서식 관례대로 자간을 띄워 표기)
+  /* 고객 동의 페이지처럼 외부에서 어떤 서식을 보여줄지 지정할 수 있게 한다.
+     "both"면 인보이스와 계약서를 위아래로 모두 펼쳐 한 번에 검토하게 된다. */
+  const effDocTab = data.docTabOverride || docTab;
   const formattedContractDate = (() => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(contractDate || "");
     return m ? `${m[1]} 년   ${m[2]} 월   ${m[3]} 일` : (contractDate || "");
@@ -2893,13 +2898,13 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto px-4 pb-8" id="pdf-preview-overlay">
+    <div className={data.consentView ? "w-full" : "fixed inset-0 bg-black/50 z-50 overflow-y-auto px-4 pb-8"} id="pdf-preview-overlay">
       {/* ── 상단 고정 헤더 바 ──────────────────────────────────────────────
           예전엔 [안내문구 + 버튼줄]과 [서식 탭줄]이 별개 블록이라 버튼이 많아지면
           880px 폭 안에서 줄바꿈되며 세로로 찌그러지고, 탭줄이 본문 위에 겹쳐 보였다.
           → 화면 폭 전체를 쓰는 sticky 단일 바로 통합하고, 모든 그룹에 flex-row +
           whitespace-nowrap + shrink-0을 걸어 어떤 폭에서도 가로 한 줄을 유지시킨다. */}
-      <div className="no-print sticky top-0 z-50 -mx-4 mb-4 bg-slate-900 text-white px-6 py-3 flex flex-row items-center justify-between gap-4 border-b border-slate-700 shadow-lg">
+      <div className={"no-print sticky top-0 z-50 -mx-4 mb-4 bg-slate-900 text-white px-6 py-3 flex-row items-center justify-between gap-4 border-b border-slate-700 shadow-lg " + (data.consentView ? "hidden" : "flex")}>
 
         {/* 1) 좌측: 제목 + 서식 전환 세그먼트 탭 */}
         <div className="flex flex-row items-center gap-4 shrink-0 whitespace-nowrap">
@@ -2929,6 +2934,11 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
               <span className="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-600 font-medium whitespace-nowrap">미발송</span>
             )
           )}
+          {isInvoice && data.consentStatus === "동의완료" && (
+            <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-white font-semibold whitespace-nowrap">
+              ✅ 고객동의완료 ({data.consentAt || "-"})
+            </span>
+          )}
           <span className="text-xs text-slate-400 whitespace-nowrap hidden xl:inline">
             {data.readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다"}
           </span>
@@ -2943,6 +2953,20 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           )}
           {!data.minimalHeader && !isInvoice && (
             <button onClick={handlePrint} className="bg-blue-800 hover:bg-blue-900 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">🖨 인쇄 / PDF</button>
+          )}
+          {isInvoice && data.id && (
+            <button
+              onClick={() => {
+                const link = `${window.location.origin}${window.location.pathname}#고객동의?건=${data.id}`;
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  navigator.clipboard.writeText(link).then(() => alert("고객 동의 링크가 복사되었습니다.\n\n" + link));
+                } else {
+                  window.prompt("아래 링크를 복사해 고객에게 보내주세요.", link);
+                }
+              }}
+              className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">
+              🔗 고객 서명링크
+            </button>
           )}
           {!data.minimalHeader && isInvoice && (
             <>
@@ -2965,7 +2989,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
       )}
 
       {/* ===== 인보이스 모드: 좌측 편집 폼 + 우측 A4 미리보기 2열 레이아웃 ===== */}
-      <div className={isInvoice ? "flex flex-row gap-6 p-6 items-start overflow-hidden" : ""}>
+      <div className={isInvoice && !data.consentView ? "flex flex-row gap-6 p-6 items-start overflow-hidden" : ""}>
       {isInvoice && !data.readOnly && (
         <aside className="pv-left no-print w-96 shrink-0 bg-white rounded-xl shadow-xl p-5 overflow-y-auto pr-3"
           style={{ maxHeight: "calc(100vh - 120px)", minHeight: 0 }}>
@@ -3023,11 +3047,11 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
 
       {/* ⚠️ items-start 필수: flex 컨테이너의 기본 align-items는 stretch라 흰 용지(자식)의 높이가
           패널 높이로 고정돼버리고, 넘치는 본문이 용지 밖 회색 배경 위로 삐져나온다(계약서 배경 쪼개짐 버그의 원인) */}
-      <div className={isInvoice ? "pv-right flex-1 min-w-0 overflow-y-auto bg-slate-100 rounded-xl p-6 flex justify-center items-start" : ""}
-        style={isInvoice ? { maxHeight: "calc(100vh - 120px)", minHeight: 0 } : undefined}>
+      <div className={isInvoice && !data.consentView ? "pv-right flex-1 min-w-0 overflow-y-auto bg-slate-100 rounded-xl p-6 flex justify-center items-start" : (data.consentView ? "space-y-6" : "")}
+        style={isInvoice && !data.consentView ? { maxHeight: "calc(100vh - 120px)", minHeight: 0 } : undefined}>
 
       <div className="proposal-modal-content w-full max-w-4xl min-h-full mx-auto bg-white text-black p-10 shadow-lg border border-slate-200 text-sm" id="pdf-page"
-        style={{ color: DARK, display: isInvoice && docTab === "contract" ? "none" : "block" }}>
+        style={{ color: DARK, display: isInvoice && effDocTab === "contract" ? "none" : "block" }}>
       <fieldset disabled={!!data.readOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
 
         {/* 1) 대타이틀 + 로고 */}
@@ -3145,7 +3169,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
       {isInvoice && (
         <div id="contract-page"
           className="contract-paper proposal-modal-content w-full max-w-4xl mx-auto p-12 bg-white text-slate-900 shadow-md border border-slate-200 font-sans text-xs leading-relaxed whitespace-normal break-words"
-          style={{ display: docTab === "contract" ? "block" : "none" }}>
+          style={{ display: (effDocTab === "contract" || effDocTab === "both") ? "block" : "none" }}>
 
           <h1 className="text-3xl font-extrabold text-center tracking-widest mb-10 pb-4 border-b-2 border-black">
             화 장 품 용 기 &nbsp; 공 급 계 약 서
@@ -3246,8 +3270,14 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
               <div>상호 : <span className="font-bold ml-2">{clientName || ""}</span></div>
               <div>주소 : <span className="ml-2">{clientAddress || ""}</span></div>
               <div className="flex items-center mt-6">
-                대표자 : <span className="font-bold ml-2 mr-4">{clientCeo || ""}</span> <span className="text-sm">(서명 또는 날인)</span>
+                대표자 : <span className="font-bold ml-2 mr-4">{data.consentSignerName || clientCeo || ""}</span>
+                {data.consentSignature
+                  ? <img src={data.consentSignature} alt="고객 서명" className="h-12 object-contain ml-2 -my-2 select-none" />
+                  : <span className="text-sm">(서명 또는 날인)</span>}
               </div>
+              {data.consentAt && (
+                <div className="text-[11px] text-emerald-700 mt-2">✅ 전자서명 동의 완료 : {data.consentAt}</div>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -10283,6 +10313,320 @@ function saveAccounts(list) {
   try { localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(list)); } catch (e) { console.error(e); }
 }
 
+/* ===================== 고객용 전자서명 · 동의 페이지 =====================
+   고객은 로그인 없이 링크(#고객동의?건=<인보이스ID>)로 접속한다. Firebase 익명인증은
+   Root에서 이미 끝나 있으므로 문서 조회/서명 저장이 그대로 동작한다.
+   문서(인보이스/계약서) 마크업은 PdfPreview를 그대로 재사용한다 — 별도 사본을 만들면
+   서식을 고칠 때마다 두 곳을 맞춰야 해서 반드시 어긋나기 때문. */
+
+// 서명 패드 — PC 마우스 드래그 + 모바일 터치 + 도장 업로드 + 텍스트 직인 3방식
+function SignaturePad({ onChange }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const [tab, setTab] = useState("draw"); // draw | upload | text
+  const [typedName, setTypedName] = useState("");
+  const [uploaded, setUploaded] = useState("");
+  const [hasDrawn, setHasDrawn] = useState(false);
+
+  // 캔버스를 실제 화면 크기 × devicePixelRatio로 맞춰야 선이 흐려지지 않는다
+  const setupCanvas = () => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const rect = cv.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.max(1, Math.round(rect.width * dpr));
+    cv.height = Math.max(1, Math.round(rect.height * dpr));
+    const ctx = cv.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#111827";
+  };
+  useEffect(() => {
+    if (tab !== "draw") return;
+    setupCanvas();
+    const onResize = () => { setupCanvas(); setHasDrawn(false); };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const posOf = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    const src = e.touches && e.touches.length ? e.touches[0] : e;
+    return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+  };
+  const start = (e) => {
+    e.preventDefault();
+    drawing.current = true;
+    const ctx = canvasRef.current.getContext("2d");
+    const p = posOf(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+  const move = (e) => {
+    if (!drawing.current) return;
+    e.preventDefault(); // 모바일에서 서명 중 화면이 스크롤되는 것을 막는다
+    const ctx = canvasRef.current.getContext("2d");
+    const p = posOf(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    if (!hasDrawn) setHasDrawn(true);
+  };
+  const end = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    if (onChange) onChange(canvasRef.current.toDataURL("image/png"));
+  };
+  const clearCanvas = () => {
+    const cv = canvasRef.current;
+    cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+    setHasDrawn(false);
+    if (onChange) onChange("");
+  };
+
+  // 이름을 붉은 원형 직인 스탬프 이미지로 변환
+  const makeTextStamp = (name) => {
+    const text = (name || "").trim();
+    if (!text) return "";
+    const size = 220;
+    const cv = document.createElement("canvas");
+    cv.width = size; cv.height = size;
+    const ctx = cv.getContext("2d");
+    ctx.strokeStyle = "#C0392B"; ctx.fillStyle = "#C0392B";
+    ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2 - 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2 - 22, 0, Math.PI * 2); ctx.stroke();
+    const chars = text.slice(0, 4);
+    const fontSize = chars.length <= 2 ? 74 : chars.length === 3 ? 60 : 52;
+    ctx.font = `bold ${fontSize}px "Malgun Gothic", "Apple SD Gothic Neo", serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    if (chars.length <= 2) {
+      ctx.fillText(chars, size / 2, size / 2 + 2);
+    } else {
+      // 3~4자는 2줄로 나눠 도장처럼 배치
+      const half = Math.ceil(chars.length / 2);
+      ctx.fillText(chars.slice(0, half), size / 2, size / 2 - fontSize * 0.45);
+      ctx.fillText(chars.slice(half), size / 2, size / 2 + fontSize * 0.45);
+    }
+    return cv.toDataURL("image/png");
+  };
+  const applyTextStamp = (v) => {
+    setTypedName(v);
+    if (onChange) onChange(makeTextStamp(v));
+  };
+  const onUpload = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { setUploaded(reader.result); if (onChange) onChange(reader.result); };
+    reader.readAsDataURL(file);
+  };
+
+  const tabCls = (k) => "flex-1 text-xs px-2 py-2 rounded-lg font-semibold border " +
+    (tab === k ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "bg-white border-slate-200 text-slate-600");
+
+  return (
+    <div>
+      <div className="flex gap-1.5 mb-2">
+        <button type="button" onClick={() => { setTab("draw"); if (onChange) onChange(""); }} className={tabCls("draw")}>✍️ 직접 그리기</button>
+        <button type="button" onClick={() => { setTab("upload"); if (onChange) onChange(uploaded || ""); }} className={tabCls("upload")}>🖼️ 도장 업로드</button>
+        <button type="button" onClick={() => { setTab("text"); if (onChange) onChange(makeTextStamp(typedName)); }} className={tabCls("text")}>⌨️ 텍스트 서명</button>
+      </div>
+
+      {tab === "draw" && (
+        <div>
+          <canvas
+            ref={canvasRef}
+            className="w-full bg-white border-2 border-dashed border-slate-300 rounded-lg"
+            style={{ height: "160px", touchAction: "none", cursor: "crosshair" }}
+            onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+            onTouchStart={start} onTouchMove={move} onTouchEnd={end}
+          />
+          <div className="flex items-center justify-between mt-1.5">
+            <span className="text-[11px] text-slate-400">{hasDrawn ? "서명이 입력되었습니다" : "이 영역에 마우스 또는 손가락으로 서명해 주세요"}</span>
+            <button type="button" onClick={clearCanvas} className="text-[11px] text-slate-500 border border-slate-200 rounded px-2 py-1 hover:bg-slate-50">지우기</button>
+          </div>
+        </div>
+      )}
+
+      {tab === "upload" && (
+        <div>
+          <input type="file" accept="image/*" onChange={(e) => onUpload(e.target.files && e.target.files[0])}
+            className="w-full text-xs border border-slate-200 rounded-lg p-2" />
+          {uploaded && <div className="mt-2 flex justify-center bg-white border border-slate-200 rounded-lg p-2"><img src={uploaded} alt="업로드한 도장" className="h-20 object-contain" /></div>}
+          <p className="text-[11px] text-slate-400 mt-1.5">회사 직인·서명 이미지(png, jpg)를 올려주세요.</p>
+        </div>
+      )}
+
+      {tab === "text" && (
+        <div>
+          <input value={typedName} onChange={(e) => applyTextStamp(e.target.value)} placeholder="대표자 성함 (예: 홍길동)"
+            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 outline-none focus:border-[#1E3A8A]" />
+          {typedName.trim() && (
+            <div className="mt-2 flex justify-center bg-white border border-slate-200 rounded-lg p-2">
+              <img src={makeTextStamp(typedName)} alt="텍스트 직인" className="h-20 object-contain" />
+            </div>
+          )}
+          <p className="text-[11px] text-slate-400 mt-1.5">입력한 성함이 붉은 원형 직인으로 자동 변환됩니다.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomerConsentPage({ invoiceId }) {
+  const [invoice, setInvoice] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [mobileTab, setMobileTab] = useState("invoice");
+  const [agreeContract, setAgreeContract] = useState(false);
+  const [agreeInvoice, setAgreeInvoice] = useState(false);
+  const [signerName, setSignerName] = useState("");
+  const [signature, setSignature] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!FIREBASE_ENABLED || !db) { setError("문서 저장소에 연결할 수 없습니다."); setLoading(false); return; }
+        const snap = await db.collection(COLLECTIONS.invoices).doc(invoiceId).get();
+        if (!alive) return;
+        if (!snap.exists) { setError("요청하신 문서를 찾을 수 없습니다. 링크를 다시 확인해 주세요."); setLoading(false); return; }
+        const rec = { id: snap.id, ...snap.data() };
+        setInvoice(rec);
+        setSignerName(rec.clientCeo || "");
+        if (rec.consentStatus === "동의완료") setDone(true);
+        setLoading(false);
+      } catch (e) {
+        console.error(e);
+        if (alive) { setError("문서를 불러오는 중 오류가 발생했습니다."); setLoading(false); }
+      }
+    })();
+    return () => { alive = false; };
+  }, [invoiceId]);
+
+  const canSubmit = agreeContract && agreeInvoice && !!signature && signerName.trim() && !submitting;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    const patch = {
+      consentStatus: "동의완료",
+      consentAt: nowDateTimeStr(),
+      consentSignerName: signerName.trim(),
+      consentSignature: signature, // 계약서 (갑) 서명란에 그대로 합성된다
+      reviewStatus: "고객동의완료",
+    };
+    try {
+      await fsUpdate(COLLECTIONS.invoices, invoiceId, patch);
+      setInvoice((prev) => ({ ...prev, ...patch })); // 관리자 화면은 fsSubscribe가 실시간으로 받아감
+      setDone(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (e) {
+      console.error(e);
+      alert("서명 저장에 실패했습니다. 통신 상태를 확인한 뒤 다시 시도해 주세요.");
+    }
+    setSubmitting(false);
+  };
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-slate-400">문서를 불러오는 중입니다...</div>;
+  if (error) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+      <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-md text-sm text-slate-600 text-center">{error}</div>
+    </div>
+  );
+
+  // PdfPreview를 그대로 재사용하되 readOnly + consentView로 툴바/편집폼 없이 문서만 렌더링
+  const docData = { ...invoice, readOnly: true, consentView: true };
+  const bothDocs = { ...docData, docTabOverride: "both" };
+
+  return (
+    <div className="min-h-screen bg-slate-100">
+      <div className="no-print bg-[#1E3A8A] text-white px-4 py-3 sticky top-0 z-40 shadow">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-bold truncate">㈜비케이브로 · 인보이스 및 공급계약서 동의</div>
+            <div className="text-[11px] text-white/70 truncate">{invoice.clientName || ""} 貴中</div>
+          </div>
+          {done && <span className="text-[11px] bg-emerald-500 px-2.5 py-1 rounded-full whitespace-nowrap shrink-0">✅ 동의 완료</span>}
+        </div>
+      </div>
+
+      {done && (
+        <div className="no-print max-w-7xl mx-auto px-4 pt-4">
+          <div className="bg-white border-2 border-emerald-500 rounded-xl p-5 text-center">
+            <div className="text-lg font-bold text-emerald-700 mb-1">계약 및 인보이스 동의가 정상 완료되었습니다.</div>
+            <div className="text-xs text-slate-500 mb-3">서명 일시 : {invoice.consentAt || "-"} · 서명자 : {invoice.consentSignerName || "-"}</div>
+            <button onClick={() => window.print()} className="bg-[#1E3A8A] text-white text-sm font-semibold px-5 py-2.5 rounded-lg hover:opacity-90">📄 PDF 다운로드 / 인쇄</button>
+          </div>
+        </div>
+      )}
+
+      {/* 모바일: 문서 탭 전환 (lg 이상에서는 좌측에 두 문서를 모두 펼쳐 보여주므로 숨김) */}
+      <div className="no-print lg:hidden max-w-7xl mx-auto px-4 pt-4 flex gap-2">
+        {[["invoice", "📄 인보이스"], ["contract", "📜 공급계약서"]].map(([k, label]) => (
+          <button key={k} onClick={() => setMobileTab(k)}
+            className={"flex-1 text-xs px-3 py-2 rounded-lg font-semibold border " + (mobileTab === k ? "bg-[#1E3A8A] text-white border-[#1E3A8A]" : "bg-white border-slate-200 text-slate-600")}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col lg:flex-row gap-6 items-start">
+        {/* 좌측(PC) / 상단(모바일): 문서 뷰 */}
+        <div className="flex-1 min-w-0 w-full overflow-x-auto">
+          <div className="hidden lg:block"><PdfPreview open data={bothDocs} mode="invoice" onClose={() => {}} /></div>
+          <div className="lg:hidden"><PdfPreview open data={{ ...docData, docTabOverride: mobileTab }} mode="invoice" onClose={() => {}} /></div>
+        </div>
+
+        {/* 우측(PC 고정) / 하단(모바일 고정): 동의 + 서명 */}
+        {!done && (
+          <aside className="no-print w-full lg:w-96 shrink-0 lg:sticky lg:top-20">
+            <div className="bg-white rounded-xl shadow-lg border border-slate-200 p-5">
+              <div className="text-sm font-bold text-slate-800 mb-3">✍️ 전자서명 및 동의</div>
+
+              <label className="flex items-start gap-2 mb-2 cursor-pointer">
+                <input type="checkbox" className="mt-0.5" checked={agreeInvoice} onChange={(e) => setAgreeInvoice(e.target.checked)} />
+                <span className="text-xs text-slate-700">인보이스의 품목·수량·단가 및 <b>총 청구금액</b>을 확인하였으며 이에 동의합니다.</span>
+              </label>
+              <label className="flex items-start gap-2 mb-3 cursor-pointer">
+                <input type="checkbox" className="mt-0.5" checked={agreeContract} onChange={(e) => setAgreeContract(e.target.checked)} />
+                <span className="text-xs text-slate-700"><b>화장품 용기 공급계약서</b> 제1조~제12조 전문을 확인하였으며 계약 체결에 동의합니다.</span>
+              </label>
+
+              <Field label="서명자 성함 (대표자)">
+                <input className={inputCls} value={signerName} onChange={(e) => setSignerName(e.target.value)} placeholder="예: 홍길동" />
+              </Field>
+
+              <div className="text-xs font-semibold text-slate-500 mt-3 mb-1.5">서명 방식 선택</div>
+              <SignaturePad onChange={setSignature} />
+
+              <button onClick={submit} disabled={!canSubmit}
+                className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold py-3 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed">
+                {submitting ? "제출 중..." : "동의 및 서명 제출"}
+              </button>
+              {!canSubmit && !submitting && (
+                <p className="text-[11px] text-slate-400 mt-2 text-center">두 항목 동의 · 성함 입력 · 서명이 모두 완료되면 제출할 수 있습니다.</p>
+              )}
+            </div>
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// #고객동의?건=<id> 해시에서 인보이스 ID를 뽑아낸다(고객이 받는 링크)
+function parseConsentHash() {
+  const raw = decodeURIComponent(window.location.hash || "");
+  const m = /^#고객동의\?건=(.+)$/.exec(raw.trim());
+  return m ? m[1] : "";
+}
+
 function RoleLoginScreen({ accounts, onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -10469,6 +10813,12 @@ function LoginScreen({ onLoggedIn }) {
 }
 
 function Root() {
+  const [consentInvoiceId, setConsentInvoiceId] = useState(parseConsentHash());
+  useEffect(() => {
+    const onHash = () => setConsentInvoiceId(parseConsentHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [checking, setChecking] = useState(FIREBASE_ENABLED);
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState("");
@@ -10549,6 +10899,11 @@ function Root() {
 
   if (checking) {
     return <div className="min-h-screen flex items-center justify-center text-sm text-slate-400">불러오는 중...</div>;
+  }
+  /* 고객용 동의 링크(#고객동의?건=<인보이스ID>)는 로그인 없이 열려야 하므로
+     RoleLoginScreen 게이트보다 먼저 분기한다. Firebase 익명인증은 위 checking 단계에서 끝난 상태. */
+  if (consentInvoiceId) {
+    return <CustomerConsentPage invoiceId={consentInvoiceId} />;
   }
   if (FIREBASE_ENABLED && authError) {
     return <div className="min-h-screen flex items-center justify-center bg-[#F5F7FA] p-6"><div className="bg-white border border-red-200 rounded-xl p-6 max-w-md text-sm text-red-600">{authError}</div></div>;
