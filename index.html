@@ -4823,7 +4823,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
           items={mergedClients.filter((c) => selectedIds.includes(c.id))}
           getLabel={(c) => c.name}
           getSubLabel={(c) => `${c.channel || ""} · 견적이력 ${proposals.filter((p) => p.clientName === c.name).length}건`}
-          confirmText={`선택한 ${selectedIds.length}개 업체를 대표 고객사 1개로 병합할까요? 나머지 업체는 삭제되고, 관련 제안서/샘플 데이터는 전부 대표 고객사로 이전됩니다.`}
+          confirmText={`선택한 ${selectedIds.length}개 업체를 대표 고객사 1개로 병합할까요?\n\n· 대표 업체에 보조 업체의 태그·메모·연락처 정보가 통합됩니다\n· 관련 제안서 / 인보이스 / 샘플의 업체명이 대표 업체명으로 일괄 변경됩니다\n· 보조 업체 데이터는 삭제됩니다 (복구 불가)`}
           onRun={async (items, primaryId) => { await onMergeClients(items, primaryId); setSelectedIds([]); }}
           onClose={() => setShowClientMergeModal(false)}
         />
@@ -9134,32 +9134,78 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     try { if (FIREBASE_ENABLED && typeof f.id === "string") await fsUpdate(COLLECTIONS.factories, f.id, { isKeyFactory: nextVal }); } catch (e) { console.error(e); }
     setToast("✅ 주거래공장 설정이 변경되었습니다.");
   };
-  // 선택한 공장들을 대표공장 1개로 병합 — 서브공장에 연동돼있던 제품(products.factory)을 전부 대표공장 이름으로 이전(Cascade),
-  // 주요 생산 품목 텍스트도 합쳐서 대표공장에 반영한 뒤, 서브공장 레코드는 삭제한다.
+  // 선택한 공장들을 대표 공장 1개로 병합.
+  //   ① 대표에 보조 공장의 태그(합집합) / 위챗방·주요품목(결합) / 메모(결합) / 비어있는 연락처·홈페이지를 통합
+  //   ② 보조 공장에 연동돼있던 제품(products.factory)을 전부 대표 공장명으로 이전(Cascade)
+  //   ③ 보조 공장 레코드 삭제
+  // ⚠️ 대표 갱신 → 제품 이전 → 보조 삭제 순서를 지킨다(중간 실패시 데이터 유실 방지).
   const mergeFactories = async (selectedFactories, primaryId) => {
     const primary = selectedFactories.find((f) => f.id === primaryId);
     const subs = selectedFactories.filter((f) => f.id !== primaryId);
     if (!primary || subs.length === 0) return;
 
-    // 1) 서브공장에 연동된 제품들의 factory 필드를 대표공장 이름으로 일괄 전환
+    /* ── 1) 대표 공장에 보조 공장 정보 통합 ────────────────────────────── */
+    // (a) 태그는 합집합 — 한쪽 태그가 통째로 유실되지 않게 한다
+    const mergedTags = [...new Set([...getFactoryTags(primary), ...subs.flatMap((f) => getFactoryTags(f))])];
+
+    // (b) 주요 생산 품목 — 콤마로 쪼개 중복 제거 후 재결합
+    const mergedMainProducts = [...new Set(
+      [primary.mainProducts, ...subs.map((f) => f.mainProducts)].filter(Boolean).join(",").split(",").map((s) => s.trim()).filter(Boolean)
+    )].join(", ");
+
+    // (c) 위챗 그룹방 — 공장마다 다른 방을 쓰는 경우가 있어 어느 쪽도 버리지 않고 결합한다(중복 제거)
+    const mergedWechat = [...new Set(
+      [primary.wechatGroup, ...subs.map((f) => f.wechatGroup)].map((v) => String(v || "").trim()).filter(Boolean)
+    )].join(" / ");
+
+    // (d) 메모는 출처를 남기고 결합
+    const memoParts = [String(primary.memo || "").trim(), ...subs.map((f) => {
+      const t = String(f.memo || "").trim();
+      return t ? `[병합: ${f.name}] ${t}` : "";
+    })].filter(Boolean);
+    const mergedMemo = [...new Set(memoParts)].join("\n");
+
+    // (e) 연락처·홈페이지는 "대표가 비어있을 때만" 보조값으로 보강 — 기존 값은 덮어쓰지 않는다
+    const isEmptyVal = (v) => v === undefined || v === null || v === "";
+    const FILL_KEYS = ["contact", "websiteUrl"];
+    const filled = {};
+    subs.forEach((f) => {
+      FILL_KEYS.forEach((k) => {
+        if (isEmptyVal(primary[k]) && isEmptyVal(filled[k]) && !isEmptyVal(f[k])) filled[k] = f[k];
+      });
+    });
+
+    const patch = { ...filled, mainProducts: mergedMainProducts, wechatGroup: mergedWechat, memo: mergedMemo, ...buildFactoryTagPatch(mergedTags) };
+
+    // 대표 갱신을 먼저 확정 — 실패하면 보조 공장을 지우지 않고 중단한다
+    if (FIREBASE_ENABLED && typeof primaryId === "string") {
+      try {
+        await fsUpdate(COLLECTIONS.factories, primaryId, patch);
+      } catch (e) {
+        console.error(e);
+        setToast("⚠️ 병합에 실패했습니다. 선택한 공장은 그대로 유지됩니다.");
+        return;
+      }
+    }
+    setFactoriesList((prev) => prev.map((f) => (f.id === primaryId ? { ...f, ...patch } : f)));
+
+    /* ── 2) 제품 DB Cascade — 보조 공장에 연동된 제품의 factory를 대표 공장명으로 전환 ── */
     const subNames = subs.map((f) => f.name);
     const affectedProducts = productsList.filter((p) => subNames.includes(p.factory));
-    setProductsList((prev) => prev.map((p) => (subNames.includes(p.factory) ? { ...p, factory: primary.name } : p)));
+    // 대표 공장에 위챗방이 있으면 제품의 위챗방 정보도 함께 맞춘다(제품 화면이 이 값을 따로 들고 있어 어긋나기 쉬움)
+    const productPatch = mergedWechat ? { factory: primary.name, wechatGroup: mergedWechat } : { factory: primary.name };
+    setProductsList((prev) => prev.map((p) => (subNames.includes(p.factory) ? { ...p, ...productPatch } : p)));
     for (const p of affectedProducts) {
-      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, { factory: primary.name }); } catch (e) { console.error(e); }
+      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, productPatch); } catch (e) { console.error(e); }
     }
 
-    // 2) 주요 생산 품목 텍스트를 합쳐서 대표공장에 반영(중복 제거)
-    const mergedMainProducts = [...new Set([primary.mainProducts, ...subs.map((f) => f.mainProducts)].filter(Boolean).join(",").split(",").map((s) => s.trim()).filter(Boolean))].join(", ");
-    setFactoriesList((prev) => prev.map((f) => (f.id === primaryId ? { ...f, mainProducts: mergedMainProducts } : f)).filter((f) => !subs.some((s) => s.id === f.id)));
-    try { if (FIREBASE_ENABLED && typeof primaryId === "string") await fsUpdate(COLLECTIONS.factories, primaryId, { mainProducts: mergedMainProducts }); } catch (e) { console.error(e); }
-
-    // 3) 서브공장 레코드 삭제
+    /* ── 3) 제품 이전이 끝난 뒤에만 보조 공장 삭제 ────────────────────── */
+    setFactoriesList((prev) => prev.filter((f) => !subs.some((s) => s.id === f.id)));
     for (const f of subs) {
       try { if (FIREBASE_ENABLED && typeof f.id === "string") await fsDelete(COLLECTIONS.factories, f.id); } catch (e) { console.error(e); }
     }
 
-    setToast("✅ 선택한 공장이 대표 공장으로 성공적으로 병합 연동되었습니다.");
+    setToast(`✅ "${primary.name}"(으)로 병합 완료 — 공장 ${subs.length}건 통합, 연결 제품 ${affectedProducts.length}건 이전`);
   };
   // 선택한 제품들을 대표 제품 1개로 병합 — 서브제품이 갖고있던 proposalIds(제안서 연결이력)를 합산하고,
   // 서브제품명을 참조하던 샘플의 productName도 대표제품명으로 이전한 뒤 서브제품은 삭제한다.
@@ -9223,32 +9269,107 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
 
     setToast(`✅ 병합 완료 — 대표 제품에 연결 제안서 ${mergedProposalIds.length}건이 통합되었습니다.`);
   };
-  // 선택한 업체들을 대표 고객사 1개로 병합 — 서브업체명을 참조하던 제안서/샘플의 clientName을 대표업체명으로 이전(Cascade)하고
-  // 서브업체(동일명 자동병합된 카드라면 그 밑의 원본 레코드까지 전부)는 삭제한다.
+  // 선택한 업체들을 대표 고객사 1개로 병합.
+  //   ① 대표에 보조 업체의 태그(합집합) / 메모(결합) / 첨부(합침) / 비어있는 연락처·주소·대표자·계약정보를 통합
+  //   ② 서브업체명을 참조하던 제안서·인보이스·샘플의 clientName을 대표업체명으로 일괄 이전(Cascade)
+  //   ③ 서브업체(동일명 자동병합 카드라면 그 밑의 원본 레코드까지 전부) 삭제
+  // ⚠️ 순서가 중요하다 — 대표 갱신과 Cascade가 끝난 뒤에만 서브를 삭제한다(중간 실패시 데이터 유실 방지).
   const mergeClients = async (selectedClients, primaryId) => {
     const primary = selectedClients.find((c) => c.id === primaryId);
     const subs = selectedClients.filter((c) => c.id !== primaryId);
     if (!primary || subs.length === 0) return;
     const subNames = subs.map((c) => c.name);
 
+    /* ── 1) 대표 업체에 보조 업체 정보 통합 ────────────────────────────── */
+    // (a) 태그는 합집합 — 한쪽 태그가 통째로 유실되지 않게 한다
+    const mergedTags = [...new Set([...getClientTags(primary), ...subs.flatMap((c) => getClientTags(c))])];
+
+    // (b) 메모는 어느 쪽도 버리지 않고 결합(어느 업체에서 온 메모인지 출처를 남긴다)
+    const noteParts = [String(primary.note || "").trim(), ...subs.map((c) => {
+      const t = String(c.note || "").trim();
+      return t ? `[병합: ${c.name}] ${t}` : "";
+    })].filter(Boolean);
+    const mergedNote = [...new Set(noteParts)].join("\n");
+
+    // (c) 첨부파일(명함·사업자등록증)은 전부 합치고 id 기준 중복 제거
+    const seenAtt = new Set();
+    const mergedAttachments = [primary, ...subs]
+      .flatMap((c) => (Array.isArray(c.attachments) ? c.attachments : []))
+      .filter((a) => a && !seenAtt.has(a.id || a.name) && seenAtt.add(a.id || a.name));
+
+    // (d) 연락처·주소·대표자 등은 "대표가 비어있을 때만" 보조값으로 보강 — 기존 값은 절대 덮어쓰지 않는다
+    const isEmptyVal = (v) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+    const FILL_KEYS = ["ceoName", "address", "contact", "managerPhone", "channel", "difficulty"];
+    const filled = {};
+    subs.forEach((c) => {
+      FILL_KEYS.forEach((k) => {
+        if (isEmptyVal(primary[k]) && isEmptyVal(filled[k]) && !isEmptyVal(c[k])) filled[k] = c[k];
+      });
+    });
+
+    // (e) 계약 정보 — 대표에 유효계약이 없고 보조 중에 있으면 그 계약 세트를 통째로 가져온다
+    //     (불리언 false는 "빈 값"으로 잡히지 않으므로 위 보강 로직으로는 커버되지 않아 별도 처리)
+    let contractPatch = {};
+    if (!getClientContractState(primary).valid) {
+      const donor = subs.find((c) => getClientContractState(c).valid);
+      if (donor) {
+        contractPatch = {
+          hasValidContract: true,
+          contractSignedAt: donor.contractSignedAt || donor.contractSignedDate || "",
+          contractSignerName: donor.contractSignerName || "",
+          contractSignImage: donor.contractSignImage || donor.contractSignData || "",
+          contractSignData: donor.contractSignData || donor.contractSignImage || "",
+          contractExpireAt: donor.contractExpireAt || "",
+        };
+      }
+    }
+
+    const patch = { ...filled, ...contractPatch, note: mergedNote, attachments: mergedAttachments, ...buildClientTagPatch(mergedTags) };
+
+    // 대표 갱신을 먼저 확정 — 실패하면 서브를 지우지 않고 중단한다
+    if (FIREBASE_ENABLED && typeof primaryId === "string") {
+      try {
+        await fsUpdate(COLLECTIONS.clients, primaryId, patch);
+      } catch (e) {
+        console.error(e);
+        setToast("⚠️ 병합에 실패했습니다. 선택한 업체는 그대로 유지됩니다.");
+        return;
+      }
+    }
+    setClientsList((prev) => prev.map((c) => (c.id === primaryId ? { ...c, ...patch } : c)));
+
+    /* ── 2) 연결 데이터 Cascade — 제안서 / 인보이스 / 샘플 / 업무지시 ───── */
     const affectedProposals = proposalList.filter((p) => subNames.includes(p.clientName));
+    const affectedInvoices = invoiceList.filter((iv) => subNames.includes(iv.clientName));
     const affectedSamples = sampleList.filter((s) => subNames.includes(s.clientName));
+    // 업무지시도 clientName으로 업체를 참조한다 — 여기서 빠뜨리면 병합 후 옛 업체명이 남아 검색·필터가 어긋난다
+    const affectedTasks = (taskList || []).filter((t) => t && subNames.includes(t.clientName));
     setProposalList((prev) => prev.map((p) => (subNames.includes(p.clientName) ? { ...p, clientName: primary.name } : p)));
+    setInvoiceList((prev) => prev.map((iv) => (subNames.includes(iv.clientName) ? { ...iv, clientName: primary.name } : iv)));
     setSampleList((prev) => prev.map((s) => (subNames.includes(s.clientName) ? { ...s, clientName: primary.name } : s)));
+    setTaskList((prev) => prev.map((t) => (t && subNames.includes(t.clientName) ? { ...t, clientName: primary.name } : t)));
     for (const p of affectedProposals) {
       try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.proposals, p.id, { clientName: primary.name }); } catch (e) { console.error(e); }
+    }
+    for (const iv of affectedInvoices) {
+      try { if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, { clientName: primary.name }); } catch (e) { console.error(e); }
     }
     for (const s of affectedSamples) {
       try { if (FIREBASE_ENABLED && typeof s.id === "string") await fsUpdate(COLLECTIONS.samples, s.id, { clientName: primary.name }); } catch (e) { console.error(e); }
     }
+    for (const t of affectedTasks) {
+      try { if (FIREBASE_ENABLED && typeof t.id === "string") await fsUpdate(COLLECTIONS.tasks, t.id, { clientName: primary.name }); } catch (e) { console.error(e); }
+    }
 
+    /* ── 3) 모든 이전이 끝난 뒤에만 보조 업체 삭제 ────────────────────── */
     const allSubIds = subs.flatMap((c) => (c._mergedIds && c._mergedIds.length > 0) ? c._mergedIds : [c.id]);
     setClientsList((prev) => prev.filter((c) => !allSubIds.includes(c.id)));
     for (const id of allSubIds) {
       try { if (FIREBASE_ENABLED && typeof id === "string") await fsDelete(COLLECTIONS.clients, id); } catch (e) { console.error(e); }
     }
 
-    setToast("✅ 선택한 업체가 대표 고객사로 병합 연동되었습니다.");
+    const moved = affectedProposals.length + affectedInvoices.length + affectedSamples.length + affectedTasks.length;
+    setToast(`✅ "${primary.name}"(으)로 병합 완료 — 업체 ${subs.length}건 통합, 연결 데이터 ${moved}건 이전 (제안서 ${affectedProposals.length} · 인보이스 ${affectedInvoices.length} · 샘플 ${affectedSamples.length} · 업무지시 ${affectedTasks.length})`);
   };
   const updateFactoryRecord = async (id, patch) => {
     const oldFactory = factoriesList.find((f) => f.id === id);
