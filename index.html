@@ -2053,12 +2053,12 @@ const STATUS_COLORS = {
 
 // 직원 작성 → 대표님 검토/수정 → 최종 승인 → 발송 결재 워크플로우 (제안서 진행상태(STATUS_OPTIONS)와는 별개의 축)
 // "샘플진행"/"인보이스"는 각각 4단계 샘플요청·5단계 인보이스발행 액션이 일어날 때 자동으로만 전환되는 상태 — 드롭다운으로 직접 선택할 수는 없다(발송완료와 동일한 방식)
-const REVIEW_STATUS_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료", "발송완료", "샘플진행", "인보이스", "고객동의완료"];
+const REVIEW_STATUS_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료", "발송완료", "샘플진행", "인보이스", "고객승인완료"];
 // 목록 드롭다운에서 각 권한이 "직접 선택"할 수 있는 상태 — 발송완료/샘플진행/인보이스는 그 누구도 드롭다운으로 선택 불가(오직 해당 액션 버튼 경로로만 전환됨)
 const REVIEW_STATUS_STAFF_OPTIONS = ["작성중", "검토대기"];
 const REVIEW_STATUS_ADMIN_OPTIONS = ["작성중", "검토대기", "수정중", "승인완료"];
-// 고객동의완료는 고객이 서명 페이지에서 직접 서명해야만 붙는 상태라 직원이 임의로 선택할 수 없다
-const REVIEW_STATUS_AUTO_ONLY = ["발송완료", "샘플진행", "인보이스", "고객동의완료"]; // 드롭다운에서 절대 선택 불가, 읽기전용 배지로만 표시
+// 고객승인완료는 고객이 승인 페이지에서 직접 서명해야만 붙는 상태라 직원이 임의로 선택할 수 없다
+const REVIEW_STATUS_AUTO_ONLY = ["발송완료", "샘플진행", "인보이스", "고객승인완료"]; // 드롭다운에서 절대 선택 불가, 읽기전용 배지로만 표시
 // ===== 업무지시 & 소통방 =====
 const TASK_STATUS_OPTIONS = ["요청", "진행중", "완료"];
 const TASK_STATUS_LABELS = { "요청": "📥 요청", "진행중": "⏳ 진행중", "완료": "✅ 완료" };
@@ -2159,7 +2159,7 @@ const REVIEW_STATUS_COLORS = {
   "발송완료": "bg-purple-50 text-purple-700",
   "샘플진행": "bg-blue-100 text-blue-700",
   "인보이스": "bg-purple-100 text-purple-700",
-  "고객동의완료": "bg-emerald-500 text-white",
+  "고객승인완료": "bg-emerald-500 text-white",
 };
 // 작성자/발송자 등 사람 이름 뒤에 직급이 붙어 저장된 경우(예: "이수림 과장") 화면에는 실명만 깔끔하게 보여준다.
 // 저장된 원본 값은 건드리지 않고 표시할 때만 잘라내는 방식 — 계정관리에서 이름을 고치면 그게 바로 반영되고, 이 함수는 옛 기록에 남은 직급 접미사만 화면에서 정리해준다.
@@ -2806,6 +2806,77 @@ function PvNumber({ ro, value, onChange, className }) {
   return <EditNumberField value={value} onChange={onChange} className={className} />;
 }
 
+/* 인보이스 고객 승인요청 발송 모달 — 업체관리의 계약서 발송 모달과 동일한 형식(고품격 비즈니스 안내문 + 복사/문자) */
+function InvoiceApprovalSendModal({ invoice, onClose }) {
+  const link = `${window.location.origin}/agree?type=invoice&invoiceId=${invoice.id}`;
+  const items = invoice.items || [];
+  const first = items[0] || {};
+  const productLabel = (first.productName || "주문 품목") + (items.length > 1 ? ` 외 ${items.length - 1}건` : "");
+  const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+  const supplyTotal = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
+  const grandTotal = Math.round(supplyTotal * 1.1); // 부가세 포함 총 청구금액
+
+  // 고객사에 그대로 나가는 표준 문구 — 임의로 줄이지 말 것
+  const message =
+    `[ (주)비케이브로 · 코스메팩 ]\n` +
+    `화장품 용기 본품 양산 인보이스 발행 및 고객 승인 안내\n\n` +
+    `안녕하세요, ${invoice.clientName || "고객사"} 담당자님.\n` +
+    `화장품 용기 전문 공급사 (주)비케이브로 (코스메팩)입니다.\n\n` +
+    `요청하신 본품 양산 발주 건에 대하여 최종 단가, 수량, 결제 일정(30%/60%/10%) 및 제작 사양이 확정되어 인보이스를 발행해 드립니다.\n\n` +
+    `내용을 확인하시고 아래 링크를 통해 [최종 발주 승인]을 진행해 주시면, 확인 즉시 현지 원자재 투입 및 양산 발주(착공)가 개시됩니다.\n\n` +
+    `▶ 발주 품목: ${productLabel} (${totalQty.toLocaleString()}개)\n` +
+    `▶ 총 청구금액: ₩${grandTotal.toLocaleString()} (부가세 포함)\n` +
+    `▶ 결제 조건: 계약금(30%) / 중도금(60%) / 잔금(10%)\n\n` +
+    `🔗 인보이스 내역 확인 및 발주 승인하기:\n${link}\n\n` +
+    `※ 세금계산서 발행 및 입금 관련 문의는 카카오 채널 또는 당사(031-977-7322)로 연락 주시면 신속히 안내해 드리겠습니다.\n\n` +
+    `감사합니다.\n` +
+    `- (주)비케이브로 (코스메팩) 드림 -`;
+
+  const [copied, setCopied] = useState("");
+  const copy = (text, label) => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(""), 2000); });
+    } else {
+      window.prompt("아래 내용을 복사해 주세요.", text);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">📲 인보이스 고객 승인요청 발송</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-3 overflow-y-auto flex-1">
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs space-y-1">
+            <div className="flex justify-between"><span className="text-slate-500">수신 고객사</span><span className="font-semibold text-slate-800">{invoice.clientName || "-"}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">발주 품목</span><span className="text-right">{productLabel}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">총 수량</span><span>{totalQty.toLocaleString()}개</span></div>
+            <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="font-semibold text-slate-700">총 청구금액</span><span className="font-bold text-[#1E3A8A]">{won(grandTotal)} <span className="font-normal text-slate-400">(부가세 포함)</span></span></div>
+          </div>
+
+          <Field label="승인 링크">
+            <div className="flex gap-2">
+              <input readOnly value={link} className={inputCls + " flex-1"} onFocus={(e) => e.target.select()} />
+              <button onClick={() => copy(link, "link")} className="px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold whitespace-nowrap">{copied === "link" ? "✅ 복사됨" : "링크 복사"}</button>
+            </div>
+          </Field>
+
+          <Field label="안내 문구 (카톡·문자 붙여넣기용)">
+            <textarea readOnly rows={16} value={message} className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y bg-slate-50" onFocus={(e) => e.target.select()} />
+          </Field>
+
+          <button onClick={() => copy(message, "msg")} className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold">{copied === "msg" ? "✅ 복사되었습니다" : "💬 안내 문구 전체 복사"}</button>
+          <p className="text-[11px] text-slate-400">
+            복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 승인을 마치면 이 인보이스가 자동으로 <b>✅ 고객승인완료</b>로 바뀝니다.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, mode }) {
   const isInvoice = mode === "invoice";
   const [showSendModal, setShowSendModal] = useState(false);
@@ -2835,6 +2906,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setItems((data.items || []).map((it) => ({ ...it }))); // 각 품목의 고유 제품명(it.productName)을 그대로 쓴다 — 예전엔 제안서 제목으로 모든 행을 덮어써서 전 품목이 같은 이름으로 통일되어 보이는 버그가 있었음
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+  const [showApprovalSend, setShowApprovalSend] = useState(false); // 🔗 고객 승인링크 발송 모달
   const [savedFlash, setSavedFlash] = useState(false); // 훅은 반드시 조기 return(아래) 이전에 선언해야 한다 — 이전엔 이 줄이 return 뒤에 있어서 모달을 열 때(open/data가 바뀌는 순간) 훅 개수가 달라져 화면이 하얗게 깨지는 크래시가 있었음
 
   if (!open || !data) return null;
@@ -2926,10 +2998,14 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
               <span className="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-600 font-medium whitespace-nowrap">미발송</span>
             )
           )}
-          {isInvoice && data.consentStatus === "동의완료" && (
-            <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-white font-semibold whitespace-nowrap">
-              ✅ 고객동의완료 ({data.consentAt || "-"})
-            </span>
+          {isInvoice && data.id && (
+            data.consentStatus === "승인완료" || data.consentStatus === "동의완료" ? (
+              <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-white font-semibold whitespace-nowrap">
+                ✅ 고객승인완료 ({data.consentAt || "-"})
+              </span>
+            ) : (
+              <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-semibold whitespace-nowrap">⏳ 고객승인대기</span>
+            )
           )}
           <span className="text-xs text-slate-400 whitespace-nowrap hidden xl:inline">
             {data.readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다"}
@@ -2947,17 +3023,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
             <button onClick={handlePrint} className="bg-blue-800 hover:bg-blue-900 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">🖨 인쇄 / PDF</button>
           )}
           {isInvoice && data.id && (
-            <button
-              onClick={() => {
-                const link = `${window.location.origin}/agree?type=invoice&invoiceId=${data.id}`;
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                  navigator.clipboard.writeText(link).then(() => alert("고객 동의 링크가 복사되었습니다.\n\n" + link));
-                } else {
-                  window.prompt("아래 링크를 복사해 고객에게 보내주세요.", link);
-                }
-              }}
+            <button onClick={() => setShowApprovalSend(true)}
               className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">
-              🔗 고객 서명링크
+              🔗 고객 승인링크
             </button>
           )}
           {!data.minimalHeader && isInvoice && (
@@ -2976,6 +3044,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           onConfirm={(channel) => { onSendComplete(data.id, channel); setShowSendModal(false); }}
         />
       )}
+      {showApprovalSend && <InvoiceApprovalSendModal invoice={{ ...data, items }} onClose={() => setShowApprovalSend(false)} />}
 
       {/* ===== 인보이스 모드: 좌측 편집 폼 + 우측 A4 미리보기 2열 레이아웃 ===== */}
       <div className={isInvoice && !data.consentView ? "flex flex-row gap-6 p-6 items-start overflow-hidden" : ""}>
@@ -10641,7 +10710,7 @@ function CustomerConsentPage({ invoiceId }) {
         const rec = { id: snap.id, ...snap.data() };
         setInvoice(rec);
         setSignerName(rec.clientCeo || "");
-        if (rec.consentStatus === "동의완료") setDone(true);
+        if (rec.consentStatus === "승인완료" || rec.consentStatus === "동의완료") setDone(true); // 구버전 값도 인정
         setLoading(false);
       } catch (e) {
         console.error(e);
@@ -10657,11 +10726,11 @@ function CustomerConsentPage({ invoiceId }) {
     if (!canSubmit) return;
     setSubmitting(true);
     const patch = {
-      consentStatus: "동의완료",
+      consentStatus: "승인완료",
       consentAt: nowDateTimeStr(),
       consentSignerName: signerName.trim(),
       consentSignature: signature, // 계약서 (갑) 서명란에 그대로 합성된다
-      reviewStatus: "고객동의완료",
+      reviewStatus: "고객승인완료",
     };
     try {
       await fsUpdate(COLLECTIONS.invoices, invoiceId, patch);
@@ -10691,18 +10760,19 @@ function CustomerConsentPage({ invoiceId }) {
       <div className="no-print bg-[#1E3A8A] text-white px-4 py-3 sticky top-0 z-40 shadow">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm font-bold truncate">㈜비케이브로 · 본품 인보이스 확인 및 동의</div>
+            <div className="text-sm font-bold truncate">㈜비케이브로 · 본품 양산 인보이스 발주 승인</div>
             <div className="text-[11px] text-white/70 truncate">{invoice.clientName || ""} 貴中</div>
           </div>
-          {done && <span className="text-[11px] bg-emerald-500 px-2.5 py-1 rounded-full whitespace-nowrap shrink-0">✅ 동의 완료</span>}
+          {done && <span className="text-[11px] bg-emerald-500 px-2.5 py-1 rounded-full whitespace-nowrap shrink-0">✅ 승인 완료</span>}
         </div>
       </div>
 
       {done && (
         <div className="no-print max-w-7xl mx-auto px-4 pt-4">
           <div className="bg-white border-2 border-emerald-500 rounded-xl p-5 text-center">
-            <div className="text-lg font-bold text-emerald-700 mb-1">계약 및 인보이스 동의가 정상 완료되었습니다.</div>
-            <div className="text-xs text-slate-500 mb-3">서명 일시 : {invoice.consentAt || "-"} · 서명자 : {invoice.consentSignerName || "-"}</div>
+            <div className="text-lg font-bold text-emerald-700 mb-1">본품 발주 최종 승인이 정상 완료되었습니다.</div>
+            <div className="text-xs text-slate-500 mb-1">승인 일시 : {invoice.consentAt || "-"} · 승인자 : {invoice.consentSignerName || "-"}</div>
+            <div className="text-xs text-slate-500 mb-3">확인 즉시 현지 원자재 투입 및 양산 발주(착공)가 개시됩니다.</div>
             <button onClick={() => window.print()} className="bg-[#1E3A8A] text-white text-sm font-semibold px-5 py-2.5 rounded-lg hover:opacity-90">📄 PDF 다운로드 / 인쇄</button>
           </div>
         </div>
@@ -10718,14 +10788,14 @@ function CustomerConsentPage({ invoiceId }) {
         {!done && (
           <aside className="no-print w-full lg:w-96 shrink-0 lg:sticky lg:top-20">
             <div className="bg-white rounded-xl shadow-lg border border-slate-200 p-5">
-              <div className="text-sm font-bold text-slate-800 mb-3">✍️ 전자서명 및 동의</div>
+              <div className="text-sm font-bold text-slate-800 mb-3">🚀 본품 발주 최종 승인</div>
 
               <label className="flex items-start gap-2 mb-2 cursor-pointer">
                 <input type="checkbox" className="mt-0.5" checked={agreeInvoice} onChange={(e) => setAgreeInvoice(e.target.checked)} />
-                <span className="text-xs text-slate-700">인보이스의 품목·수량·단가 및 <b>총 청구금액</b>을 확인하였으며 이에 동의합니다.</span>
+                <span className="text-xs text-slate-700">본품 발주 내역(<b>수량, 금액, 납기 조건</b>)을 확인하였으며 최종 발주를 승인합니다.</span>
               </label>
 
-              <Field label="서명자 성함 (대표자)">
+              <Field label="승인자 성함 (대표자/담당자)">
                 <input className={inputCls} value={signerName} onChange={(e) => setSignerName(e.target.value)} placeholder="예: 홍길동" />
               </Field>
 
@@ -10734,10 +10804,10 @@ function CustomerConsentPage({ invoiceId }) {
 
               <button onClick={submit} disabled={!canSubmit}
                 className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold py-3 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed">
-                {submitting ? "제출 중..." : "동의 및 서명 제출"}
+                {submitting ? "승인 처리 중..." : "🚀 본품 발주 최종 승인 완료"}
               </button>
               {!canSubmit && !submitting && (
-                <p className="text-[11px] text-slate-400 mt-2 text-center">동의 체크 · 성함 입력 · 서명이 모두 완료되면 제출할 수 있습니다.</p>
+                <p className="text-[11px] text-slate-400 mt-2 text-center">승인 체크 · 성함 입력 · 서명이 모두 완료되면 승인할 수 있습니다.</p>
               )}
             </div>
           </aside>
