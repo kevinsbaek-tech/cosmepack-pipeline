@@ -1501,38 +1501,9 @@ const SUPPLIER = {
   tel: "031.977.7322", fax: "031.977.6322", bank: "국민은행 024837-04-007281 (주)비케이브로",
 };
 
-/* ===================== 화장품용기 공급계약서 (인보이스와 별개 문서) =====================
-   ⚠️ 조문 본문은 계약서 PDF 원문이 아직 등록되지 않아 비어 있다. 각 조문은 화면에서 직접 편집(EditArea)해
-   붙여넣을 수 있고, 저장하면 인보이스 문서(contractArticles)에 함께 보관된다.
-   원문 PDF를 받으면 아래 배열의 body만 채우면 그대로 반영된다. */
-const CONTRACT_ARTICLES = [
-  { title: "제1조 (목적 및 적용범위)", body: '1. 본 계약은 "갑"이 "을"로부터 부자재(용기, 캡, 라벨, 박스 등 포장재 일체)를 공급받음에 있어 양 당사자의 기본조건을 정한다.\n2. 본 계약은 모든 개별 거래에 적용되며, 구체적인 사양·수량·단가·납기 등은 견적서 및 발주서에 따른다. 상충 시 개별 발주서가 우선한다.\n3. "갑"이 서면(이메일, 메신저 포함)으로 승인 또는 요청한 작업은 발주서에 준하여 대금 지급 의무가 발생한다.' },
-  { title: "제2조 (계약기간)", body: "본 계약의 유효기간은 체결일로부터 1년으로 하며, 기간 만료 1개월 전까지 서면 이의가 없는 경우 동일한 조건으로 1년씩 자동 연장된다." },
-  { title: "제3조 (샘플 승인 및 수량 오차)", body: '1. "을"은 양산 전 샘플 서면 승인을 받아야 하며, 양산품은 승인 샘플과 동일해야 한다(고화질 사진·동영상 검수로 실물 대체 가능).\n2. 현지 제조 및 검품 특성상 최종 입고 수량은 발주 수량 대비 ±1%~3% 내외의 오차가 발생할 수 있으며, 이는 정상 이행으로 본다.\n3. 발주 수량을 초과하여 입고된 수량은 "갑"에게 여분(무상 제공)으로 제공하며 추가 대금을 청구하지 않는다. 단, 수량이 부족하게 입고된 경우에는 제8조에 따라 처리한다.' },
-  { title: "제4조 (대금 지급 및 지연이자)", body: '1. 개별 거래 대금의 기본 결제 조건은 다음과 같다.\n    · 계약금(발주 시) : 총 발주 금액의 30%\n    · 중도금(출고 전) : "을"의 현지 지사 검품 보고서(사진/동영상) 전달 및 "갑" 승인 후 60%\n    · 잔금(납품 후) : 지정 장소 납품 및 검수 완료 후 영업일 기준 5일 이내 10%\n2. "갑"이 대금 지급을 지연할 경우, 지연 일수에 대해 연 12%의 지연이자를 추가 지급하여야 한다.' },
-  { title: "제5조 (인도조건 및 비용)", body: '1. 물품의 인도 시점은 인천항 통관 완료 후 보세창고 출고 시점으로 한다. 보세창고 출고 시점까지의 관세 및 국제 운송 비용·위험은 "을"이 부담하며, 출고 이후 "갑"의 지정 장소까지의 내륙 운송 비용 및 위험은 "갑"이 부담한다.\n2. "갑"의 특수 포장 요구 및 현장 지원/출장 입고 요청으로 발생하는 추가 비용/출장비는 "갑"이 부담한다.' },
-  { title: "제6조 (지체상금 및 불가항력)", body: '1. "을"의 귀책으로 납기 지체 시 1일당 발주 금액의 0.05%(0.5/1,000)를 공제하되, 총액은 발주 금액의 10%를 초과할 수 없다.\n2. 천재지변, 원자재 수급 난항, 물류 대란, 통관 지연 등 불가항력 사유로 인한 지연은 지체상금을 면제한다.' },
-  { title: "제7조 (검수 및 통지)", body: '1. [외관/수량] "갑"은 도착일로부터 영업일 기준 5일 이내에 검수 후 서면 통보해야 하며, 기간 내 미통보 시 합격 간주한다.\n2. [기능/잠재 하자] 충진 후 누유 등 육안 확인이 어려운 하자는 발견 즉시(인도 후 6개월 이내) 증빙 자료와 함께 서면 통지해야 한다. 미통지 및 임의 처분 시 "을"은 보상 책임을 지지 않는다.' },
-  { title: "제8조 (하자보증 및 불량 처리)", body: '1. "을"은 생산 및 운송 과정의 손실 등에 대비하여 현지 생산 및 선별 수량에 따라 여분(무상)을 추가 제공할 수 있으며, 하자보증 기간은 인도 완료일로부터 6개월로 한다.\n2. 검수 결과 불량 선별 등으로 합격 수량이 부족한 경우 양 사 합의하에 ① 미지급/차기 대금 차감, ② 차기 생산 시 보충, ③ 일정 내 재제작 공급 중 선택 처리한다.\n3. "갑"의 사양 오류, 보관/취급 부주의, 사전 테스트 없는 내용물(제형)과의 화학적 반응으로 인한 문제는 "을"이 책임을 지지 않는다.' },
-  { title: "제9조 (손해배상 범위 및 한도)", body: '1. "을"의 귀책으로 용기 불량 발생 시, "을"은 불량 용기 대금 정산(또는 보충) 및 직접적인 반품/교환 물류비에 한하여 책임을 진다.\n2. "을"의 배상 책임은 "직접 손해"에 한정되며, 영업 손실, 브랜드 손상, 완제품 내용물(원제형) 가액 등 간접/특별 손해는 제외한다.\n3. "을"이 부담하는 손해배상 총액은 어떠한 경우에도 해당 개별 발주 금액을 초과할 수 없다.' },
-  { title: "제10조 (지식재산권 및 면책)", body: '1. "갑"이 제공한 디자인·로고 등의 권리는 "갑"에게 귀속된다.\n2. "갑"이 지정·채택한 디자인, 규격, 구조의 제3자 지식재산권 침해 여부 확인 책임은 전적으로 "갑"에게 있다.\n3. "갑"의 요청/승인에 따른 물품이 제3자의 지식재산권을 침해하여 분쟁 발생 시, "갑"은 자신의 비용과 책임으로 해결하고 "을"을 완전히 면책시켜야 한다.' },
-  { title: "제11조 (비밀유지 및 해지)", body: "1. 양 사는 거래상 알게 된 영업비밀 및 거래 조건을 제3자에게 누설하지 않으며, 의무는 계약 종료 후 2년간 유효하다.\n2. 중대한 계약 위반 또는 부도·파산 등 경영상 중대 사유 발생 시 서면 통지로 계약을 해지할 수 있다." },
-  { title: "제12조 (관할법원)", body: '본 계약과 관련한 분쟁의 관할법원은 "을"의 본사 소재지 관할 법원(수원지방법원 고양지원)으로 한다.' },
-];
-
-/* 저장된 계약서와 코드 기본값(CONTRACT_ARTICLES)을 병합한다.
-   ⚠️ 조문 본문이 비어있던 구버전에서 인보이스를 한 번이라도 저장했다면, 그 "빈 조문 12개"가 DB에 남아
-   그대로 불러와지면서 화면이 텅 비어 보인다. 그래서 단순히 "저장본이 있으면 저장본"이 아니라,
-   **조문별로 저장본 내용이 실제로 있을 때만** 저장본을 쓰고 비어있으면 코드 기본값(원문)으로 채운다. */
-function mergeContractArticles(stored) {
-  const list = Array.isArray(stored) ? stored : [];
-  return CONTRACT_ARTICLES.map((def, i) => {
-    const s = list[i] || {};
-    const body = typeof s.body === "string" && s.body.trim() ? s.body : def.body;
-    const title = typeof s.title === "string" && s.title.trim() ? s.title : def.title;
-    return { title, body };
-  });
-}
+/* 화장품용기 공급계약서는 PdfPreview 안에서 정적 JSX(#contract-page)로 직접 렌더링된다.
+   예전엔 CONTRACT_ARTICLES 배열 + EditArea 편집 방식이었으나, 숨겨진 탭에서 textarea 높이가
+   0으로 접히는 문제가 있어 전문을 마크업에 그대로 박는 방식으로 바꿨다. */
 
 const TERMS = [
   "원화 가격은 부가세 별도 금액입니다.",
@@ -2812,6 +2783,23 @@ function SendCompleteModal({ onConfirm, onClose }) {
   );
 }
 
+/* 인보이스 모드에서는 편집을 좌측 폼이 전담하므로, 우측 미리보기 안의 입력기를 정적 텍스트로 바꾼다.
+   ⚠️ 이렇게 하는 결정적 이유: EditArea(textarea)는 scrollHeight로 높이를 잡는데, 탭 전환으로
+   display:none 상태에서 마운트되면 높이가 0으로 접혀 본문이 통째로 사라진다(계약서에서 겪은 그 버그).
+   제안서 모드(ro=false)는 기존처럼 미리보기에서 직접 편집 가능하다. */
+function PvField({ ro, value, onChange, className, placeholder }) {
+  if (ro) return <span className={className}>{value || ""}</span>;
+  return <EditField value={value} onChange={onChange} className={className} placeholder={placeholder} />;
+}
+function PvArea({ ro, value, onChange, className }) {
+  if (ro) return <span className={className} style={{ whiteSpace: "pre-line" }}>{value || ""}</span>;
+  return <EditArea value={value} onChange={onChange} className={className} />;
+}
+function PvNumber({ ro, value, onChange, className }) {
+  if (ro) return <span className={className}>{value === "" || value === null || value === undefined ? "" : Number(value).toLocaleString("ko-KR")}</span>;
+  return <EditNumberField value={value} onChange={onChange} className={className} />;
+}
+
 function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, mode }) {
   const isInvoice = mode === "invoice";
   const [showSendModal, setShowSendModal] = useState(false);
@@ -2820,9 +2808,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   const [supplier, setSupplier] = useState(SUPPLIER);
   // 인보이스 모드에서만 쓰는 문서 탭 — "invoice"(인보이스 서식) | "contract"(화장품용기 공급계약서)
   const [docTab, setDocTab] = useState("invoice");
-  const [contractArticles, setContractArticles] = useState(mergeContractArticles(null));
   const [contractDate, setContractDate] = useState(todayDisplay()); // 계약체결일자
   const [clientCeo, setClientCeo] = useState(""); // (갑) 대표자명
+  const [clientAddress, setClientAddress] = useState(""); // (갑) 주소 — 공급계약서 서명란에 연동
   const [clientName, setClientName] = useState("");
   const [validUntil, setValidUntil] = useState("");
   const [items, setItems] = useState([]);
@@ -2834,9 +2822,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setSupplier(SUPPLIER);
     setClientName(data.clientName || "");
     setDocTab("invoice"); // 모달을 새로 열 때는 항상 인보이스 탭부터
-    setContractArticles(mergeContractArticles(data.contractArticles));
     setContractDate(data.contractDate || todayDisplay());
     setClientCeo(data.clientCeo || "");
+    setClientAddress(data.clientAddress || "");
     setValidUntil(data.validUntil || "");
     setItems((data.items || []).map((it) => ({ ...it }))); // 각 품목의 고유 제품명(it.productName)을 그대로 쓴다 — 예전엔 제안서 제목으로 모든 행을 덮어써서 전 품목이 같은 이름으로 통일되어 보이는 버그가 있었음
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2854,6 +2842,8 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   const interimAmount = Math.round(grandTotal * 0.6);
   const balanceAmount = grandTotal - depositAmount - interimAmount;
 
+  // 좌측 폼에서 품목 삭제(품목이 2개 이상일 때만 버튼 노출)
+  const removeItem = (id) => setItems((prev) => prev.filter((it) => it.id !== id));
   const updateItem = (id, field, value) => {
     setItems((prev) => prev.map((it) => {
       if (it.id !== id) return it;
@@ -2886,10 +2876,14 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     }, 150);
   };
   const handlePrint = () => printDoc(isInvoice ? docTab : "invoice");
-  const updateArticle = (idx, field, value) => setContractArticles((prev) => prev.map((a, i) => (i === idx ? { ...a, [field]: value } : a)));
+  // 계약서 하단 날짜 — "2026-08-15" → "2026 년 08 월 15 일" (계약서 서식 관례대로 자간을 띄워 표기)
+  const formattedContractDate = (() => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(contractDate || "");
+    return m ? `${m[1]} 년   ${m[2]} 월   ${m[3]} 일` : (contractDate || "");
+  })();
   const handleSave = () => {
     if (!onSave || !data.id) return;
-    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractArticles, contractDate, clientCeo } : {}) }, isInvoice ? "invoice" : "proposal");
+    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress } : {}) }, isInvoice ? "invoice" : "proposal");
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
@@ -2966,6 +2960,55 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
         />
       )}
 
+      {/* ===== 인보이스 모드: 좌측 편집 폼 + 우측 A4 미리보기 2열 레이아웃 ===== */}
+      <div className={isInvoice ? "flex flex-row gap-6 p-6 items-start overflow-hidden" : ""}>
+      {isInvoice && !data.readOnly && (
+        <aside className="pv-left no-print w-96 shrink-0 bg-white rounded-xl shadow-xl p-5 overflow-y-auto pr-3"
+          style={{ maxHeight: "calc(100vh - 120px)", minHeight: 0 }}>
+          <div className="text-sm font-bold text-slate-800 mb-3">📝 인보이스 편집</div>
+
+          <div className="rounded-lg border border-slate-200 p-3 mb-4">
+            <div className="text-xs font-semibold text-slate-500 mb-2">고객사 정보 <span className="font-normal text-slate-400">(공급계약서에도 연동)</span></div>
+            <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: 주식회사 더마" /></Field>
+            <Field label="대표자명"><input className={inputCls} value={clientCeo} onChange={(e) => setClientCeo(e.target.value)} placeholder="계약서 (갑) 서명란에 표기" /></Field>
+            <Field label="고객사 주소"><input className={inputCls} value={clientAddress} onChange={(e) => setClientAddress(e.target.value)} placeholder="계약서 (갑) 주소란에 표기" /></Field>
+            <Field label="작성일자"><input type="date" className={inputCls} value={contractDate} onChange={(e) => setContractDate(e.target.value)} /></Field>
+          </div>
+
+          {items.map((it, idx) => (
+            <div key={it.id} className="rounded-lg border border-slate-200 p-3 mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-slate-500">품목 {idx + 1}</div>
+                {items.length > 1 && (
+                  <button onClick={() => removeItem(it.id)} className="text-[11px] text-rose-500 hover:text-rose-700">삭제</button>
+                )}
+              </div>
+              <Field label="📷 제품 사진"><ImageUpload value={it.image} onChange={(v) => updateItem(it.id, "image", v)} /></Field>
+              <Field label="제품명"><input className={inputCls} value={it.productName || ""} onChange={(e) => updateItem(it.id, "productName", e.target.value)} /></Field>
+              <Field label="제원 / 규격 및 사양"><textarea rows={3} className={inputCls} value={it.spec || ""} onChange={(e) => updateItem(it.id, "spec", e.target.value)} /></Field>
+              <Field label="비고 (추가 메모)"><textarea rows={2} className={inputCls} value={it.notes || ""} onChange={(e) => updateItem(it.id, "notes", e.target.value)} /></Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="주문수량"><input type="number" className={inputCls} value={it.quantity} onChange={(e) => updateItem(it.id, "quantity", e.target.value)} /></Field>
+                <Field label="단가(ea)"><input type="number" className={inputCls} value={it.unitPrice} onChange={(e) => updateItem(it.id, "unitPrice", e.target.value)} /></Field>
+              </div>
+              <div className="text-right text-xs font-semibold text-slate-700">금액 : {won(Number(it.totalPrice) || 0)}</div>
+            </div>
+          ))}
+
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs space-y-1">
+            <div className="flex justify-between"><span className="text-slate-500">공급가액 합계</span><span className="font-semibold">{won(Math.round(totalAmount))}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">부가가치세 (10%)</span><span>{won(vat)}</span></div>
+            <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="font-semibold text-slate-700">총 합계금액</span><span className="font-bold text-[#1E3A8A]">{won(grandTotal)}</span></div>
+            <div className="flex justify-between pt-1"><span className="text-slate-500">계약금 (30%)</span><span>{won(depositAmount)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">중도금 (60%)</span><span>{won(interimAmount)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">잔금 (10%)</span><span>{won(balanceAmount)}</span></div>
+          </div>
+        </aside>
+      )}
+
+      <div className={isInvoice ? "pv-right flex-1 min-w-0 overflow-y-auto bg-slate-100 rounded-xl p-6 flex justify-center" : ""}
+        style={isInvoice ? { maxHeight: "calc(100vh - 120px)", minHeight: 0 } : undefined}>
+
       <div className="proposal-modal-content mx-auto bg-white shadow-xl p-10 text-sm" id="pdf-page" style={{ color: DARK, width: "880px", maxWidth: "880px", display: isInvoice && docTab === "contract" ? "none" : "block" }}>
       <fieldset disabled={!!data.readOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
 
@@ -2979,14 +3022,14 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
         <div className="proposal-info-row flex justify-between items-start mb-5">
           <div className="text-sm" style={{ width: "48%" }}>
             <div className="font-semibold text-base mb-2 flex items-center gap-1" style={{ color: DARK }}>
-              <EditField value={clientName} onChange={setClientName} placeholder="고객사명" className="font-semibold text-base" />
+              <PvField ro={isInvoice} value={clientName} onChange={setClientName} placeholder="고객사명" className="font-semibold text-base" />
               <span>貴下</span>
             </div>
             <div style={{ color: DARK }}>제안금액: <b>{won(totalAmount)}</b> <span className="text-xs text-slate-500">(부가세 별도)</span></div>
             <div className="flex items-center gap-1 whitespace-nowrap" style={{ color: DARK }}>
-              <span className="whitespace-nowrap">작성일자: {todayDisplay()}</span>
+              <span className="whitespace-nowrap">작성일자: {isInvoice ? contractDate : todayDisplay()}</span>
               <span className="text-xs text-slate-500 flex items-center gap-1 whitespace-nowrap">
-                (유효기간: 30일, ~<EditField value={validUntil} onChange={setValidUntil} className="text-xs w-24" />)
+                (유효기간: 30일, ~<PvField ro={isInvoice} value={validUntil} onChange={setValidUntil} className="text-xs w-24" />)
               </span>
             </div>
           </div>
@@ -2998,13 +3041,13 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
               <col />
             </colgroup>
             <tbody>
-            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">사업자번호</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.bizNo} onChange={(v) => setSupplier({ ...supplier, bizNo: v })} className="w-full" /></td></tr>
-            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">업체명</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.company} onChange={(v) => setSupplier({ ...supplier, company: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">대표</td><td className="border border-slate-300 px-2 py-1 whitespace-nowrap"><EditField value={supplier.ceo} onChange={(v) => setSupplier({ ...supplier, ceo: v })} className="w-16" />&nbsp;(인)</td></tr>
-            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">주소</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.address} onChange={(v) => setSupplier({ ...supplier, address: v })} className="w-full" /></td></tr>
-            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">업태</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizType} onChange={(v) => setSupplier({ ...supplier, bizType: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">종목</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.bizItem} onChange={(v) => setSupplier({ ...supplier, bizItem: v })} className="w-full" /></td></tr>
-            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">전화</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.tel} onChange={(v) => setSupplier({ ...supplier, tel: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">팩스</td><td className="border border-slate-300 px-2 py-1"><EditField value={supplier.fax} onChange={(v) => setSupplier({ ...supplier, fax: v })} className="w-full" /></td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">사업자번호</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><PvField ro={isInvoice} value={supplier.bizNo} onChange={(v) => setSupplier({ ...supplier, bizNo: v })} className="w-full" /></td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">업체명</td><td className="border border-slate-300 px-2 py-1"><PvField ro={isInvoice} value={supplier.company} onChange={(v) => setSupplier({ ...supplier, company: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">대표</td><td className="border border-slate-300 px-2 py-1 whitespace-nowrap"><PvField ro={isInvoice} value={supplier.ceo} onChange={(v) => setSupplier({ ...supplier, ceo: v })} className="w-16" />&nbsp;(인)</td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">주소</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><PvField ro={isInvoice} value={supplier.address} onChange={(v) => setSupplier({ ...supplier, address: v })} className="w-full" /></td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">업태</td><td className="border border-slate-300 px-2 py-1"><PvField ro={isInvoice} value={supplier.bizType} onChange={(v) => setSupplier({ ...supplier, bizType: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">종목</td><td className="border border-slate-300 px-2 py-1"><PvField ro={isInvoice} value={supplier.bizItem} onChange={(v) => setSupplier({ ...supplier, bizItem: v })} className="w-full" /></td></tr>
+            <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">전화</td><td className="border border-slate-300 px-2 py-1"><PvField ro={isInvoice} value={supplier.tel} onChange={(v) => setSupplier({ ...supplier, tel: v })} className="w-full" /></td><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">팩스</td><td className="border border-slate-300 px-2 py-1"><PvField ro={isInvoice} value={supplier.fax} onChange={(v) => setSupplier({ ...supplier, fax: v })} className="w-full" /></td></tr>
             {isInvoice && (
-              <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">입금계좌</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><EditField value={supplier.bank} onChange={(v) => setSupplier({ ...supplier, bank: v })} className="w-full" /></td></tr>
+              <tr><td className="border border-slate-300 py-1 px-1.5 bg-slate-50 whitespace-nowrap">입금계좌</td><td className="border border-slate-300 px-2 py-1" colSpan="3"><PvField ro={isInvoice} value={supplier.bank} onChange={(v) => setSupplier({ ...supplier, bank: v })} className="w-full" /></td></tr>
             )}
           </tbody></table>
         </div>
@@ -3012,7 +3055,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
         {/* 3) 인사말 4줄 */}
         <div className="text-xs leading-relaxed mb-5 space-y-0.5" style={{ color: DARK }}>
           {greeting.map((g, i) => (
-            <div key={i} className="flex gap-1"><span>◎</span><EditField value={g} onChange={(v) => updateGreeting(i, v)} className="flex-1" /></div>
+            <div key={i} className="flex gap-1"><span>◎</span><PvField ro={isInvoice} value={g} onChange={(v) => updateGreeting(i, v)} className="flex-1" /></div>
           ))}
         </div>
 
@@ -3033,15 +3076,15 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
               <tr key={it.id}>
                 <td className="border border-slate-300 px-2 py-2 text-center align-top">{idx + 1}</td>
                 <td className="border border-slate-300 px-2 py-2 align-top">{it.image ? <img src={it.image} loading="lazy" className="w-16 h-16 object-cover rounded" /> : <div className="w-16 h-16 bg-slate-50 rounded flex items-center justify-center text-slate-300 text-[10px]">No Image</div>}</td>
-                <td className="border border-slate-300 px-2 py-2 align-top font-medium" style={{ wordBreak: "keep-all", whiteSpace: "pre-line" }}><EditArea value={it.productName} onChange={(v) => updateItem(it.id, "productName", v)} className="font-medium" /></td>
+                <td className="border border-slate-300 px-2 py-2 align-top font-medium" style={{ wordBreak: "keep-all", whiteSpace: "pre-line" }}><PvArea ro={isInvoice} value={it.productName} onChange={(v) => updateItem(it.id, "productName", v)} className="font-medium" /></td>
                 <td className="border border-slate-300 px-2 py-2 align-top" style={{ wordBreak: "keep-all", whiteSpace: "pre-line" }}>
-                  <div className="mb-1"><span className="text-slate-400">사이즈:</span> <EditArea value={it.specSize || ""} onChange={(v) => updateItem(it.id, "specSize", v)} className="w-full" /></div>
-                  <div><span className="text-slate-400">재질:</span> <EditArea value={it.material || ""} onChange={(v) => updateItem(it.id, "material", v)} className="w-full" /></div>
+                  <div className="mb-1"><span className="text-slate-400">사이즈:</span> <PvArea ro={isInvoice} value={it.specSize || ""} onChange={(v) => updateItem(it.id, "specSize", v)} className="w-full" /></div>
+                  <div><span className="text-slate-400">재질:</span> <PvArea ro={isInvoice} value={it.material || ""} onChange={(v) => updateItem(it.id, "material", v)} className="w-full" /></div>
                 </td>
-                <td className="border border-slate-300 px-2 py-2 align-top text-center"><EditNumberField value={it.quantity} onChange={(v) => updateItem(it.id, "quantity", v)} className="w-full text-center" /></td>
-                <td className="border border-slate-300 px-2 py-2 align-top text-right"><EditNumberField value={it.unitPrice} onChange={(v) => updateItem(it.id, "unitPrice", v)} className="w-full text-right" /></td>
+                <td className="border border-slate-300 px-2 py-2 align-top text-center"><PvNumber ro={isInvoice} value={it.quantity} onChange={(v) => updateItem(it.id, "quantity", v)} className="w-full text-center" /></td>
+                <td className="border border-slate-300 px-2 py-2 align-top text-right"><PvNumber ro={isInvoice} value={it.unitPrice} onChange={(v) => updateItem(it.id, "unitPrice", v)} className="w-full text-right" /></td>
                 <td className="border border-slate-300 px-2 py-2 align-top text-right font-medium">{Math.round(it.totalPrice).toLocaleString("ko-KR")}</td>
-                <td className="border border-slate-300 px-2 py-2 align-top text-[11px]" style={{ wordBreak: "keep-all", whiteSpace: "pre-line" }}><EditArea value={it.notes} onChange={(v) => updateItem(it.id, "notes", v)} /></td>
+                <td className="border border-slate-300 px-2 py-2 align-top text-[11px]" style={{ wordBreak: "keep-all", whiteSpace: "pre-line" }}><PvArea ro={isInvoice} value={it.notes} onChange={(v) => updateItem(it.id, "notes", v)} /></td>
               </tr>
             ))}
           </tbody>
@@ -3065,88 +3108,143 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           <div className="mb-2" style={{ fontSize: "14px", fontWeight: "bold" }}>◎ 참고사항</div>
           <ol className="list-decimal list-inside space-y-2">
             {terms.map((t, i) => (
-              <li key={i} className="flex gap-1 mb-1.5 pb-0.5" style={{ lineHeight: "1.65", fontSize: "12.5px", whiteSpace: "pre-line" }}><EditArea value={t} onChange={(v) => updateTerm(i, v)} className="flex-1 inline" /></li>
+              <li key={i} className="flex gap-1 mb-1.5 pb-0.5" style={{ lineHeight: "1.65", fontSize: "12.5px", whiteSpace: "pre-line" }}><PvArea ro={isInvoice} value={t} onChange={(v) => updateTerm(i, v)} className="flex-1 inline" /></li>
             ))}
           </ol>
         </div>
 
         {/* 6) 맨 아래 우측 */}
         <div className="text-right text-xs text-slate-500 mt-8 flex justify-end items-center gap-1 whitespace-nowrap">
-          <EditField value={supplier.company} onChange={(v) => setSupplier({ ...supplier, company: v })} className="text-right" /> (브랜드명: {supplier.brand})
+          <PvField ro={isInvoice} value={supplier.company} onChange={(v) => setSupplier({ ...supplier, company: v })} className="text-right" /> (브랜드명: {supplier.brand})
         </div>
       </fieldset>
       </div>
 
-      {/* ===== 화장품용기 공급계약서 (인보이스와 완전히 독립된 별도 문서 · 별도 출력) ===== */}
+      {/* ===== 화장품용기 공급계약서 (인보이스와 완전히 독립된 별도 문서 · 별도 출력) =====
+           ⚠️ 조문 본문은 반드시 정적 <p>로 렌더링할 것. 예전엔 EditArea(textarea)를 썼는데,
+           EditArea는 scrollHeight로 높이를 자동조절하므로 이 페이지가 display:none인 동안 마운트되면
+           scrollHeight가 0 → 높이 0px로 접혀서 "제목만 보이고 본문이 통째로 사라지는" 증상이 났다. */}
       {isInvoice && (
-        <div className="proposal-modal-content mx-auto bg-white shadow-xl p-10 text-sm" id="contract-page"
-          style={{ color: DARK, width: "880px", maxWidth: "880px", display: docTab === "contract" ? "block" : "none" }}>
-          <fieldset disabled={!!data.readOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
+        <div id="contract-page"
+          className="contract-paper proposal-modal-content mx-auto p-12 bg-white shadow-lg border border-gray-300 font-sans text-sm leading-relaxed whitespace-normal break-words"
+          style={{ color: "#000", width: "880px", maxWidth: "880px", display: docTab === "contract" ? "block" : "none" }}>
 
-            {!data.readOnly && (
-              <div className="no-print flex justify-end mb-2">
-                <button type="button"
-                  onClick={() => { if (window.confirm("모든 조문을 표준 계약서 원문으로 되돌립니다. 이 인보이스에서 직접 수정한 조문 내용은 사라집니다. 계속할까요?")) setContractArticles(mergeContractArticles(null)); }}
-                  className="text-[11px] px-2.5 py-1 rounded border border-slate-300 text-slate-500 hover:bg-slate-50">
-                  ↺ 표준 계약서 원문으로 되돌리기
-                </button>
-              </div>
-            )}
-            <div className="text-center mb-8">
-              <h1 className="text-2xl font-bold tracking-[0.3em]" style={{ color: DARK }}>화장품용기 공급계약서</h1>
+          <h1 className="text-3xl font-extrabold text-center tracking-widest mb-10 pb-4 border-b-2 border-black">
+            화 장 품 용 기 &nbsp; 공 급 계 약 서
+          </h1>
+
+          <div className="mb-8 font-bold text-base">
+            <span className="underline underline-offset-4 decoration-1">{clientName || "000"}</span> (이하 "갑")과 <span className="underline underline-offset-4 decoration-1">주식회사 비케이브로</span>(이하 "을")은 물품의 지속적 공급거래에 관하여 다음과 같이 계약(이하 "본 계약")을 체결한다.
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <h2 className="font-bold text-base mb-1">제1조 (목적 및 적용범위)</h2>
+              <p>본 계약은 "갑"이 "을"로부터 부자재(용기, 캡, 라벨, 박스 등 포장재 일체)를 공급받음에 있어 양 당사자의 기본조건을 정한다.</p>
+              <p>본 계약은 모든 개별 거래에 적용되며, 구체적인 사양·수량·단가·납기 등은 견적서 및 발주서에 따른다. 상충 시 개별 발주서가 우선한다.</p>
+              <p>"갑"이 서면(이메일, 메신저 포함)으로 승인 또는 요청한 작업은 발주서에 준하여 대금 지급 의무가 발생한다.</p>
             </div>
 
-            {/* 갑/을 표기 — 인보이스의 고객사명이 (갑)에 자동 바인딩된다 */}
-            <div className="text-[13px] leading-8 mb-7">
-              <div>
-                <b>{clientName || "○○○"}</b>(이하 "갑")과 <b>{supplier.company}</b>(이하 "을")은
-                물품의 지속적 공급거래에 관하여 다음과 같이 계약(이하 "본 계약")을 체결한다.
+            <div>
+              <h2 className="font-bold text-base mb-1">제2조 (계약기간)</h2>
+              <p>본 계약의 유효기간은 체결일로부터 1년으로 하며, 기간 만료 1개월 전까지 서면 이의가 없는 경우 동일한 조건으로 1년씩 자동 연장된다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제3조 (샘플 승인 및 수량 오차)</h2>
+              <p>"을"은 양산 전 샘플 서면 승인을 받아야 하며, 양산품은 승인 샘플과 동일해야 한다(고화질 사진·동영상 검수로 실물 대체 가능).</p>
+              <p>현지 제조 및 검품 특성상 최종 입고 수량은 발주 수량 대비 ±1%~3% 내외의 오차가 발생할 수 있으며, 이는 정상 이행으로 본다.</p>
+              <p>발주 수량을 초과하여 입고된 수량은 "갑"에게 여분(무상 제공)으로 제공하며 추가 대금을 청구하지 않는다. 단, 수량이 부족하게 입고된 경우에는 제8조에 따라 처리한다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제4조 (대금 지급 및 지연이자)</h2>
+              <p>개별 거래 대금의 기본 결제 조건은 다음과 같다.</p>
+              <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                <li>계약금(발주 시): 총 발주 금액의 30%</li>
+                <li>중도금(출고 전): "을"의 현지 지사 검품 보고서(사진/동영상) 전달 및 "갑" 승인 후 60%</li>
+                <li>잔금(납품 후): 지정 장소 납품 및 검수 완료 후 영업일 기준 5일 이내 10%</li>
+              </ul>
+              <p className="mt-1">"갑"이 대금 지급을 지연할 경우, 지연 일수에 대해 연 12%의 지연이자를 추가 지급하여야 한다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제5조 (인도조건 및 비용)</h2>
+              <p>물품의 인도 시점은 인천항 통관 완료 후 보세창고 출고 시점으로 한다. 보세창고 출고 시점까지의 관세 및 국제 운송 비용·위험은 "을"이 부담하며, 출고 이후 "갑"의 지정 장소까지의 내륙 운송 비용 및 위험은 "갑"이 부담한다.</p>
+              <p>"갑"의 특수 포장 요구 및 현장 지원/출장 입고 요청으로 발생하는 추가 비용/출장비는 "갑"이 부담한다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제6조 (지체상금 및 불가항력)</h2>
+              <p>"을"의 귀책으로 납기 지체 시 1일당 발주 금액의 0.05%(0.5/1,000)를 공제하되, 총액은 발주 금액의 10%를 초과할 수 없다.</p>
+              <p>천재지변, 원자재 수급 난항, 물류 대란, 통관 지연 등 불가항력 사유로 인한 지연은 지체상금을 면제한다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제7조 (검수 및 통지)</h2>
+              <p>[외관/수량] "갑"은 도착일로부터 영업일 기준 5일 이내에 검수 후 서면 통보해야 하며, 기간 내 미통보 시 합격 간주한다.</p>
+              <p>[기능/잠재 하자] 충진 후 누유 등 육안 확인이 어려운 하자는 발견 즉시(인도 후 6개월 이내) 증빙 자료와 함께 서면 통지해야 한다. 미통지 및 임의 처분 시 "을"은 보상 책임을 지지 않는다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제8조 (하자보증 및 불량 처리)</h2>
+              <p>"을"은 생산 및 운송 과정의 손실 등에 대비하여 현지 생산 및 선별 수량에 따라 여분(무상)을 추가 제공할 수 있으며, 하자보증 기간은 인도 완료일로부터 6개월로 한다.</p>
+              <p>검수 결과 불량 선별 등으로 합격 수량이 부족한 경우 양 사 합의하에 ① 미지급/차기 대금 차감, ② 차기 생산 시 보충, ③ 일정 내 재제작 공급 중 선택 처리한다.</p>
+              <p>"갑"의 사양 오류, 보관/취급 부주의, 사전 테스트 없는 내용물(제형)과의 화학적 반응으로 인한 문제는 "을"이 책임을 지지 않는다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제9조 (손해배상 범위 및 한도)</h2>
+              <p>"을"의 귀책으로 용기 불량 발생 시, "을"은 불량 용기 대금 정산(또는 보충) 및 직접적인 반품/교환 물류비에 한하여 책임을 진다.</p>
+              <p>"을"의 배상 책임은 "직접 손해"에 한정되며, 영업 손실, 브랜드 손상, 완제품 내용물(원제형) 가액 등 간접/특별 손해는 제외한다.</p>
+              <p>"을"이 부담하는 손해배상 총액은 어떠한 경우에도 해당 개별 발주 금액을 초과할 수 없다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제10조 (지식재산권 및 면책)</h2>
+              <p>"갑"이 제공한 디자인·로고 등의 권리는 "갑"에게 귀속된다.</p>
+              <p>"갑"이 지정·채택한 디자인, 규격, 구조의 제3자 지식재산권 침해 여부 확인 책임은 전적으로 "갑"에게 있다.</p>
+              <p>"갑"의 요청/승인에 따른 물품이 제3자의 지식재산권을 침해하여 분쟁 발생 시, "갑"은 자신의 비용과 책임으로 해결하고 "을"을 완전히 면책시켜야 한다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제11조 (비밀유지 및 해지)</h2>
+              <p>양 사는 거래상 알게 된 영업비밀 및 거래 조건을 제3자에게 누설하지 않으며, 의무는 계약 종료 후 2년간 유효하다.</p>
+              <p>중대한 계약 위반 또는 부도·파산 등 경영상 중대 사유 발생 시 서면 통지로 계약을 해지할 수 있다.</p>
+            </div>
+
+            <div>
+              <h2 className="font-bold text-base mb-1">제12조 (관할법원)</h2>
+              <p>본 계약과 관련한 분쟁의 관할법원은 "을"의 본사 소재지 관할 법원(수원지방법원 고양지원)으로 한다.</p>
+            </div>
+          </div>
+
+          <div className="text-center font-bold text-base my-10">{formattedContractDate}</div>
+
+          {/* 서명란 */}
+          <div className="grid grid-cols-2 gap-12 border-t-2 border-black pt-8 mt-8 text-base">
+            <div className="space-y-2">
+              <div className="font-bold text-lg mb-4">(갑)</div>
+              <div>상호 : <span className="font-bold ml-2">{clientName || ""}</span></div>
+              <div>주소 : <span className="ml-2">{clientAddress || ""}</span></div>
+              <div className="flex items-center mt-6">
+                대표자 : <span className="font-bold ml-2 mr-4">{clientCeo || ""}</span> <span className="text-sm">(서명 또는 날인)</span>
               </div>
             </div>
 
-            <ol className="space-y-4 mb-10">
-              {contractArticles.map((art, i) => (
-                <li key={i} className="print-terms" style={{ fontSize: "12.5px", lineHeight: "1.75" }}>
-                  <div className="font-bold mb-1" style={{ fontSize: "13.5px" }}>
-                    <EditField value={art.title} onChange={(v) => updateArticle(i, "title", v)} />
-                  </div>
-                  <div style={{ whiteSpace: "pre-line" }}>
-                    <EditArea value={art.body} onChange={(v) => updateArticle(i, "body", v)} className="w-full" />
-                  </div>
-                </li>
-              ))}
-            </ol>
-
-            {/* 계약체결일자 + 갑/을 서명란 */}
-            <div className="text-center text-[13.5px] font-semibold my-10 tracking-widest">
-              <EditField value={contractDate} onChange={setContractDate} className="inline-block text-center" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-8 text-[12.5px]">
-              <div className="border border-slate-300 p-4">
-                <div className="font-bold mb-2">(갑) 공급받는 자</div>
-                <div className="leading-7">
-                  <div>상호 : <EditField value={clientName} onChange={setClientName} className="inline-block" /></div>
-                  <div>대표자 : <EditField value={clientCeo} onChange={setClientCeo} className="inline-block" /> <span className="text-slate-500">(서명 또는 날인)</span></div>
-                </div>
-              </div>
-              <div className="border border-slate-300 p-4 relative">
-                <div className="font-bold mb-2">(을) 공급자</div>
-                <div className="leading-7">
-                  <div>상호 : {supplier.company}</div>
-                  <div>사업자등록번호 : {supplier.bizNo}</div>
-                  <div>주소 : {supplier.address}, A동(문봉동)</div>
-                  <div>대표이사 : {supplier.ceo} (인)</div>
-                </div>
-                {/* 직인 영역 */}
-                <div className="absolute" style={{ right: "18px", bottom: "14px", width: "62px", height: "62px", border: "1.5px solid #cbd5e1", borderRadius: "50%", color: "#94a3b8", fontSize: "10px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  직인
-                </div>
+            <div className="space-y-2">
+              <div className="font-bold text-lg mb-4">(을)</div>
+              <div>상호 : <span className="font-bold ml-2">주식회사 비케이브로</span></div>
+              <div>주소 : <span className="ml-2">경기도 고양시 일산동구 문봉길 44-75, A동(문봉동)</span></div>
+              <div className="flex items-center mt-6">
+                대표이사 : <span className="font-bold ml-2 mr-4">백 상 선</span> <span className="text-red-600 font-bold border-2 border-red-600 rounded-full w-8 h-8 flex items-center justify-center text-xs">(인)</span>
               </div>
             </div>
-          </fieldset>
+          </div>
         </div>
       )}
+      </div>{/* /pv-right */}
+      </div>{/* /2열 컨테이너 */}
     </div>
   );
 }
@@ -9231,7 +9329,13 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           width: 186mm !important; max-width: 186mm !important; margin: 0 !important;
           box-shadow: none !important;
         }
-        .no-print { display: none !important; }
+        .no-print, .pv-left { display: none !important; }
+        /* 2열 레이아웃의 스크롤 패널이 인쇄물을 잘라내지 않도록 제약을 전부 해제 */
+        .pv-right {
+          overflow: visible !important; max-height: none !important; height: auto !important;
+          padding: 0 !important; margin: 0 !important; background: none !important;
+          display: block !important; border-radius: 0 !important;
+        }
         #pdf-page table { table-layout: fixed !important; width: 100% !important; }
         #pdf-page input, #pdf-page textarea {
           border: none !important; background: transparent !important; padding: 0 !important;
