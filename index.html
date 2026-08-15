@@ -2614,14 +2614,30 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 20;
 
+  /* 🏢 업체별 모아보기 state.
+     ⚠️ 이전 커밋에서 토글 버튼만 들어가고 이 선언이 누락돼 #인보이스 진입시
+        "isGroupByCompany is not defined" ReferenceError로 화면 전체가 빈 화면이 됐었다. */
+  const [isGroupByCompany, setIsGroupByCompany] = useState(false);
+  const [openClient, setOpenClient] = useState(null);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const base = !q ? invoices : invoices.filter((iv) => (iv.clientName || "").toLowerCase().includes(q) || (iv.code || "").toLowerCase().includes(q));
-    return [...base].sort((a, b) => (parseCreatedAt(b.createdAt) || 0) - (parseCreatedAt(a.createdAt) || 0));
+    const list = Array.isArray(invoices) ? invoices.filter(Boolean) : []; // null/비배열 방어
+    const base = !q ? list : list.filter((iv) => ((iv && iv.clientName) || "").toLowerCase().includes(q) || ((iv && iv.code) || "").toLowerCase().includes(q));
+    return [...base].sort((a, b) => (parseCreatedAt(b && b.createdAt) || 0) - (parseCreatedAt(a && a.createdAt) || 0));
   }, [invoices, search]);
+  const grouped = useMemo(() => {
+    const g = {};
+    filtered.forEach((iv) => {
+      const key = ((iv && iv.clientName) || "").trim() || "미지정 업체"; // 고객사명이 비어도 안전하게 분류
+      if (!g[key]) g[key] = [];
+      g[key].push(iv);
+    });
+    return g;
+  }, [filtered]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pagedList = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { setPage(1); }, [search]);
+  useEffect(() => { setPage(1); }, [search, isGroupByCompany]);
 
   const renderInvoiceTable = (list) => (
         <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
@@ -2643,14 +2659,17 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
               <th className="text-center px-3 py-3 font-medium">작업</th>
             </tr></thead>
             <tbody>
-              {list.map((iv) => {
+              {list.filter(Boolean).map((iv, idx) => {
                 const reviewStatus = getReviewStatus(iv);
                 return (
-                  <tr key={iv.id} onClick={() => onOpenInvoice(iv, "view")} className="border-t border-slate-100 hover:bg-slate-50/50 cursor-pointer">
-                    <td className="px-3 py-3 text-xs whitespace-nowrap"><span className="text-[#1D4ED8] font-medium">{iv.code}</span></td>
+                  <tr key={iv.id || iv.code || idx} onClick={() => onOpenInvoice(iv, "view")} className="border-t border-slate-100 hover:bg-slate-50/50 cursor-pointer">
+                    <td className="px-3 py-3 text-xs whitespace-nowrap"><span className="text-[#1D4ED8] font-medium">{iv.code || "-"}</span></td>
                     <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt(iv.sentAt || iv.createdAt)}</td>
-                    <td className="px-3 py-3 text-xs font-medium text-slate-800" style={{ wordBreak: "keep-all" }}>{iv.clientName}</td>
-                    <td className="px-3 py-3 text-xs text-slate-600 text-center" style={{ wordBreak: "keep-all" }}>{(iv.items || []).map((it) => it.productName).join(", ")}</td>
+                    <td className="px-3 py-3 text-xs font-medium text-slate-800" style={{ wordBreak: "keep-all" }}>{iv.clientName || <span className="text-slate-300">미지정 업체</span>}</td>
+                    {/* 품목 배열이 null이거나 productName이 빈 항목이 섞여 있어도 안전하게 표시 */}
+                    <td className="px-3 py-3 text-xs text-slate-600 text-center" style={{ wordBreak: "keep-all" }}>
+                      {(Array.isArray(iv.items) ? iv.items : []).map((it) => (it && it.productName) || "").filter(Boolean).join(", ") || <span className="text-slate-300">-</span>}
+                    </td>
                     <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{won(iv.totalAmount)}</td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(iv.createdBy) || "-"}</td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{iv.sentBy ? displayStaffName(iv.sentBy) : <span className="text-slate-300">미발송</span>}</td>
@@ -2704,7 +2723,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
       ) : isGroupByCompany ? (
         <div className="space-y-3">
           {Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0], "ko")).map(([client, list]) => {
-            const sum = list.reduce((s, iv) => s + (Number(iv.totalAmount) || 0), 0);
+            const sum = list.reduce((s, iv) => s + (Number(iv && iv.totalAmount) || 0), 0);
             return (
               <div key={client} className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm">
                 <button onClick={() => setOpenClient(openClient === client ? null : client)} className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-50">
@@ -4270,7 +4289,8 @@ function ClientFormModal({ client, onClose, onSave }) {
   const [managerPhone, setManagerPhone] = useState((client && client.managerPhone) || "");
   const [channel, setChannel] = useState((client && client.channel) || "카카오채널");
   const [difficulty, setDifficulty] = useState((client && client.difficulty) || "표준");
-  const [clientTier, setClientTier] = useState(getClientTier(client)); // 옛 isKeyClient 데이터도 자동으로 "MAIN"으로 잡힌다
+  const [tags, setTags] = useState(getClientTags(client)); // 옛 clientTier/isKeyClient 데이터도 자동으로 배열로 잡힌다
+  const toggleTag = (k) => setTags((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
   const [note, setNote] = useState((client && client.note) || "");
   const [attachments, setAttachments] = useState((client && client.attachments) || []);
   const fileRef = useRef(null);
@@ -4307,7 +4327,7 @@ function ClientFormModal({ client, onClose, onSave }) {
 
   const save = () => {
     if (!name.trim()) return;
-    const payload = { name, ceoName, address, contact, managerPhone, channel, difficulty, note, attachments, clientTier, isKeyClient: clientTier === "MAIN" };
+    const payload = { name, ceoName, address, contact, managerPhone, channel, difficulty, note, attachments, ...buildClientTagPatch(tags) };
     if (isEdit) onSave(client.id, payload);
     else onSave(null, { id: Date.now(), ...payload });
   };
@@ -4339,12 +4359,21 @@ function ClientFormModal({ client, onClose, onSave }) {
               {CLIENT_DIFFICULTY_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </Field>
-          <Field label="업체 분류">
-            <select className={inputCls} value={clientTier} onChange={(e) => setClientTier(e.target.value)}>
-              <option value="">일반</option>
-              {CLIENT_TIERS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-            </select>
-          </Field>
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">업체 분류 <span className="font-normal text-slate-400">(여러 개 선택 가능)</span></label>
+            <div className="flex flex-wrap gap-2">
+              {CLIENT_TIERS.map((t) => {
+                const on = tags.includes(t.key);
+                return (
+                  <button key={t.key} type="button" onClick={() => toggleTag(t.key)}
+                    className={"text-xs px-3 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition " + (on ? t.onCls : "bg-white text-slate-400 border-slate-200 hover:bg-slate-50")}>
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+            {tags.length === 0 && <p className="text-xs text-slate-400 mt-1">선택하지 않으면 일반 업체로 저장됩니다.</p>}
+          </div>
 
           <Field label="특이사항" span={2}><AutoResizeTextarea value={note} onChange={setNote} minRows={2} placeholder="업체별 특징, 주의사항 등 자유 메모" /></Field>
 
@@ -4542,38 +4571,58 @@ function GenericMergeModal({ title, items, getLabel, getSubLabel, confirmText, o
 const CONTRACT_VALID_DAYS = 365;
 /* 🏢 업체 분류 4종 — 아이콘 없이 순수 텍스트 배지.
    ⚠️ 기존 isKeyClient(⭐주거래) 불리언 데이터와의 하위호환이 핵심:
-      clientTier 필드가 없고 isKeyClient만 true인 옛 레코드는 "MAIN"(주거래)으로 간주한다(getClientTier).
+      tags 배열이 정식이며, 옛 clientTier 문자열/isKeyClient 불리언도 getClientTags가 함께 읽는다.
       지정 저장시에도 isKeyClient를 함께 맞춰줘 다른 화면(주거래 정렬 등)이 깨지지 않게 한다. */
 const CLIENT_TIERS = [
-  { key: "MAIN", label: "주거래", cls: "bg-amber-100 text-amber-800 font-bold" },
-  { key: "CLIENT", label: "고객사", cls: "bg-blue-100 text-blue-800 font-bold" },
-  { key: "VIP", label: "대형사", cls: "bg-purple-100 text-purple-800 font-bold" },
-  { key: "RISK", label: "주의", cls: "bg-rose-100 text-rose-800 font-bold" },
+  // cls = 배지용, onCls = 행 토글 버튼이 켜졌을 때(테두리 포함)
+  { key: "MAIN", label: "주거래", cls: "bg-amber-100 text-amber-800 font-bold", onCls: "bg-amber-100 text-amber-800 border-amber-300" },
+  { key: "CLIENT", label: "고객사", cls: "bg-blue-100 text-blue-800 font-bold", onCls: "bg-blue-100 text-blue-800 border-blue-300" },
+  { key: "VIP", label: "대형사", cls: "bg-purple-100 text-purple-800 font-bold", onCls: "bg-purple-100 text-purple-800 border-purple-300" },
+  { key: "RISK", label: "주의", cls: "bg-rose-100 text-rose-800 font-bold", onCls: "bg-rose-100 text-rose-800 border-rose-300" },
 ];
 const CLIENT_TIER_MAP = CLIENT_TIERS.reduce((m, t) => { m[t.key] = t; return m; }, {});
-function getClientTier(c) {
-  const key = (c && c.clientTier) || "";
-  if (CLIENT_TIER_MAP[key]) return key;
-  if (c && c.isKeyClient) return "MAIN"; // 옛 ⭐주거래 데이터 폴백
-  return "";
+/* 업체 태그 판정 — 한 업체가 여러 태그를 동시에 가질 수 있다(주거래이면서 대형사 등).
+   ⚠️ 데이터 3세대를 모두 읽어야 한다:
+      ① 현행 tags 배열  ② 그 전 clientTier 단일 문자열  ③ 가장 옛 isKeyClient 불리언
+   반환은 항상 유효한 key만 담긴 배열이라, 호출부는 includes()로 단순 비교하면 된다. */
+function getClientTags(c) {
+  if (!c) return [];
+  const raw = Array.isArray(c.tags) ? c.tags
+    : (c.clientTier ? [c.clientTier] : (c.isKeyClient ? ["MAIN"] : []));
+  const seen = new Set();
+  return raw.filter((k) => CLIENT_TIER_MAP[k] && !seen.has(k) && seen.add(k)); // 알 수 없는 값·중복 제거
+}
+// 태그 배열을 저장 payload로 변환 — 옛 필드도 함께 맞춰 다른 화면·정렬이 어긋나지 않게 한다
+function buildClientTagPatch(tags) {
+  const list = (tags || []).filter((k) => CLIENT_TIER_MAP[k]);
+  return { tags: list, clientTier: list[0] || "", isKeyClient: list.includes("MAIN") };
 }
 
 /* 🏭 공장 분류 5종 — 업체 분류(CLIENT_TIERS)와 동일 패턴, 아이콘 없이 순수 텍스트.
    ⚠️ 옛 isKeyFactory(⭐주거래공장) 불리언과 하위호환: category가 없고 isKeyFactory만 true면 "MAIN"으로 본다. */
 const FACTORY_TIERS = [
-  { key: "MAIN", label: "주거래", cls: "bg-amber-100 text-amber-800 font-bold" },
-  { key: "ACTIVE", label: "거래공장", cls: "bg-blue-100 text-blue-800 font-bold" },
-  { key: "QUALITY", label: "고품질", cls: "bg-emerald-100 text-emerald-800 font-bold" },
-  { key: "VISITED", label: "방문공장", cls: "bg-teal-100 text-teal-800 font-bold" },
-  { key: "LARGE", label: "대형공장", cls: "bg-purple-100 text-purple-800 font-bold" },
-  { key: "RISK", label: "주의", cls: "bg-rose-100 text-rose-800 font-bold" },
+  // cls = 배지용, onCls = 토글 칩이 켜졌을 때(테두리 포함)
+  { key: "MAIN", label: "주거래", cls: "bg-amber-100 text-amber-800 font-bold", onCls: "bg-amber-100 text-amber-800 border-amber-300" },
+  { key: "ACTIVE", label: "거래공장", cls: "bg-blue-100 text-blue-800 font-bold", onCls: "bg-blue-100 text-blue-800 border-blue-300" },
+  { key: "QUALITY", label: "고품질", cls: "bg-emerald-100 text-emerald-800 font-bold", onCls: "bg-emerald-100 text-emerald-800 border-emerald-300" },
+  { key: "VISITED", label: "방문공장", cls: "bg-teal-100 text-teal-800 font-bold", onCls: "bg-teal-100 text-teal-800 border-teal-300" },
+  { key: "LARGE", label: "대형공장", cls: "bg-purple-100 text-purple-800 font-bold", onCls: "bg-purple-100 text-purple-800 border-purple-300" },
+  { key: "RISK", label: "주의", cls: "bg-rose-100 text-rose-800 font-bold", onCls: "bg-rose-100 text-rose-800 border-rose-300" },
 ];
 const FACTORY_TIER_MAP = FACTORY_TIERS.reduce((m, t) => { m[t.key] = t; return m; }, {});
-function getFactoryTier(f) {
-  const key = (f && f.category) || "";
-  if (FACTORY_TIER_MAP[key]) return key;
-  if (f && f.isKeyFactory) return "MAIN"; // 옛 ⭐주거래공장 데이터 폴백
-  return "";
+/* 공장 태그 판정 — 업체(getClientTags)와 완전히 동일한 3세대 호환 구조.
+   ① 현행 tags 배열  ② 그 전 category 단일 문자열  ③ 가장 옛 isKeyFactory 불리언 */
+function getFactoryTags(f) {
+  if (!f) return [];
+  const raw = Array.isArray(f.tags) ? f.tags
+    : (f.category ? [f.category] : (f.isKeyFactory ? ["MAIN"] : []));
+  const seen = new Set();
+  return raw.filter((k) => FACTORY_TIER_MAP[k] && !seen.has(k) && seen.add(k)); // 알 수 없는 값·중복 제거
+}
+// 저장 payload로 변환 — 옛 필드(category/isKeyFactory)도 함께 맞춰 다른 화면과 어긋나지 않게 한다
+function buildFactoryTagPatch(tags) {
+  const list = (tags || []).filter((k) => FACTORY_TIER_MAP[k]);
+  return { tags: list, category: list[0] || "", isKeyFactory: list.includes("MAIN") };
 }
 
 /* 계약 서명일시 표기 — 저장값은 nowDateTimeStr()이라 "2026-08-15 16:05:00"(초 포함) 형태다.
@@ -4715,8 +4764,9 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
   // _mergedIds에 병합된 모든 원본 id를 모아두어 견적이력 합산·일괄삭제에 사용
   const mergedClients = useMemo(() => {
     const map = new Map();
-    clients.forEach((c) => {
-      const key = (c.name || "").trim();
+    // clients가 null이거나 배열에 null이 섞여도 화면이 죽지 않게 방어
+    (Array.isArray(clients) ? clients : []).filter(Boolean).forEach((c) => {
+      const key = ((c && c.name) || "").trim();
       if (!key) { map.set("__unnamed_" + c.id, { ...c, _mergedIds: [c.id] }); return; }
       const existing = map.get(key);
       if (!existing) {
@@ -4735,7 +4785,9 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
           note: existing.note || c.note,
           source: existing.source || c.source,
           isKeyClient: existing.isKeyClient || c.isKeyClient,
-          clientTier: existing.clientTier || c.clientTier, // 안 넣으면 중복 업체 병합시 분류가 유실됨
+          // 중복 업체 병합시 태그는 합집합으로(한쪽에만 있던 태그가 유실되지 않게)
+          tags: [...new Set([...getClientTags(existing), ...getClientTags(c)])],
+          clientTier: existing.clientTier || c.clientTier,
           _mergedIds: [...existing._mergedIds, c.id],
         });
       }
@@ -4745,7 +4797,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
 
   const filtered = useMemo(() => {
     const base = mergedClients.filter((c) => {
-      if (tierFilter && getClientTier(c) !== tierFilter) return false;
+      if (tierFilter && !getClientTags(c).includes(tierFilter)) return false; // 중복 지정 업체도 각 탭에 노출
       return !search.trim() || (c.name || "").toLowerCase().includes(search.trim().toLowerCase()) || (c.contact || "").toLowerCase().includes(search.trim().toLowerCase());
     });
     return sortByKey(base, sortKey, (c) => c.name, (c) => c.createdAt);
@@ -4816,7 +4868,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
           전체 업체 <span className={"ml-1 " + (!tierFilter ? "text-white/70" : "text-slate-400")}>{mergedClients.length}</span>
         </button>
         {CLIENT_TIERS.map((t) => {
-          const cnt = mergedClients.filter((c) => getClientTier(c) === t.key).length;
+          const cnt = mergedClients.filter((c) => getClientTags(c).includes(t.key)).length;
           return (
             <button key={t.key} onClick={() => setTierFilter(t.key)}
               className={"text-xs px-3 py-1.5 rounded-full font-medium " + (tierFilter === t.key ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>
@@ -4832,7 +4884,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
       />
 
       <div className="space-y-3">
-        {filtered.length === 0 && <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">{clients.length === 0 ? "등록된 업체가 없습니다. (제안서를 저장하면 거래한 업체가 자동으로도 등록됩니다)" : "검색 결과가 없습니다."}</div>}
+        {filtered.length === 0 && <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">{(clients || []).length === 0 ? "등록된 업체가 없습니다. (제안서를 저장하면 거래한 업체가 자동으로도 등록됩니다)" : "검색 결과가 없습니다."}</div>}
         {pagedClients.map((c) => {
           const history = proposals.filter((p) => p.clientName === c.name).sort((a, b) => (parseCreatedAt(b.createdAt) || 0) - (parseCreatedAt(a.createdAt) || 0));
           const difficulty = c.difficulty || "표준";
@@ -4846,10 +4898,10 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-slate-800 text-sm text-left">{c.name}</span>
                     <span className={"text-[10px] px-2 py-0.5 rounded-full font-medium " + DIFFICULTY_BADGE_STYLE[difficulty]}>{difficulty}</span>
-                    {(() => {
-                      const t = CLIENT_TIER_MAP[getClientTier(c)];
-                      return t ? <span className={"px-2 py-0.5 text-xs font-semibold rounded-md whitespace-nowrap " + t.cls}>{t.label}</span> : null;
-                    })()}
+                    {/* 보유한 모든 태그를 나란히 표시(주거래 + 대형사 동시 지정 가능) */}
+                    {getClientTags(c).map((k) => (
+                      <span key={k} className={"px-2 py-0.5 text-xs font-semibold rounded-md whitespace-nowrap " + CLIENT_TIER_MAP[k].cls}>{CLIENT_TIER_MAP[k].label}</span>
+                    ))}
                     {c._mergedIds && c._mergedIds.length > 1 && <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500" title="중복 등록된 동일 업체명을 하나로 병합해 표시 중">🔗 중복 {c._mergedIds.length}건 병합</span>}
                     {contract.valid ? (
                       <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800 whitespace-nowrap" title={`서명일시 ${formatContractSignedAt(contract.signedAt)}${contract.signName ? ` · 서명자 ${contract.signName}` : ""}\n유효기간 ~${contract.expireAt}`}>📜 표준계약서 서명완료 ({formatContractSignedAt(contract.signedAt)})</span>
@@ -4864,17 +4916,28 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="text-xs text-slate-400">{openClient === c.id ? "접기 ▲" : "펼치기 ▼"}</span>
-                  {/* 분류 지정 — isKeyClient도 함께 맞춰 기존 데이터·다른 화면과 어긋나지 않게 한다 */}
-                  <select
-                    value={getClientTier(c)}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => { e.stopPropagation(); const v = e.target.value; onUpdate(c.id, { clientTier: v, isKeyClient: v === "MAIN" }); }}
-                    title="업체 분류 지정"
-                    className="text-xs px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-600 outline-none focus:border-[#1E3A8A] cursor-pointer"
-                  >
-                    <option value="">미지정</option>
-                    {CLIENT_TIERS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-                  </select>
+                  {/* 태그 토글 — 클릭할 때마다 해당 태그가 추가/제거된다(여러 개 동시 지정 가능).
+                      ⚠️ stopPropagation 필수: 없으면 카드 클릭(펼치기)까지 함께 발동한다 */}
+                  <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                    {CLIENT_TIERS.map((t) => {
+                      const on = getClientTags(c).includes(t.key);
+                      return (
+                        <button
+                          key={t.key}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const cur = getClientTags(c);
+                            const next = on ? cur.filter((k) => k !== t.key) : [...cur, t.key];
+                            onUpdate(c.id, buildClientTagPatch(next));
+                          }}
+                          title={on ? `${t.label} 태그 해제` : `${t.label} 태그 지정`}
+                          className={"text-xs px-2 py-1 rounded-lg border font-semibold whitespace-nowrap transition " + (on ? t.onCls : "bg-white text-slate-400 border-slate-200 hover:bg-slate-50")}
+                        >
+                          {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                   {contract.valid ? (
                     <span onClick={(e) => { e.stopPropagation(); setContractViewClient(c); }} className="text-xs px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer whitespace-nowrap">📜 계약서 보기/인쇄</span>
                   ) : (
@@ -4949,7 +5012,8 @@ function Pagination({ page, totalPages, onChange, totalItems }) {
 
 function FactoryFormModal({ factory, onClose, onSave }) {
   const [name, setName] = useState(factory.name || "");
-  const [category, setCategory] = useState(getFactoryTier(factory)); // 옛 isKeyFactory도 자동으로 "MAIN"으로 잡힌다
+  const [tags, setTags] = useState(getFactoryTags(factory)); // 옛 category/isKeyFactory 데이터도 자동으로 배열로 잡힌다
+  const toggleTag = (k) => setTags((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
   const [wechatGroup, setWechatGroup] = useState(factory.wechatGroup || "");
   const [contact, setContact] = useState(factory.contact || "");
   const [mainProducts, setMainProducts] = useState(factory.mainProducts || "");
@@ -4958,8 +5022,7 @@ function FactoryFormModal({ factory, onClose, onSave }) {
 
   const save = () => {
     if (!name.trim()) return;
-    // category 저장시 isKeyFactory도 함께 맞춰 옛 필드를 보는 곳(정렬 등)과 어긋나지 않게 한다
-    onSave(factory.id, { name: name.replace(/\s+/g, ""), category, isKeyFactory: category === "MAIN", wechatGroup, contact, mainProducts, websiteUrl, memo });
+    onSave(factory.id, { name: name.replace(/\s+/g, ""), ...buildFactoryTagPatch(tags), wechatGroup, contact, mainProducts, websiteUrl, memo });
   };
 
   return (
@@ -4973,11 +5036,19 @@ function FactoryFormModal({ factory, onClose, onSave }) {
           <div className="grid grid-cols-2 gap-4">
             <Field label="공장명" span={2} hint="띄어쓰기는 저장시 자동으로 붙습니다"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="예: 广州潮迪塑料制品有限公司" /></Field>
             <div className="col-span-2">
-              <label className="block text-xs font-semibold text-slate-700 mb-1">공장 분류</label>
-              <select className={inputCls} value={category} onChange={(e) => setCategory(e.target.value)}>
-                <option value="">일반/미지정</option>
-                {FACTORY_TIERS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-              </select>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">공장 분류 <span className="font-normal text-slate-400">(여러 개 선택 가능)</span></label>
+              <div className="flex flex-wrap gap-2">
+                {FACTORY_TIERS.map((t) => {
+                  const on = tags.includes(t.key);
+                  return (
+                    <button key={t.key} type="button" onClick={() => toggleTag(t.key)}
+                      className={"text-xs px-3 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition " + (on ? t.onCls : "bg-white text-slate-400 border-slate-200 hover:bg-slate-50")}>
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {tags.length === 0 && <p className="text-xs text-slate-400 mt-1">선택하지 않으면 일반 공장으로 저장됩니다.</p>}
             </div>
             <Field label="위챗 그룹방"><input className={inputCls} value={wechatGroup} onChange={(e) => setWechatGroup(e.target.value)} placeholder="위챗 단체방명" /></Field>
             <Field label="연락처"><input className={inputCls} value={contact} onChange={(e) => setContact(e.target.value)} placeholder="전화 / 위챗ID" /></Field>
@@ -5122,8 +5193,9 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
   const [viewingFactoryDetail, setViewingFactoryDetail] = useState(null);
 
   const filtered = useMemo(() => {
-    const base = factories.filter((f) => {
-      if (tierFilter && getFactoryTier(f) !== tierFilter) return false;
+    // factories가 null이거나 배열에 null이 섞여도 화면이 죽지 않게 방어
+    const base = (Array.isArray(factories) ? factories : []).filter(Boolean).filter((f) => {
+      if (tierFilter && !getFactoryTags(f).includes(tierFilter)) return false; // 중복 지정 공장도 각 탭에 노출
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
       return (f.name || "").toLowerCase().includes(q) || (f.mainProducts || "").toLowerCase().includes(q);
@@ -5211,10 +5283,10 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
 
       <div className="flex gap-1.5 mb-3">
         <button onClick={() => setTierFilter("")} className={"text-xs px-3 py-1.5 rounded-full font-medium " + (!tierFilter ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>
-          전체 공장 <span className={"ml-1 " + (!tierFilter ? "text-white/70" : "text-slate-400")}>{factories.length}</span>
+          전체 공장 <span className={"ml-1 " + (!tierFilter ? "text-white/70" : "text-slate-400")}>{(factories || []).length}</span>
         </button>
         {FACTORY_TIERS.map((t) => {
-          const cnt = factories.filter((f) => getFactoryTier(f) === t.key).length;
+          const cnt = (factories || []).filter((f) => getFactoryTags(f).includes(t.key)).length;
           return (
             <button key={t.key} onClick={() => setTierFilter(t.key)}
               className={"text-xs px-3 py-1.5 rounded-full font-medium " + (tierFilter === t.key ? "bg-[#1E3A8A] text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>
@@ -5231,7 +5303,7 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
 
       {filtered.length === 0 ? (
         <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-10 text-center text-slate-400 text-sm">
-          {factories.length === 0 ? "등록된 공장이 없습니다." : "검색 결과가 없습니다."}
+          {(factories || []).length === 0 ? "등록된 공장이 없습니다." : "검색 결과가 없습니다."}
         </div>
       ) : (
         <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
@@ -5252,10 +5324,10 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
                   <td className="px-4 py-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5">
                       <button onClick={() => setViewingFactoryDetail(f)} className="font-semibold hover:text-[#1E3A8A] hover:underline text-left" style={{ color: "#111827" }}>{f.name}</button>
-                      {(() => {
-                        const t = FACTORY_TIER_MAP[getFactoryTier(f)];
-                        return t ? <span className={"px-2 py-0.5 text-xs font-semibold rounded-md whitespace-nowrap shrink-0 " + t.cls}>{t.label}</span> : null;
-                      })()}
+                      {/* 보유한 모든 태그를 순서대로 나란히 표시(주거래 + 고품질 + 방문공장 동시 가능) */}
+                      {getFactoryTags(f).map((k) => (
+                        <span key={k} className={"px-2 py-0.5 text-xs font-semibold rounded-md whitespace-nowrap shrink-0 " + FACTORY_TIER_MAP[k].cls}>{FACTORY_TIER_MAP[k].label}</span>
+                      ))}
                     </div>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap" style={{ color: "#1E293B" }}>{f.wechatGroup || <span className="text-slate-400">-</span>}</td>
@@ -5279,12 +5351,13 @@ function FactoriesView({ factories, products, onBack, onAdd, onUpdate, onDelete,
                   {/* 작업 영역 — 배지·수정·삭제를 flex로 일원화해 행마다 줄이 어긋나지 않게 한다 */}
                   <td className="px-4 py-3 whitespace-nowrap">
                     <div className="flex items-center justify-end gap-3 min-w-[200px]">
-                      {(() => {
-                        const t = FACTORY_TIER_MAP[getFactoryTier(f)];
-                        return t
-                          ? <span className={"px-2 py-0.5 text-xs font-semibold rounded-md whitespace-nowrap " + t.cls}>{t.label}</span>
-                          : <span className="text-xs text-slate-300 whitespace-nowrap">미지정</span>;
-                      })()}
+                      {getFactoryTags(f).length > 0
+                        ? <div className="flex items-center gap-1 flex-wrap justify-end">
+                            {getFactoryTags(f).map((k) => (
+                              <span key={k} className={"px-2 py-0.5 text-xs font-semibold rounded-md whitespace-nowrap " + FACTORY_TIER_MAP[k].cls}>{FACTORY_TIER_MAP[k].label}</span>
+                            ))}
+                          </div>
+                        : <span className="text-xs text-slate-300 whitespace-nowrap">미지정</span>}
                       <button onClick={() => setFormFactory(f)} className="flex items-center gap-1 text-slate-600 hover:text-indigo-600 text-xs font-medium">✏️ 수정</button>
                       {isAdmin && <button onClick={() => onDelete(f)} className="flex items-center gap-1 text-slate-400 hover:text-rose-600 text-xs font-medium">🗑️ 삭제</button>}
                     </div>
