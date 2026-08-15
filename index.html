@@ -6812,7 +6812,9 @@ function SampleApprovalSendModal({ sample, kind, qty, grandTotal, expectedDate, 
   );
 }
 
-function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onUpdate, onClose, readOnly }) {
+function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onUpdate, onClose, readOnly, publicView }) {
+  /* publicView = 고객용 승인 페이지에서 띄운 경우. 모달 오버레이·관리자 툴바·좌측 편집폼을 전부 걷어내고
+     A4 인보이스 용지만 단독으로 렌더링한다(고객에게 편집 UI가 노출되면 안 되기 때문). */
   const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
   const matchedProduct = (products || []).find((p) => p.name === sample.productName);
   // 제품DB에 사진이 없으면, 이 샘플에 연결된 제안서의 품목 사진을 대신 끌어온다(제안서에 실제로 첨부됐던 사진이라 더 정확한 경우가 많음)
@@ -6925,9 +6927,9 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4" onClick={onClose}>
+    <div className={publicView ? "w-full" : "fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4"} onClick={publicView ? undefined : onClose}>
       {/* 제안서 미리보기 상단바와 동일한 구조: 좌측에 조회/편집 태그, 우측에 발송상태 배지 + 버튼 툴바 */}
-      <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
+      <div className={"no-print items-center justify-between gap-2 mb-3 mx-auto " + (publicView ? "hidden" : "flex")} style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
         <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">{readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ 텍스트를 클릭하면 바로 수정할 수 있습니다"}</span>
         <div className="flex items-center gap-2">
           {sample.sentBy ? (
@@ -6958,9 +6960,11 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
       {showStockPicker && (
         <StockPickerModal stock={sampleStock} productName={productName} onClose={() => setShowStockPicker(false)} onPick={pickStockForInvoice} />
       )}
-      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col mx-auto" style={{ width: "97vw", maxWidth: "1420px", height: "88vh" }} onClick={(e) => e.stopPropagation()}>
-        <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-[320px_1fr]">
-          {/* 좌측: 편집 폼 */}
+      <div className={"bg-white overflow-hidden flex flex-col mx-auto " + (publicView ? "w-full" : "rounded-xl w-full")}
+        style={publicView ? undefined : { width: "97vw", maxWidth: "1420px", height: "88vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className={publicView ? "" : "flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-[320px_1fr]"}>
+          {/* 좌측: 편집 폼 — 고객용(publicView)에서는 통째로 렌더링하지 않는다 */}
+          {!publicView && (
           <fieldset disabled={readOnly} className="p-5 border-r border-slate-100 space-y-2.5 overflow-y-auto" style={{ border: 0 }}>
             <Field label="진행상태">
               <select className={inputCls} value={sample.status} title={sampleLastStatusText(sample)} onChange={(e) => onUpdate && onUpdate(sample, buildSampleStatusPatch(sample, e.target.value, sample.assignee || ""))}>
@@ -7002,9 +7006,10 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
             <Field label="택배수령 예정일자"><input type="date" className={inputCls} value={receiveDate} onChange={(e) => setReceiveDate(e.target.value)} /></Field>
             <p className="text-[11px] text-slate-400 pt-1">💡 우측 미리보기의 인사말·하단 안내문구는 텍스트를 클릭하면 직접 고쳐 쓸 수 있습니다.</p>
           </fieldset>
+          )}
 
           {/* 우측: 원본 서식과 동일한 레이아웃의 미리보기(화면 표시 + 인쇄시 그대로 출력) */}
-          <div className="p-5 overflow-y-auto bg-slate-50">
+          <div className={publicView ? "flex justify-center" : "p-5 overflow-y-auto bg-slate-50"}>
             <div id="sample-invoice-print" className="bg-white mx-auto p-7 text-[12px]" style={{ width: "210mm", minHeight: "297mm", color: "#111827", lineHeight: 1.7 }}>
               <div className="flex items-center justify-between mb-4 pb-3 border-b-2" style={{ borderColor: "#1E3A8A" }}>
                 <img src={supplierLogo || DEFAULT_LOGO} className="h-11 object-contain" alt="㈜비케이브로" />
@@ -7133,7 +7138,9 @@ function buildCtSpecText(s) {
   return parts.join("\n");
 }
 
-function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpdate, onClose, readOnly }) {
+function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpdate, onClose, readOnly, publicView }) {
+  // publicView: 고객용 승인 페이지 전용 — 오버레이/툴바/좌측 편집폼 없이 A4 용지만 단독 렌더링
+
   const matchedProduct = (products || []).find((p) => p.name === sample.productName);
   const linkedProposal = (proposals || []).find((p) => String(p.id) === String(sample.linkedProposalId));
   const proposalItem = linkedProposal && (linkedProposal.items || []).find((it) => it.productName === sample.productName);
@@ -7218,9 +7225,9 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4" onClick={onClose}>
+    <div className={publicView ? "w-full" : "fixed inset-0 bg-black/50 z-50 overflow-y-auto py-8 px-4"} onClick={publicView ? undefined : onClose}>
       {/* 상단 툴바 — 일반 인보이스/제안서 미리보기와 동일 구조: 좌측 조회·편집 배너, 우측 [상태배지][닫기][저장][인쇄][발송완료] */}
-      <div className="no-print flex items-center justify-between gap-2 mb-3 mx-auto" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
+      <div className={"no-print items-center justify-between gap-2 mb-3 mx-auto " + (publicView ? "hidden" : "flex")} style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
         <span className="text-xs text-white/90 bg-black/30 px-3 py-1.5 rounded-lg">
           {readOnly ? "🔒 조회 전용 — 수정할 수 없습니다" : "✏️ CT 맞춤샘플 인보이스 — 텍스트를 클릭하면 바로 수정할 수 있습니다"}
         </span>
@@ -7253,9 +7260,11 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-emerald-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg shadow-lg no-print">✅ 성공적으로 저장되었습니다.</div>
       )}
 
-      <div className="bg-white rounded-xl mx-auto overflow-hidden" style={{ width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
-        <div className="grid items-start" style={{ gridTemplateColumns: "340px 1fr" }}>
-          {/* 좌측: 입력폼 */}
+      <div className={"bg-white mx-auto overflow-hidden " + (publicView ? "w-full" : "rounded-xl")}
+        style={publicView ? undefined : { width: "97vw", maxWidth: "1420px" }} onClick={(e) => e.stopPropagation()}>
+        <div className={publicView ? "" : "grid items-start"} style={publicView ? undefined : { gridTemplateColumns: "340px 1fr" }}>
+          {/* 좌측: 입력폼 — 고객용(publicView)에서는 렌더링하지 않는다 */}
+          {!publicView && (
           <fieldset disabled={readOnly} className="p-5 border-r border-slate-200 overflow-y-auto max-h-[calc(100vh-120px)] pr-2 no-print" style={{ minHeight: 0 }}>
             <div className="text-sm font-bold text-slate-800 mb-3">🧪 CT 샘플 인보이스 입력</div>
             <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
@@ -7286,9 +7295,11 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
             </div>
             <p className="text-[11px] text-slate-400 pt-2">💡 우측 미리보기의 인사말·참고사항은 텍스트를 클릭하면 직접 고쳐 쓸 수 있습니다.</p>
           </fieldset>
+          )}
 
           {/* 우측: 엑셀 표준서식과 동일한 레이아웃의 미리보기(화면 표시 + 인쇄시 그대로 출력) */}
-          <div className="p-5 overflow-y-auto max-h-[calc(100vh-120px)] pr-2 bg-slate-50" style={{ minHeight: 0 }}>
+          <div className={publicView ? "flex justify-center" : "p-5 overflow-y-auto max-h-[calc(100vh-120px)] pr-2 bg-slate-50"}
+            style={publicView ? undefined : { minHeight: 0 }}>
             <div id="sample-invoice-print" className="bg-white mx-auto p-7 text-[12px]" style={{ width: "210mm", minHeight: "297mm", color: "#111827", lineHeight: 1.7 }}>
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
@@ -8438,13 +8449,47 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const subs = selectedProducts.filter((p) => p.id !== primaryId);
     if (!primary || subs.length === 0) return;
 
-    // 1) 제안서 연결이력(proposalIds) 합산
-    const mergedProposalIds = [...new Set([...(primary.proposalIds || []), ...subs.flatMap((p) => p.proposalIds || [])])];
-    const patch = { proposalIds: mergedProposalIds, proposalCount: mergedProposalIds.length };
-    setProductsList((prev) => prev.map((p) => (p.id === primaryId ? { ...p, ...patch } : p)).filter((p) => !subs.some((s) => s.id === p.id)));
-    try { if (FIREBASE_ENABLED && typeof primaryId === "string") await fsUpdate(COLLECTIONS.products, primaryId, patch); } catch (e) { console.error(e); }
+    /* 1) 연결 제안서 합산 — ⚠️ 반드시 getLinkedProposals(화면 배지와 동일한 기준)로 수집할 것.
+       이 시스템은 제안서에 productId를 두지 않고 product.proposalIds[]로 역방향 연결하며,
+       proposalIds가 없는 옛 제품은 "제품명 매칭" 폴백으로 배지를 표시한다.
+       예전엔 proposalIds만 합쳤는데, 서브제품이 폴백으로 잡히던 건이면 그 id가 어디에도 안 남고
+       대표제품엔 proposalIds가 생겨 폴백이 꺼지므로 그 제안서가 배지에서 통째로 사라졌다(유실처럼 보임).
+       이제 양쪽의 "실제 연결 제안서"를 전부 id로 확정해 대표제품에 적재한다. */
+    const collectLinkedIds = (p) => getLinkedProposals(p, proposalList).map((x) => x.id).filter(Boolean);
+    const mergedProposalIds = [...new Set([
+      ...(primary.proposalIds || []), ...collectLinkedIds(primary),
+      ...subs.flatMap((p) => [...(p.proposalIds || []), ...collectLinkedIds(p)]),
+    ])];
 
-    // 2) 서브제품명을 참조하던 샘플의 productName을 대표제품명으로 cascade
+    /* 2) 대표제품에 비어있는 필드만 서브제품 값으로 보강한다(SKU·품번·규격·사진·가격구간 등).
+       기존 값이 있으면 절대 덮어쓰지 않는다 — 대표제품 데이터 보존이 우선이고, 서브가 삭제되면서
+       그쪽에만 있던 정보가 사라지는 것만 막는 목적. */
+    const isEmptyVal = (v) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+    const SKIP_KEYS = ["id", "_mergedIds", "_attrs", "proposalIds", "proposalCount", "createdAt", "updatedAt"];
+    const filled = {};
+    subs.forEach((s) => {
+      Object.keys(s).forEach((k) => {
+        if (SKIP_KEYS.includes(k)) return;
+        if (isEmptyVal(primary[k]) && isEmptyVal(filled[k]) && !isEmptyVal(s[k])) filled[k] = s[k];
+      });
+    });
+
+    const patch = { ...filled, proposalIds: mergedProposalIds, proposalCount: mergedProposalIds.length };
+
+    /* 3) ⚠️ 순서가 중요하다: 대표제품 갱신을 먼저 확정한 뒤에만 서브제품을 삭제한다.
+       예전처럼 로컬에서 먼저 지우면, 대표 갱신이 실패했을 때 연결이력이 어디에도 남지 않아 진짜로 유실된다. */
+    if (FIREBASE_ENABLED && typeof primaryId === "string") {
+      try {
+        await fsUpdate(COLLECTIONS.products, primaryId, patch);
+      } catch (e) {
+        console.error(e);
+        setToast("⚠️ 병합에 실패했습니다. 원본 제품은 그대로 유지됩니다.");
+        return; // 서브제품을 지우지 않고 중단 — 데이터 유실 방지
+      }
+    }
+    setProductsList((prev) => prev.map((p) => (p.id === primaryId ? { ...p, ...patch } : p)).filter((p) => !subs.some((s) => s.id === p.id)));
+
+    // 4) 서브제품명을 참조하던 샘플의 productName을 대표제품명으로 cascade(샘플이 미아가 되지 않게)
     const subNames = subs.map((p) => p.name);
     const affectedSamples = sampleList.filter((s) => subNames.includes(s.productName));
     setSampleList((prev) => prev.map((s) => (subNames.includes(s.productName) ? { ...s, productName: primary.name } : s)));
@@ -8452,12 +8497,12 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       try { if (FIREBASE_ENABLED && typeof s.id === "string") await fsUpdate(COLLECTIONS.samples, s.id, { productName: primary.name }); } catch (e) { console.error(e); }
     }
 
-    // 3) 서브제품 레코드 삭제
+    // 5) 연결 이전이 모두 끝난 뒤에만 서브제품 레코드 삭제
     for (const p of subs) {
       try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsDelete(COLLECTIONS.products, p.id); } catch (e) { console.error(e); }
     }
 
-    setToast("✅ 선택한 제품이 대표 제품으로 병합되었습니다.");
+    setToast(`✅ 병합 완료 — 대표 제품에 연결 제안서 ${mergedProposalIds.length}건이 통합되었습니다.`);
   };
   // 선택한 업체들을 대표 고객사 1개로 병합 — 서브업체명을 참조하던 제안서/샘플의 clientName을 대표업체명으로 이전(Cascade)하고
   // 서브업체(동일명 자동병합된 카드라면 그 밑의 원본 레코드까지 전부)는 삭제한다.
@@ -11121,8 +11166,8 @@ function SampleApprovalPage({ sampleId, kind }) {
 
       <div className="max-w-5xl mx-auto px-4 py-4">
         {isCt
-          ? <CtSampleInvoiceModal sample={sample} products={[]} proposals={[]} supplierLogo="" onClose={() => {}} readOnly />
-          : <SampleInvoiceModal sample={sample} products={[]} proposals={[]} sampleStock={[]} supplierLogo="" onClose={() => {}} readOnly />}
+          ? <CtSampleInvoiceModal sample={sample} products={[]} proposals={[]} supplierLogo="" onClose={() => {}} readOnly publicView />
+          : <SampleInvoiceModal sample={sample} products={[]} proposals={[]} sampleStock={[]} supplierLogo="" onClose={() => {}} readOnly publicView />}
       </div>
 
       {!done && (
