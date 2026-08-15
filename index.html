@@ -2138,6 +2138,19 @@ const getSampleType = (s) => (s && s.sampleType === "ct" ? "ct" : "general");
    기존엔 제안서용 REVIEW_STATUS(검토대기/승인완료/고객동의완료/고객승인완료…)가 그대로 흘러와
    같은 뜻인데 명칭이 여러 갈래로 보였다. 인보이스는 아래 4단계로만 정리한다.
    ⚠️ 판정 순서 주의: 긴급승인 > 고객승인 > 발송완료 > 검토대기 (뒤 조건이 앞을 덮지 않게) */
+/* 고객 요청사항 상태 판정 —
+   요청이 있고, 그 요청이 "확인 처리된 시각(customerRequestHandledAt)" 이후에 온 게 아니면 미처리로 본다.
+   ⚠️ 단순 플래그(handled:true)로 두면 확인 후 고객이 추가 요청을 보내도 계속 처리완료로 남아 놓친다.
+      그래서 "요청 시각 > 확인 시각"이면 다시 미처리로 돌아오도록 시각을 비교한다. */
+function getRequestState(p) {
+  const text = ((p && p.customerRequest) || "").trim();
+  if (!text) return { has: false, pending: false, text: "" };
+  const at = (p && p.customerRequestAt) || "";
+  const handledAt = (p && p.customerRequestHandledAt) || "";
+  const pending = !handledAt || (at && at > handledAt); // 문자열 일시는 사전순 비교가 곧 시간순
+  return { has: true, pending, text, at, handledAt, handledBy: (p && p.customerRequestHandledBy) || "" };
+}
+
 function getInvoiceBadge(iv) {
   if (!iv) return { label: "검토대기", cls: "bg-slate-100 text-slate-600" };
   const st = iv.reviewStatus || iv.status || "";
@@ -2271,7 +2284,7 @@ function ProposalTableColGroup({ withAction, withCheckbox }) {
   );
 }
 
-function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
+function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onHandleRequest, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("전체");
   const [sortKey, setSortKey] = useState("date_desc");
@@ -2287,7 +2300,8 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
   // 💬 고객이 열람 링크에서 남긴 요청사항이 있는 건
   const [requestOnly, setRequestOnly] = useState(false);
   const [requestView, setRequestView] = useState(null); // 💬 클릭시 고객 요청 원문을 보여줄 제안서
-  const requestCount = useMemo(() => proposals.filter((p) => (p.customerRequest || "").trim()).length, [proposals]);
+  // 미처리(=아직 [✅ 확인] 안 누른) 건만 집계 — 확인 즉시 카운트에서 빠진다
+  const requestCount = useMemo(() => proposals.filter((p) => getRequestState(p).pending).length, [proposals]);
 
   const filtered = useMemo(() => proposals.filter((p) => {
     if (pendingOnly && getReviewStatus(p) !== "검토대기") return false;
@@ -2297,7 +2311,7 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
       if (!hay.includes(q)) return false;
     }
     if (statusFilter !== "전체" && getReviewStatus(p) !== statusFilter) return false;
-    if (requestOnly && !(p.customerRequest || "").trim()) return false; // 💬 고객요청접수 필터
+    if (requestOnly && !getRequestState(p).pending) return false; // 💬 고객요청접수 필터(미처리만)
     return true;
   }), [proposals, pendingOnly, search, statusFilter, requestOnly]);
   const sortedFiltered = useMemo(() => sortByKey(filtered, sortKey, (p) => p.clientName, (p) => p.createdAt), [filtered, sortKey]);
@@ -2338,13 +2352,20 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
         {onCreateInvoice && (
           <button onClick={() => onCreateInvoice(p)} title="인보이스요청" className={iconBtn + " border-purple-200 text-purple-600 hover:bg-purple-50"}>📄</button>
         )}
-        {/* 💬 고객요청 — 휴지통 바로 왼쪽. 요청이 들어온 건은 깜빡여서 눈에 띄게 한다 */}
-        {(p.customerRequest || "").trim() ? (
-          <button onClick={() => setRequestView(p)} title={`고객 요청사항 보기 (${p.customerRequestAt || ""})`}
-            className={iconBtn + " border-rose-300 text-rose-600 bg-rose-50 hover:bg-rose-100 animate-pulse"}>💬</button>
-        ) : (
-          <span className={iconBtn + " border-slate-100 text-slate-200 cursor-default"} title="접수된 고객 요청사항이 없습니다">💬</span>
-        )}
+        {/* 💬 고객요청 — 휴지통 바로 왼쪽.
+            미처리는 깜빡여서 눈에 띄게 하고, [✅ 확인] 처리한 건은 차분한 회색으로 가라앉힌다(내용은 계속 열람 가능) */}
+        {(() => {
+          const rq = getRequestState(p);
+          if (!rq.has) return <span className={iconBtn + " border-slate-100 text-slate-200 cursor-default"} title="접수된 고객 요청사항이 없습니다">💬</span>;
+          if (rq.pending) return (
+            <button onClick={() => setRequestView(p)} title={`고객 요청사항 보기 (${rq.at || ""})`}
+              className={iconBtn + " border-rose-300 text-rose-600 bg-rose-50 hover:bg-rose-100 animate-pulse"}>💬</button>
+          );
+          return (
+            <button onClick={() => setRequestView(p)} title={`처리완료 — ${rq.handledAt}${rq.handledBy ? ` (${rq.handledBy})` : ""}\n요청내용 다시 보기`}
+              className={iconBtn + " border-slate-200 text-slate-400 hover:bg-slate-50"}>💬</button>
+          );
+        })()}
         {isAdmin && <button onClick={() => onDelete(p)} title="삭제" className={iconBtn + " border-red-100 text-red-500 hover:bg-red-50"}>🗑️</button>}
         <HistoryBadge record={p} compact />
       </div>
@@ -2421,10 +2442,17 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
               </div>
               <button onClick={() => setRequestView(null)} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
             </div>
-            <div className="p-6 overflow-y-auto flex-1">
-              <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-sm text-slate-800 whitespace-pre-line leading-relaxed">
+            <div className="p-6 overflow-y-auto flex-1 space-y-3">
+              <div className={"rounded-xl p-4 text-sm text-slate-800 whitespace-pre-line leading-relaxed border " +
+                (getRequestState(requestView).pending ? "bg-rose-50 border-rose-200" : "bg-slate-50 border-slate-200")}>
                 {requestView.customerRequest}
               </div>
+              {!getRequestState(requestView).pending && (
+                <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                  확인(처리완료) 됨 — {getRequestState(requestView).handledAt}
+                  {getRequestState(requestView).handledBy ? ` (${displayStaffName(getRequestState(requestView).handledBy)})` : ""}
+                </div>
+              )}
             </div>
             <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
               <button
@@ -2433,6 +2461,12 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
                   else window.prompt("아래 내용을 복사해 주세요.", requestView.customerRequest || "");
                 }}
                 className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">📋 복사</button>
+              {onHandleRequest && getRequestState(requestView).pending && (
+                <button
+                  onClick={() => { onHandleRequest(requestView); setRequestView(null); }}
+                  title="읽음·처리완료로 표시하고 접수 카운트에서 제외합니다"
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold">✅ 확인</button>
+              )}
               <button onClick={() => setRequestView(null)} className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium">닫기</button>
             </div>
           </div>
@@ -2468,15 +2502,17 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
         >
           🔔 검토대기 제안서 ({pendingCount}건)
         </button>
+        {(requestCount > 0 || requestOnly) && (
         <button
           onClick={() => setRequestOnly((v) => !v)}
-          title="고객이 열람 링크에서 남긴 요청사항이 있는 제안서만 모아봅니다"
+          title="고객이 열람 링크에서 남긴 미처리 요청사항만 모아봅니다"
           className={"text-xs px-3 py-2 rounded-lg font-bold whitespace-nowrap " +
             (requestOnly ? "bg-rose-500 text-white" : "border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100") +
             (requestCount > 0 && !requestOnly ? " animate-pulse" : "")}
         >
           💬 고객요청접수 ({requestCount}건)
         </button>
+        )}
         {isAdmin && onBulkCompressImages && (
           <button
             onClick={onBulkCompressImages}
@@ -2587,23 +2623,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
   const pagedList = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   useEffect(() => { setPage(1); }, [search]);
 
-  return (
-    <main className="max-w-7xl mx-auto px-6 py-8">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-lg font-bold text-slate-800">📑 인보이스</h2>
-          <p className="text-xs text-slate-400 mt-1">5단계 · 본품계약/발주 목록입니다. 제안서에서 발행된 인보이스가 여기 모입니다.</p>
-        </div>
-        <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
-      </div>
-      <input
-        value={search} onChange={(e) => setSearch(e.target.value)}
-        placeholder="🔍 고객사명, 인보이스번호 검색"
-        className="w-full mb-4 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]"
-      />
-      {pagedList.length === 0 ? (
-        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">발행된 인보이스가 없습니다. 제안서 미리보기에서 "📄 인보이스 발행"을 눌러 만들 수 있습니다.</div>
-      ) : (
+  const renderInvoiceTable = (list) => (
         <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
           <table className="w-full table-fixed" style={{ tableLayout: "fixed", width: "100%" }}>
             <colgroup>
@@ -2623,7 +2643,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
               <th className="text-center px-3 py-3 font-medium">작업</th>
             </tr></thead>
             <tbody>
-              {pagedList.map((iv) => {
+              {list.map((iv) => {
                 const reviewStatus = getReviewStatus(iv);
                 return (
                   <tr key={iv.id} onClick={() => onOpenInvoice(iv, "view")} className="border-t border-slate-100 hover:bg-slate-50/50 cursor-pointer">
@@ -2655,6 +2675,54 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
             </tbody>
           </table>
         </div>
+  );
+
+  return (
+    <main className="max-w-7xl mx-auto px-6 py-8">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">📑 인보이스</h2>
+          <p className="text-xs text-slate-400 mt-1">5단계 · 본품계약/발주 목록입니다. 제안서에서 발행된 인보이스가 여기 모입니다.</p>
+        </div>
+        <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <input
+          value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔍 고객사명, 인보이스번호 검색"
+          className="flex-1 min-w-[240px] px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]"
+        />
+        <button onClick={() => setIsGroupByCompany(!isGroupByCompany)}
+          className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold whitespace-nowrap " +
+            (isGroupByCompany ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "bg-white border-slate-200 text-slate-700")}>
+          🏢 업체별 모아보기
+        </button>
+      </div>
+      {/* 테이블 본문 — 단일 목록과 업체별 그룹 아코디언이 같은 마크업을 공유한다(한쪽만 고쳐 어긋나는 일 방지) */}
+      {pagedList.length === 0 ? (
+        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">발행된 인보이스가 없습니다. 제안서 미리보기에서 "📄 인보이스 발행"을 눌러 만들 수 있습니다.</div>
+      ) : isGroupByCompany ? (
+        <div className="space-y-3">
+          {Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0], "ko")).map(([client, list]) => {
+            const sum = list.reduce((s, iv) => s + (Number(iv.totalAmount) || 0), 0);
+            return (
+              <div key={client} className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm">
+                <button onClick={() => setOpenClient(openClient === client ? null : client)} className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-50">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-lg">🏢</span>
+                    <span className="font-semibold text-slate-800 text-sm truncate">{client}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold whitespace-nowrap">총 {list.length}건</span>
+                    <span className="text-xs font-bold text-[#1E3A8A] whitespace-nowrap">합계 {won(sum)}</span>
+                  </div>
+                  <span className="text-xs text-slate-400 whitespace-nowrap">{openClient === client ? "접기 ▲" : "펼치기 ▼"}</span>
+                </button>
+                {openClient === client && <div className="border-t border-slate-100">{renderInvoiceTable(list)}</div>}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        renderInvoiceTable(pagedList)
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
     </main>
@@ -2695,24 +2763,21 @@ function OrderStageListView({ orders, proposalList, invoiceList, onOpenProposal,
   }, [enriched, search]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pagedList = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // 🏢 업체별 모아보기 (인보이스 목록과 동일 방식)
+  const [isGroupByCompany, setIsGroupByCompany] = useState(false);
+  const [openClient, setOpenClient] = useState(null);
+  const grouped = useMemo(() => {
+    const g = {};
+    filtered.forEach((e) => {
+      const key = e.clientName || "(고객사 미지정)";
+      if (!g[key]) g[key] = [];
+      g[key].push(e);
+    });
+    return g;
+  }, [filtered]);
   useEffect(() => { setPage(1); }, [search]);
 
-  return (
-    <main className="max-w-7xl mx-auto px-6 py-8">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-lg font-bold text-slate-800">📦 5단계 · 본품계약 & 공장 발주 (Order & Final Invoice)</h2>
-          <p className="text-xs text-slate-400 mt-1">4단계에서 "📜 본품계약 전환"된 건이 여기 모입니다. 원본 제안서와 발행 인보이스를 바로 확인할 수 있습니다.</p>
-        </div>
-      </div>
-      <input
-        value={search} onChange={(e) => setSearch(e.target.value)}
-        placeholder="🔍 고객사명, 인보이스번호 검색"
-        className="w-full mb-4 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]"
-      />
-      {pagedList.length === 0 ? (
-        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">아직 본품계약으로 전환된 건이 없습니다. 4단계 샘플 진행에서 "📜 본품계약 전환" 버튼을 눌러 등록해주세요.</div>
-      ) : (
+  const renderOrderTable = (list) => (
         <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
           <table className="w-full table-fixed" style={{ tableLayout: "fixed", width: "100%" }}>
             <colgroup>
@@ -2732,7 +2797,7 @@ function OrderStageListView({ orders, proposalList, invoiceList, onOpenProposal,
               <th className="text-center px-3 py-3 font-medium">작업</th>
             </tr></thead>
             <tbody>
-              {pagedList.map(({ key, clientName, productName, convertedAt, convertedBy, proposal, invoice }) => {
+              {list.map(({ key, clientName, productName, convertedAt, convertedBy, proposal, invoice }) => {
                 const reviewStatus = invoice ? getReviewStatus(invoice) : null;
                 return (
                   <tr key={key} className="border-t border-slate-100 hover:bg-slate-50/50">
@@ -2774,6 +2839,52 @@ function OrderStageListView({ orders, proposalList, invoiceList, onOpenProposal,
             </tbody>
           </table>
         </div>
+  );
+
+  return (
+    <main className="max-w-7xl mx-auto px-6 py-8">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">📦 5단계 · 본품계약 & 공장 발주 (Order & Final Invoice)</h2>
+          <p className="text-xs text-slate-400 mt-1">4단계에서 "📜 본품계약 전환"된 건이 여기 모입니다. 원본 제안서와 발행 인보이스를 바로 확인할 수 있습니다.</p>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <input
+          value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔍 고객사명, 인보이스번호 검색"
+          className="flex-1 min-w-[240px] px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]"
+        />
+        <button onClick={() => setIsGroupByCompany(!isGroupByCompany)}
+          className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold whitespace-nowrap " +
+            (isGroupByCompany ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "bg-white border-slate-200 text-slate-700")}>
+          🏢 업체별 모아보기
+        </button>
+      </div>
+      {pagedList.length === 0 ? (
+        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">아직 본품계약으로 전환된 건이 없습니다. 4단계 샘플 진행에서 "📜 본품계약 전환" 버튼을 눌러 등록해주세요.</div>
+      ) : isGroupByCompany ? (
+        <div className="space-y-3">
+          {Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0], "ko")).map(([client, list]) => {
+            const sum = list.reduce((s, e) => s + ((e.invoice && Number(e.invoice.totalAmount)) || 0), 0);
+            return (
+              <div key={client} className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm">
+                <button onClick={() => setOpenClient(openClient === client ? null : client)} className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-50">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-lg">🏢</span>
+                    <span className="font-semibold text-slate-800 text-sm truncate">{client}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold whitespace-nowrap">총 {list.length}건</span>
+                    <span className="text-xs font-bold text-[#1E3A8A] whitespace-nowrap">합계 {won(sum)}</span>
+                  </div>
+                  <span className="text-xs text-slate-400 whitespace-nowrap">{openClient === client ? "접기 ▲" : "펼치기 ▼"}</span>
+                </button>
+                {openClient === client && <div className="border-t border-slate-100">{renderOrderTable(list)}</div>}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        renderOrderTable(pagedList)
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
     </main>
@@ -4147,39 +4258,115 @@ function ExcelArchiveView({ archive, onBack, onUpload, onUploadZip, onApplyAll, 
   );
 }
 
+// 업체 문의경로 — 기존 "채널" 라벨에서 명칭 변경. 옛 저장값(전화 등)도 그대로 표시되도록 옵션에 없으면 앞에 덧붙인다
+const CLIENT_INQUIRY_ROUTES = ["카카오채널", "유선전화", "이메일", "지인소개", "웹사이트", "기타"];
+
 function ClientFormModal({ client, onClose, onSave }) {
   const isEdit = !!(client && client.id);
   const [name, setName] = useState((client && client.name) || "");
+  const [ceoName, setCeoName] = useState((client && client.ceoName) || "");
+  const [address, setAddress] = useState((client && client.address) || "");
   const [contact, setContact] = useState((client && client.contact) || "");
+  const [managerPhone, setManagerPhone] = useState((client && client.managerPhone) || "");
   const [channel, setChannel] = useState((client && client.channel) || "카카오채널");
   const [difficulty, setDifficulty] = useState((client && client.difficulty) || "표준");
   const [note, setNote] = useState((client && client.note) || "");
+  const [attachments, setAttachments] = useState((client && client.attachments) || []);
+  const fileRef = useRef(null);
+  // 옛 데이터의 채널값("전화" 등)이 옵션에 없으면 맨 앞에 끼워넣어 선택이 풀리지 않게 한다
+  const routeOptions = CLIENT_INQUIRY_ROUTES.includes(channel) ? CLIENT_INQUIRY_ROUTES : [channel, ...CLIENT_INQUIRY_ROUTES];
+
+  /* 📎 명함·사업자등록증 첨부 — Firestore 문서에 dataURL로 직접 저장한다(이 시스템은 Storage 미사용).
+     ⚠️ 문서 1건 1MB 제한이 있어 파일당 약 700KB로 막고, 이미지는 압축을 시도한다. */
+  const MAX_FILE_BYTES = 700 * 1024;
+  const addFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    for (const f of files) {
+      try {
+        let dataUrl = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = () => rej(new Error("read fail"));
+          r.readAsDataURL(f);
+        });
+        const isImage = (f.type || "").startsWith("image/");
+        if (isImage && typeof compressBase64Image === "function" && dataUrl.length > MAX_FILE_BYTES) {
+          try { dataUrl = await compressBase64Image(dataUrl, MAX_FILE_BYTES); } catch (e) { console.error(e); }
+        }
+        if (dataUrl.length > MAX_FILE_BYTES * 1.4) {
+          window.alert(`"${f.name}" 파일이 너무 큽니다(약 ${Math.round(dataUrl.length / 1024)}KB).\n700KB 이하로 줄여서 다시 올려주세요.`);
+          continue;
+        }
+        setAttachments((prev) => [...prev, { id: Date.now() + Math.random(), name: f.name, type: f.type || "", size: f.size, dataUrl, uploadedAt: nowDateTimeStr() }]);
+      } catch (e) { console.error(e); }
+    }
+    if (fileRef.current) fileRef.current.value = ""; // 같은 파일 재선택이 가능하도록 초기화
+  };
+  const removeAttachment = (id) => setAttachments((prev) => prev.filter((a) => a.id !== id));
+
   const save = () => {
     if (!name.trim()) return;
-    if (isEdit) onSave(client.id, { name, contact, channel, difficulty, note });
-    else onSave(null, { id: Date.now(), name, contact, channel, difficulty, note });
+    const payload = { name, ceoName, address, contact, managerPhone, channel, difficulty, note, attachments };
+    if (isEdit) onSave(client.id, payload);
+    else onSave(null, { id: Date.now(), ...payload });
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+      <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "90vh" }}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <h2 className="text-base font-bold text-slate-800">{isEdit ? "✏️ 업체 정보 수정" : "➕ 신규 업체 등록"}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
-        <div className="p-6 grid grid-cols-2 gap-4">
+        <div className="p-6 grid grid-cols-2 gap-4 overflow-y-auto flex-1">
           <Field label="업체명" span={2}><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="예: 주식회사 닥터스칼프" /></Field>
+          <Field label="대표자명" span={2}><input type="text" className={inputCls} value={ceoName} onChange={(e) => setCeoName(e.target.value)} placeholder="예: 홍길동" /></Field>
+          <Field label="사업장 주소" span={2}><input type="text" className={inputCls} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="예: 경기도 고양시 일산동구..." /></Field>
+          <p className="col-span-2 -mt-2 text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+            ※ 업체명, 대표자명, 주소는 5단계 표준계약서 서식에 자동 연동됩니다.
+          </p>
+
           <Field label="담당자"><input className={inputCls} value={contact} onChange={(e) => setContact(e.target.value)} placeholder="담당자명" /></Field>
-          <Field label="채널">
-            <select className={inputCls} value={channel} onChange={(e) => setChannel(e.target.value)}><option>카카오채널</option><option>이메일</option><option>전화</option></select>
+          <Field label="담당자 연락처"><input type="text" className={inputCls} value={managerPhone} onChange={(e) => setManagerPhone(e.target.value)} placeholder="예: 010-1234-5678" /></Field>
+
+          <Field label="문의경로">
+            <select className={inputCls} value={channel} onChange={(e) => setChannel(e.target.value)}>
+              {routeOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
           </Field>
-          <Field label="작업 난이도" span={2}>
+          <Field label="작업 난이도">
             <select className={inputCls} value={difficulty} onChange={(e) => setDifficulty(e.target.value)}>
               {CLIENT_DIFFICULTY_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </Field>
+
           <Field label="특이사항" span={2}><AutoResizeTextarea value={note} onChange={setNote} minRows={2} placeholder="업체별 특징, 주의사항 등 자유 메모" /></Field>
+
+          <div className="col-span-2">
+            <div className="text-xs font-semibold text-slate-600 mb-1.5">📎 파일 업로드 <span className="font-normal text-slate-400">(명함 / 사업자등록증 등)</span></div>
+            <input ref={fileRef} type="file" accept="image/*,.pdf" multiple onChange={(e) => addFiles(e.target.files)}
+              className="w-full text-xs text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-slate-100 file:text-slate-700 file:text-xs file:font-semibold hover:file:bg-slate-200 cursor-pointer" />
+            {attachments.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                {attachments.map((a) => (
+                  <div key={a.id} className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg p-2">
+                    {(a.type || "").startsWith("image/") ? (
+                      <img src={a.dataUrl} alt={a.name} className="w-10 h-10 object-cover rounded border border-slate-200 shrink-0" />
+                    ) : (
+                      <span className="w-10 h-10 flex items-center justify-center rounded border border-slate-200 bg-white text-lg shrink-0">📄</span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <a href={a.dataUrl} target="_blank" rel="noreferrer" className="block text-xs text-slate-700 truncate hover:text-[#1E3A8A] hover:underline" title={a.name}>{a.name}</a>
+                      <div className="text-[10px] text-slate-400">{a.size ? `${Math.round(a.size / 1024)}KB` : ""}{a.uploadedAt ? ` · ${a.uploadedAt}` : ""}</div>
+                    </div>
+                    <button onClick={() => removeAttachment(a.id)} title="첨부 삭제" className="text-slate-400 hover:text-rose-500 text-sm shrink-0">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-slate-400 mt-1.5">이미지·PDF 첨부 가능 (파일당 700KB 이하 권장). 저장 버튼을 눌러야 최종 반영됩니다.</p>
+          </div>
         </div>
-        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 shrink-0">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
           <button onClick={save} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">{isEdit ? "✓ 수정 반영" : "＋ 업체 등록"}</button>
         </div>
@@ -4346,6 +4533,15 @@ function GenericMergeModal({ title, items, getLabel, getSubLabel, confirmText, o
    계약은 체결일로부터 1년 유효(계약서 제2조)이므로, 만료된 계약은 "미체결"과 동일하게 취급해
    재발송을 유도한다. 옛 레코드 호환을 위해 contractSignedDate(구필드)도 함께 읽는다. */
 const CONTRACT_VALID_DAYS = 365;
+/* 계약 서명일시 표기 — 저장값은 nowDateTimeStr()이라 "2026-08-15 16:05:00"(초 포함) 형태다.
+   배지에는 초까지 필요 없어 YYYY-MM-DD HH:mm 까지만 자른다.
+   ⚠️ 옛 레코드(contractSignedDate)는 날짜만("2026-08-15") 저장돼 시간이 없으므로 날짜만 그대로 반환한다. */
+function formatContractSignedAt(v) {
+  const s = String(v || "").trim();
+  if (!s) return "-";
+  return s.length >= 16 ? s.slice(0, 16) : s.slice(0, 10);
+}
+
 function getClientContractState(c) {
   const signedAt = (c && (c.contractSignedAt || c.contractSignedDate)) || "";
   const expireAt = (c && c.contractExpireAt) || (signedAt ? addDaysFrom(signedAt.slice(0, 10), CONTRACT_VALID_DAYS) : "");
@@ -4367,7 +4563,7 @@ function ClientContractViewModal({ client, onClose }) {
   const st = getClientContractState(client);
   const docData = {
     readOnly: true, consentView: true, docTabOverride: "contract",
-    clientName: client.name || "", clientCeo: client.contractSignerName || client.ceo || client.contact || "",
+    clientName: client.name || "", clientCeo: client.ceoName || client.contractSignerName || client.ceo || client.contact || "",
     clientAddress: client.address || "", contractDate: (st.signedAt || "").slice(0, 10),
     consentSignature: st.signImage, consentSignerName: st.signName, consentAt: st.signedAt,
     items: [],
@@ -4415,7 +4611,8 @@ function ContractSendModal({ client, onClose }) {
       window.prompt("아래 내용을 복사해 주세요.", text);
     }
   };
-  const phone = (client.phone || client.tel || client.contactPhone || "").replace(/[^0-9]/g, "");
+  // managerPhone(업체 모달의 "담당자 연락처")을 최우선으로 — 안 넣으면 새로 입력한 번호로 문자 발송이 안 열림
+  const phone = (client.managerPhone || client.phone || client.tel || client.contactPhone || "").replace(/[^0-9]/g, "");
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
@@ -4448,7 +4645,7 @@ function ContractSendModal({ client, onClose }) {
             )}
           </div>
           <p className="text-[11px] text-slate-400">
-            복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 서명을 마치면 이 업체 카드가 자동으로 <b>📜 계약완료</b>로 바뀝니다.
+            복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 서명을 마치면 이 업체 카드가 자동으로 <b>📜 표준계약서 서명완료</b>로 바뀝니다.
           </p>
         </div>
       </div>
@@ -4485,6 +4682,11 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
         map.set(key, {
           ...existing,
           contact: existing.contact || c.contact,
+          // 계약서 연동 필드도 비어있으면 뒤 레코드 값으로 보강(안 넣으면 중복 업체 병합시 대표자명·주소가 유실됨)
+          ceoName: existing.ceoName || c.ceoName,
+          address: existing.address || c.address,
+          managerPhone: existing.managerPhone || c.managerPhone,
+          attachments: (existing.attachments && existing.attachments.length) ? existing.attachments : (c.attachments || existing.attachments),
           channel: existing.channel || c.channel,
           difficulty: existing.difficulty || c.difficulty,
           note: existing.note || c.note,
@@ -4593,7 +4795,7 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
                     {c.isKeyClient && <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">⭐ 주거래</span>}
                     {c._mergedIds && c._mergedIds.length > 1 && <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500" title="중복 등록된 동일 업체명을 하나로 병합해 표시 중">🔗 중복 {c._mergedIds.length}건 병합</span>}
                     {contract.valid ? (
-                      <span className="bg-emerald-100 text-emerald-800 text-xs px-2.5 py-0.5 rounded-full font-semibold whitespace-nowrap" title={`유효기간 ~${contract.expireAt}`}>📜 계약완료 ({(contract.signedAt || "").slice(0, 10)})</span>
+                      <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800 whitespace-nowrap" title={`서명일시 ${formatContractSignedAt(contract.signedAt)}${contract.signName ? ` · 서명자 ${contract.signName}` : ""}\n유효기간 ~${contract.expireAt}`}>📜 표준계약서 서명완료 ({formatContractSignedAt(contract.signedAt)})</span>
                     ) : (
                       <span className="bg-amber-100 text-amber-800 text-xs px-2.5 py-0.5 rounded-full font-semibold whitespace-nowrap" title={contract.expired ? `계약 만료일 ${contract.expireAt} — 갱신이 필요합니다` : "아직 전자서명이 완료되지 않았습니다"}>
                         {contract.expired ? "⚠️ 계약 만료 (갱신 필요)" : "⚠️ 계약서 미체결"}
@@ -5916,7 +6118,8 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
             <span className="text-xs text-slate-400">ZIP 안에 엑셀+사진+HTML을 함께 넣어 올리면 한번에 처리됩니다.</span>
           </div>
         )}
-        <div className="flex flex-wrap gap-2 items-center mb-3">
+        {/* 1행 — 검색 & 주요 등록 */}
+        <div className="flex flex-wrap gap-2.5 items-center mb-3">
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="🔍 제품명 또는 공장명으로 검색"
@@ -5937,53 +6140,48 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
             <button onClick={() => setViewMode("list")} title="리스트 뷰" className={"px-3 py-1.5 rounded-md text-sm " + (viewMode === "list" ? "bg-[#1E3A8A] text-white" : "text-slate-500 hover:bg-slate-50")}>📋</button>
             <button onClick={() => setViewMode("card")} title="카드 뷰" className={"px-3 py-1.5 rounded-md text-sm " + (viewMode === "card" ? "bg-[#1E3A8A] text-white" : "text-slate-500 hover:bg-slate-50")}>🎴</button>
           </div>
-          <button onClick={() => { setEditingProduct({}); setIsDuplicateFlow(false); }} className="text-sm px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
+          <button onClick={() => { setEditingProduct({}); setIsDuplicateFlow(false); }} className="text-sm px-4 py-2 rounded-lg bg-indigo-900 text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 신규 제품 직접 등록</button>
           <input ref={uploadRef} type="file" accept=".xlsx,.xls,.csv,.html,.htm,image/*" multiple className="hidden" onChange={handleBoxHeroUpload} />
-          {onDedupe && <button onClick={onDedupe} className="text-sm px-4 py-2 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap">🧹 중복 정리</button>}
+        </div>
+
+        {/* 2행 — 보조 액션(선택 관련 + 유틸리티).
+            레거시 3종(🧹 중복 정리 / 🧾 검품비용 일괄 정리 / 🔗 박스히어로 제품 병합)은 제거함.
+            ⚠️ App 쪽 핸들러(dedupeProducts 등)는 남아있으니, 다시 쓰려면 버튼만 되살리면 된다. */}
+        <div className="flex flex-wrap gap-2.5 items-center mb-3 pb-3 border-b border-slate-100">
+          {onBulkDelete && (
+            <>
+              <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap">
+                <input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /> 전체 선택
+              </label>
+              <button
+                onClick={async () => { await onBulkDelete(selectedIds); setSelectedIds([]); }}
+                disabled={selectedIds.length === 0}
+                className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 font-medium hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+              >
+                🗑️ 선택 삭제 ({selectedIds.length}개)
+              </button>
+              <span className="w-px h-5 bg-slate-200" />
+            </>
+          )}
           {isAdmin && onBulkCompressImages && (
             <button
               onClick={onBulkCompressImages}
               disabled={!!bulkCompressProgress}
               title="용량이 큰 제품 사진을 다시 압축해서 목록 불러오는 속도를 개선합니다(화질은 거의 유지됩니다)"
-              className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+              className="text-xs px-3 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
             >
               {bulkCompressProgress ? `🗜️ 압축 중... (${bulkCompressProgress.done}/${bulkCompressProgress.total})` : "🗜️ 사진 일괄 압축(속도 개선)"}
-            </button>
-          )}
-          {isAdmin && onBulkMigrateInspection && (
-            <button
-              onClick={onBulkMigrateInspection}
-              title="전체 제품의 수량별 검품비용을 5,000개=270원 / 10,000개=540원으로 정리하고, 그 외 수량 구간은 비워서 직접 입력하도록 합니다"
-              className="text-sm px-4 py-2 rounded-lg border border-indigo-200 text-indigo-700 font-medium hover:bg-indigo-50 whitespace-nowrap"
-            >
-              🧾 검품비용 일괄 정리
             </button>
           )}
           <button
             onClick={() => setShowProductMergeModal(true)}
             disabled={selectedIds.length < 2}
             title={selectedIds.length < 2 ? "병합하려면 제품을 2개 이상 선택해주세요" : ""}
-            className="text-sm px-4 py-2 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            className="text-xs px-3 py-1.5 rounded-lg border border-[#1E3A8A]/30 text-[#1E3A8A] font-medium hover:bg-[#1E3A8A]/5 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
           >
             🔗 선택 제품 병합 ({selectedIds.length}개)
           </button>
-          {isAdmin && onAutoMergeBoxHero && <button onClick={onAutoMergeBoxHero} title="SKU/바코드가 없는 엑셀 유입 제품을 박스히어로 제품과 자동으로(안되면 수동으로) 병합합니다" className="text-sm px-4 py-2 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 whitespace-nowrap">🔗 박스히어로 제품 병합</button>}
-          {false && isAdmin && onBulkUpdateFactoryInfo && <button onClick={() => setShowBatchFactoryUpdate(true)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 whitespace-nowrap">⚙️ 공장/위챗 정보 일괄 변경</button>}
         </div>
-        {onBulkDelete && (
-          <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-100">
-            <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
-              <input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /> 전체 선택
-            </label>
-            <button
-              onClick={async () => { await onBulkDelete(selectedIds); setSelectedIds([]); }}
-              disabled={selectedIds.length === 0}
-              className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 font-medium hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-            >
-              🗑️ 선택 삭제 ({selectedIds.length}개)
-            </button>
-          </div>
-        )}
         <div className="flex flex-wrap gap-1.5">
           {["전체", ...CATEGORIES].map((c) => (
             <button
@@ -8530,9 +8728,15 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const code = `INV-${todayStr()}-${String(invoiceList.length + 1).padStart(3, "0")}`;
     const cleanItems = editedItems.map(({ selectedFinishingIds, ...rest }) => rest); // 편집용 임시 필드는 저장 전에 제거
     const totalAmount = cleanItems.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
+    /* 업체 관리에 등록된 대표자명·주소를 인보이스에 자동으로 실어준다 —
+       인보이스 모드의 계약서 서식이 clientCeo/clientAddress를 (갑) 서명란에 그대로 쓰므로,
+       여기서 안 채우면 발행할 때마다 손으로 다시 입력해야 한다. */
+    const matchedClient = (clientsList || []).find((c) => (c.name || "").trim() === (p.clientName || "").trim());
     const record = {
       code, proposalId: typeof p.id === "string" ? p.id : null, proposalCode: p.code || "",
       clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "", employee: p.employee || "",
+      clientCeo: (matchedClient && (matchedClient.ceoName || matchedClient.contractSignerName || matchedClient.ceo)) || "",
+      clientAddress: (matchedClient && matchedClient.address) || "",
       proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", totalAmount, totalCbm: p.totalCbm || 0,
       items: cleanItems, validUntil: addDays(30),
       createdAt: nowDateTimeStr(), createdBy: actorName,
@@ -10372,6 +10576,17 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               console.error(e);
               setToast("상태 변경 중 오류가 발생했습니다.");
             }
+          }}
+          onHandleRequest={async (p) => {
+            /* 💬 고객 요청사항 [✅ 확인] — 요청 자체는 지우지 않고 "처리 시각"만 기록한다.
+               내용을 지우면 나중에 무슨 요청이었는지 추적이 불가능해지기 때문. */
+            const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
+            const patch = { customerRequestHandledAt: nowDateTimeStr(), customerRequestHandledBy: actorName };
+            setProposalList((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...patch } : x)));
+            try {
+              if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.proposals, p.id, patch);
+              setToast("고객 요청사항을 확인(처리완료) 처리했습니다.");
+            } catch (e) { console.error(e); setToast("처리 중 오류가 발생했습니다. (화면에는 반영됨)"); }
           }}
           onReviewStatusChange={async (p, newReviewStatus) => {
             if (REVIEW_STATUS_AUTO_ONLY.includes(newReviewStatus)) { setToast("이 상태는 드롭다운으로 직접 바꿀 수 없습니다 — 해당 액션(발송완료/샘플요청 등록/인보이스 발행) 버튼으로만 전환됩니다."); return; }
