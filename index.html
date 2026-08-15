@@ -2134,6 +2134,28 @@ const getSampleType = (s) => (s && s.sampleType === "ct" ? "ct" : "general");
 /* 고객 승인 여부 판정 — 저장 필드가 여러 세대에 걸쳐 생겨서 전부 인정한다.
    isApproved/approvedAt(현행) · consentStatus/consentAt(고객 승인페이지가 쓰던 값) ·
    customerConfirmed(예전 "발송완료시 자동체크" 플래그). 하나라도 서면 승인완료로 본다. */
+/* 5단계 본품 인보이스 목록의 "상태" 표준 배지 —
+   기존엔 제안서용 REVIEW_STATUS(검토대기/승인완료/고객동의완료/고객승인완료…)가 그대로 흘러와
+   같은 뜻인데 명칭이 여러 갈래로 보였다. 인보이스는 아래 4단계로만 정리한다.
+   ⚠️ 판정 순서 주의: 긴급승인 > 고객승인 > 발송완료 > 검토대기 (뒤 조건이 앞을 덮지 않게) */
+function getInvoiceBadge(iv) {
+  if (!iv) return { label: "검토대기", cls: "bg-slate-100 text-slate-600" };
+  const st = iv.reviewStatus || iv.status || "";
+  const customerApproved = iv.consentStatus === "승인완료" || iv.consentStatus === "동의완료" || st === "고객승인완료" || st === "고객동의완료";
+  /* 고객이 최종 승인하면 그게 가장 확정된 상태이므로 긴급승인보다 앞선다.
+     단, 긴급승인 이력은 사라지지 않는다 — 툴팁(HistoryBadge)의 "긴급승인일자"에 그대로 남아 사후 검증 가능. */
+  if (customerApproved) {
+    return { label: "고객승인", cls: "bg-emerald-100 text-emerald-800", at: iv.consentAt, by: iv.consentSignerName };
+  }
+  if (st === "긴급승인" || iv.emergencyApprovedAt) {
+    return { label: "긴급승인", cls: "bg-purple-100 text-purple-800", at: iv.emergencyApprovedAt, by: iv.emergencyApprovedBy };
+  }
+  if (iv.sentBy || st === "발송완료") {
+    return { label: "발송완료", cls: "bg-blue-100 text-blue-800", at: iv.sentAt, by: iv.sentBy };
+  }
+  return { label: "검토대기", cls: "bg-slate-100 text-slate-600" };
+}
+
 function getSampleApproval(s) {
   if (!s) return { approved: false, at: "" };
   const at = s.approvedAt || s.consentAt || "";
@@ -2551,7 +2573,7 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
 }
 
 /* ===================== 📑 인보이스 목록 (본품계약/발주 데이터를 제안서목록과 같은 스타일로) ===================== */
-function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, isAdmin }) {
+function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 20;
@@ -2587,7 +2609,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, isAdmin })
             <colgroup>
               <col style={{ width: "13%" }} /><col style={{ width: "10%" }} /><col style={{ width: "15%" }} />
               <col style={{ width: "22%" }} /><col style={{ width: "12%" }} /><col style={{ width: "9%" }} />
-              <col style={{ width: "9%" }} /><col style={{ width: "10%" }} /><col style={{ width: "90px" }} />
+              <col style={{ width: "9%" }} /><col style={{ width: "10%" }} /><col style={{ width: "160px" }} />
             </colgroup>
             <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
               <th className="text-left px-3 py-3 font-medium">인보이스번호</th>
@@ -2604,7 +2626,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, isAdmin })
               {pagedList.map((iv) => {
                 const reviewStatus = getReviewStatus(iv);
                 return (
-                  <tr key={iv.id} onClick={() => onOpenInvoice(iv)} className="border-t border-slate-100 hover:bg-slate-50/50 cursor-pointer">
+                  <tr key={iv.id} onClick={() => onOpenInvoice(iv, "view")} className="border-t border-slate-100 hover:bg-slate-50/50 cursor-pointer">
                     <td className="px-3 py-3 text-xs whitespace-nowrap"><span className="text-[#1D4ED8] font-medium">{iv.code}</span></td>
                     <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatCreatedAt(iv.sentAt || iv.createdAt)}</td>
                     <td className="px-3 py-3 text-xs font-medium text-slate-800" style={{ wordBreak: "keep-all" }}>{iv.clientName}</td>
@@ -2613,12 +2635,18 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, isAdmin })
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(iv.createdBy) || "-"}</td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{iv.sentBy ? displayStaffName(iv.sentBy) : <span className="text-slate-300">미발송</span>}</td>
                     <td className="px-3 py-3 text-center">
-                      <span className={"px-2.5 py-1 text-xs font-semibold rounded-full whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-700")}>{REVIEW_STATUS_LABELS[reviewStatus] || reviewStatus}</span>
+                      {(() => {
+                        const b = getInvoiceBadge(iv);
+                        return <span title={b.at ? `${b.label} ${b.at}${b.by ? ` (${b.by})` : ""}` : ""}
+                          className={"px-2.5 py-1 text-xs font-bold rounded-full whitespace-nowrap " + b.cls}>{b.label}</span>;
+                      })()}
                     </td>
                     <td className="px-3 py-3 text-center" onClick={(e) => e.stopPropagation()}>
                       <div className="flex justify-center gap-1">
-                        <button onClick={() => onOpenInvoice(iv)} className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">👁️</button>
-                        {isAdmin && <button onClick={() => onDelete(iv)} className="w-8 h-8 rounded-lg border border-red-100 text-red-500 hover:bg-red-50 text-sm">🗑️</button>}
+                        <button onClick={() => onOpenInvoice(iv, "view")} title="상세 조회 및 PDF 인쇄" className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">👁️</button>
+                        <button onClick={() => onOpenInvoice(iv, "edit")} title="인보이스 수정" className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-[#1E3A8A]/5 hover:text-[#1E3A8A] text-sm">✏️</button>
+                        {onDuplicate && <button onClick={() => onDuplicate(iv)} title="인보이스 복제(새로 작성)" className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">📑</button>}
+                        {isAdmin && <button onClick={() => onDelete(iv)} title="인보이스 삭제" className="w-8 h-8 rounded-lg border border-red-100 text-red-500 hover:bg-red-50 text-sm">🗑️</button>}
                       </div>
                     </td>
                   </tr>
@@ -2716,10 +2744,12 @@ function OrderStageListView({ orders, proposalList, invoiceList, onOpenProposal,
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(convertedBy) || "-"}</td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{invoice && invoice.sentBy ? displayStaffName(invoice.sentBy) : <span className="text-slate-300">미발송</span>}</td>
                     <td className="px-3 py-3 text-center">
-                      {reviewStatus ? (
-                        <span className={"px-2.5 py-1 text-xs font-semibold rounded-full whitespace-nowrap " + (REVIEW_STATUS_COLORS[reviewStatus] || "bg-slate-100 text-slate-700")}>{REVIEW_STATUS_LABELS[reviewStatus] || reviewStatus}</span>
-                      ) : (
-                        <span className="text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap bg-purple-50 text-purple-700">🎉 계약전환완료</span>
+                      {invoice ? (() => {
+                        const b = getInvoiceBadge(invoice); // 인보이스 목록과 동일한 4단계 배지로 통일
+                        return <span title={b.at ? `${b.label} ${b.at}${b.by ? ` (${b.by})` : ""}` : ""}
+                          className={"px-2.5 py-1 text-xs font-bold rounded-full whitespace-nowrap " + b.cls}>{b.label}</span>;
+                      })() : (
+                        <span className="px-2.5 py-1 text-xs font-bold rounded-full whitespace-nowrap bg-purple-50 text-purple-700">계약전환완료</span>
                       )}
                     </td>
                     <td className="px-3 py-3 text-center">
@@ -2860,7 +2890,7 @@ function PvNumber({ ro, value, onChange, className }) {
 }
 
 /* 인보이스 고객 승인요청 발송 모달 — 업체관리의 계약서 발송 모달과 동일한 형식(고품격 비즈니스 안내문 + 복사/문자) */
-function InvoiceApprovalSendModal({ invoice, onClose }) {
+function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
   const link = `${window.location.origin}/agree?type=invoice&invoiceId=${invoice.id}`;
   const items = invoice.items || [];
   const first = items[0] || {};
@@ -2920,9 +2950,14 @@ function InvoiceApprovalSendModal({ invoice, onClose }) {
             <textarea readOnly rows={16} value={message} className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y bg-slate-50" onFocus={(e) => e.target.select()} />
           </Field>
 
-          <button onClick={() => copy(message, "msg")} className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold">{copied === "msg" ? "✅ 복사되었습니다" : "💬 안내 문구 전체 복사"}</button>
+          {/* 복사 = 발송 처리 — 이 버튼을 눌러야 상태가 [발송완료]로 넘어가고 발송자(로그인 사용자)가 기록된다.
+              예전엔 문구만 복사되고 상태가 [검토대기]에 머물러 있었다. */}
+          <button onClick={() => { copy(message, "msg"); if (onSent) onSent(); }}
+            className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold">
+            {copied === "msg" ? "✅ 복사되었습니다 (발송완료 처리됨)" : "💬 안내 문구 전체 복사 + 발송완료 처리"}
+          </button>
           <p className="text-[11px] text-slate-400">
-            복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 승인을 마치면 이 인보이스가 자동으로 <b>✅ 고객승인완료</b>로 바뀝니다.
+            복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 승인을 마치면 이 인보이스가 자동으로 <b>고객승인</b>으로 바뀝니다.
           </p>
         </div>
       </div>
@@ -3081,11 +3116,11 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           {!data.minimalHeader && data.id && onEmergencyApprove && (
             <button
               onClick={() => {
-                if (!window.confirm("대표님 부재 시에만 사용하는 [긴급승인]입니다.\n\n승인자와 일시가 이력에 기록되며, 되돌리려면 관리자에게 요청해야 합니다.\n계속하시겠습니까?")) return;
+                if (!window.confirm("대표님 부재/긴급 상황에 따른 직원 승인 및 발송을 진행하시겠습니까?\n\n· 승인자·발송자에 '긴급승인 (담당직원명)'이 자동 기록됩니다.\n· 이력에 남아 사후 검증이 가능하며, 되돌리려면 관리자에게 요청해야 합니다.")) return;
                 onEmergencyApprove(data);
               }}
               className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">
-              긴급승인
+              긴급승인/발송
             </button>
           )}
           {!data.minimalHeader && !isInvoice && data.id && (
@@ -3097,7 +3132,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           {isInvoice && data.id && (
             <button onClick={() => setShowApprovalSend(true)}
               className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">
-              🔗 고객 승인링크
+              🚀 고객 승인링크 발송
             </button>
           )}
           {!data.minimalHeader && isInvoice && (
@@ -3116,7 +3151,13 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           onConfirm={(channel) => { onSendComplete(data.id, channel); setShowSendModal(false); }}
         />
       )}
-      {showApprovalSend && <InvoiceApprovalSendModal invoice={{ ...data, items }} onClose={() => setShowApprovalSend(false)} />}
+      {showApprovalSend && (
+        <InvoiceApprovalSendModal
+          invoice={{ ...data, items }}
+          onSent={() => { if (onSendComplete && data.id) onSendComplete(data.id, "카카오톡"); }} // 발송자·일시 자동기록 + [발송완료] 전환
+          onClose={() => setShowApprovalSend(false)}
+        />
+      )}
       {showProposalSend && (
         <ProposalSendModal
           proposal={{ ...data, items }}
@@ -8161,18 +8202,18 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
                         단계 변경은 📋 진행상황 상세모달의 [확인] 버튼으로만 가능하다. */}
                     <span
                       title={`${sampleLastStatusText(s)}\n\n단계 변경은 📋 진행상황에서 [확인] 버튼으로 처리해 주세요`}
-                      className={"inline-block text-[10px] px-2 py-1 rounded-full font-semibold " + (SAMPLE_STATUS_COLORS[s.status] || "bg-slate-50 text-slate-500")}
+                      className={"inline-flex items-center justify-center px-3.5 py-1.5 text-xs font-bold rounded-full min-w-[70px] text-center shadow-sm whitespace-nowrap " + (SAMPLE_STATUS_COLORS[s.status] || "bg-slate-50 text-slate-500")}
                     >
                       {SAMPLE_STATUS_LABELS[s.status] || s.status || "-"}
                     </span>
-                    {s.orderConverted && <div className="mt-1 inline-block text-[10px] px-2 py-1 rounded-full font-semibold border bg-purple-50 text-purple-700 border-purple-200" title={`본품계약 전환 완료 (${s.orderConvertedBy || ""}, ${s.orderConvertedAt || ""})`}>📜 계약전환</div>}
+                    {s.orderConverted && <div className="mt-1 inline-flex items-center justify-center px-2.5 py-1 text-[11px] font-bold rounded-full border bg-purple-50 text-purple-700 border-purple-200 whitespace-nowrap" title={`본품계약 전환 완료 (${s.orderConvertedBy || ""}, ${s.orderConvertedAt || ""})`}>📜 계약전환</div>}
                   </td>
                   <td className="px-3 py-3 align-middle text-center" style={{ pointerEvents: "none" }}
                     title={getSampleApproval(s).approved ? `고객 승인 완료 (${getSampleApproval(s).at || "일시 미기록"})` : "고객이 승인링크에서 최종 승인하면 자동으로 표시됩니다"}>
                     {getSampleApproval(s).approved ? (
-                      <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800 whitespace-nowrap">고객승인</span>
+                      <span className="inline-flex items-center justify-center px-3.5 py-1.5 text-xs font-bold rounded-full min-w-[70px] text-center shadow-sm whitespace-nowrap bg-emerald-100 text-emerald-800">고객승인</span>
                     ) : (
-                      <span className="px-2.5 py-1 text-xs font-medium text-slate-400 whitespace-nowrap">대기</span>
+                      <span className="inline-flex items-center justify-center px-3.5 py-1.5 text-xs font-bold rounded-full min-w-[70px] text-center shadow-sm whitespace-nowrap text-slate-400">대기</span>
                     )}
                   </td>
                   <td className="px-3 py-3 align-middle text-right font-semibold" style={{ color: "#111827" }}>{s.invoiceAmount ? won(s.invoiceAmount) : "-"}</td>
@@ -8503,6 +8544,32 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setView("pipeline"); setActiveStep(5); // 5단계 본품계약 목록으로 즉시 이관 — 미리보기를 닫으면 바로 목록에서 확인 가능
     if (p.id) await updateReviewStatus(p, "인보이스"); // 원본 제안서의 검토상태를 자동으로 "인보이스"로 전환(제안서 데이터 자체는 그대로, 상태값만 갱신)
     try { await fsAdd(COLLECTIONS.invoices, record); setToast("📄 인보이스가 발행되어 5단계로 이관되었습니다."); } catch (e) { console.error(e); setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
+  };
+  /* 📑 인보이스 복제 — 기존 건을 그대로 복사해 새 인보이스로 만든다.
+     ⚠️ 발송·승인 이력(sentBy, sentAt, consent 계열, emergencyApproved 계열)은 절대 복사하지 않는다.
+        복사본이 이미 발송·승인된 것처럼 보이면 상태 배지가 거짓말을 하게 되기 때문. */
+  const duplicateInvoice = async (iv) => {
+    if (!iv) return;
+    if (!window.confirm(`"${iv.clientName}" 인보이스(${iv.code})를 복제해 새 인보이스로 작성할까요?\n\n금액·품목은 그대로 복사되고, 발송·승인 이력은 초기화됩니다.`)) return;
+    const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
+    const code = `INV-${todayStr()}-${String(invoiceList.length + 1).padStart(3, "0")}`;
+    const record = {
+      code,
+      proposalId: iv.proposalId || null, proposalCode: iv.proposalCode || "",
+      clientName: iv.clientName || "", contact: iv.contact || "", channel: iv.channel || "", employee: iv.employee || "",
+      clientCeo: iv.clientCeo || "", clientAddress: iv.clientAddress || "",
+      proposalTitle: iv.proposalTitle || "", itemSummary: iv.itemSummary || "",
+      totalAmount: Number(iv.totalAmount) || 0, totalCbm: iv.totalCbm || 0,
+      items: (iv.items || []).map((it) => ({ ...it })), // 원본 배열을 공유하지 않도록 각 품목을 복제
+      validUntil: addDays(30),
+      createdAt: nowDateTimeStr(), createdBy: actorName,
+      duplicatedFromCode: iv.code || "",
+    };
+    const local = { id: Date.now() + Math.random(), ...record };
+    setInvoiceList((prev) => [local, ...prev]);
+    setInvoiceData({ ...local, readOnly: false }); // 복제 직후 바로 편집 모드로 열어준다
+    try { await fsAdd(COLLECTIONS.invoices, record); setToast(`📑 인보이스가 복제되었습니다. (${code})`); }
+    catch (e) { console.error(e); setToast("복제 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
   };
   const deleteInvoiceRecord = async (iv) => {
     if (!window.confirm(`"${iv.clientName}" 인보이스(${iv.code})를 삭제할까요?`)) return;
@@ -9325,12 +9392,18 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const emergencyApprove = async (rec) => {
     if (!rec || !rec.id) return;
     const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
+    const now = nowDateTimeStr();
+    /* 긴급 프로세스 = 승인 + 발송을 한 번에 처리한다(대표님 부재 시 직원이 그대로 내보내야 하므로).
+       발송자에 "긴급승인 (직원명)"을 넣어 목록·이력에서 정상 발송건과 육안으로 구분되게 한다. */
     const patch = {
       status: "긴급승인",
       reviewStatus: "긴급승인",
       emergencyApprovedBy: actorName,
-      emergencyApprovedAt: nowDateTimeStr(),
-      updatedAt: nowDateTimeStr(),
+      emergencyApprovedAt: now,
+      sentBy: `긴급승인 (${actorName})`,
+      sentAt: now,
+      sentChannel: "긴급승인",
+      updatedAt: now,
       updatedBy: actorName,
     };
     const isInvoiceRec = invoiceList.some((iv) => iv.id === rec.id);
@@ -9345,7 +9418,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       if (FIREBASE_ENABLED && typeof rec.id === "string") {
         await fsUpdate(isInvoiceRec ? COLLECTIONS.invoices : COLLECTIONS.proposals, rec.id, patch);
       }
-      setToast(`✅ [긴급승인] 처리되었습니다. (승인자: ${actorName})`);
+      setToast(`[긴급승인] 승인·발송 처리되었습니다. (승인자: ${actorName})`);
     } catch (e) {
       console.error(e);
       setToast("긴급승인 처리 중 오류가 발생했습니다. (화면에는 반영됨)");
@@ -10323,7 +10396,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       {view === "invoices" && (
         <InvoiceListView
           invoices={invoiceList} isAdmin={isAdmin}
-          onOpenInvoice={(iv) => setInvoiceData(iv)}
+          onOpenInvoice={(iv, mode) => setInvoiceData({ ...iv, readOnly: mode === "view" })} // 👁️=조회전용 / ✏️=편집
+          onDuplicate={duplicateInvoice}
           onDelete={deleteInvoiceRecord}
           onBack={() => setView("pipeline")}
         />
@@ -10931,7 +11005,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           proposalList={proposalList}
           invoiceList={invoiceList}
           onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })}
-          onOpenInvoice={(iv) => setInvoiceData(iv)}
+          onOpenInvoice={(iv, mode) => setInvoiceData({ ...iv, readOnly: mode === "view" })} // 👁️=조회전용 / ✏️=편집
+          onDuplicate={duplicateInvoice}
         />
       )}
     </div>
