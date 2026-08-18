@@ -129,6 +129,17 @@ const OFFICIAL_SITE_PLAIN = "cosmepack.co.kr";          // 발송 문구 표기�
 // 홈페이지 줄을 쓰지 않게 되어 사용처는 없다. 향후 다른 안내문에서 재사용할 수 있도록 남겨둠.
 const OFFICIAL_SITE_BLOCK = `🌐 공식 홈페이지: ${OFFICIAL_SITE_PLAIN}\n\n`;
 
+/* 카카오톡은 메시지가 "전체보기"로 접힐 만큼 길면 링크 미리보기 카드(OG 박스)를 만들지 않는다.
+   실측(2026-08): 카드가 정상 출력되던 제안서 452자·계약서 463자 vs 카드가 사라진 인보이스 3종 518~532자.
+   → 발송 문구는 470자 안쪽을 유지하고, 길이가 들쭉날쭉한 품목명은 이 헬퍼로 잘라 넣는다.
+     (잘린 상세 사양은 링크를 열면 나오는 A4 인보이스에 그대로 있으므로 정보 손실이 아님) */
+const MSG_PRODUCT_MAX = 30;
+const shortenForMessage = (text, max) => {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  const limit = max || MSG_PRODUCT_MAX;
+  return t.length > limit ? t.slice(0, limit) + "…" : t;
+};
+
 // Firestore 컬렉션 이름 (요청하신 4개 컬렉션)
 const COLLECTIONS = {
   sourcing: "prices_sourcing",
@@ -3057,7 +3068,7 @@ function PvNumber({ ro, value, onChange, className }) {
 
 /* 인보이스 고객 승인요청 발송 모달 — 업체관리의 계약서 발송 모달과 동일한 형식(고품격 비즈니스 안내문 + 복사/문자) */
 function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
-  const link = `${window.location.origin}/agree?type=invoice&invoiceId=${invoice.id}`;
+  const link = `${window.location.origin}/agree?type=invoice&id=${invoice.id}`;
   const items = invoice.items || [];
   const first = items[0] || {};
   const productLabel = (first.productName || "주문 품목") + (items.length > 1 ? ` 외 ${items.length - 1}건` : "");
@@ -3075,16 +3086,16 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
     `[코스메팩] 제품 공급 인보이스(발주서) 도착 안내\n\n` +
     `안녕하세요, ${invoice.clientName || "고객사"} 담당자님.\n` +
     `화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n` +
-    `요청 및 협의하신 제품의 공급 인보이스(발주 확인서)가 발행되었습니다.\n` +
-    `아래 전용 링크를 통해 PC 및 모바일에서 최종 공급 사양, 결제 조건, 납기 일정을 간편하게 확인하실 수 있습니다.\n\n` +
-    `─── 인보이스 요약 정보 ───\n` +
+    `협의하신 제품의 공급 인보이스가 발행되었습니다.\n` +
+    `아래 전용 링크에서 공급 사양과 결제 조건을 확인하실 수 있습니다.\n\n` +
+    `─── 인보이스 요약 ───\n` +
     `• 문서 번호 : ${invoice.code || "INV-발행건"}\n` +
-    `• 공급 품목 : ${productLabel}\n` +
+    `• 공급 품목 : ${shortenForMessage(productLabel)}\n` +
     `• 청구 금액 : ₩${supplyTotal.toLocaleString()} (부가세 별도)\n` +
     `• 열람 기한 : 발행일로부터 30일\n` +
-    `──────────────────────\n\n` +
+    `──────────────────\n\n` +
     `🔗 인보이스 열람 및 확인하기:\n${link}\n\n` +
-    `※ 내용 확인 후 링크 화면에서 바로 승인/인쇄하시거나, 본 카카오톡 채널로 편하게 문의해 주시기 바랍니다.\n\n` +
+    `※ 확인 후 링크 화면에서 바로 승인하실 수 있습니다.\n\n` +
     `(주)비케이브로 코스메팩 드림`;
 
   const [copied, setCopied] = useState("");
@@ -7414,30 +7425,28 @@ function SampleApprovalSendModal({ sample, kind, qty, grandTotal, supplyTotal, e
     ? `[코스메팩] CT 샘플(맞춤제작) 인보이스 도착 안내\n\n` +
       `안녕하세요, ${clientName} 담당자님.\n` +
       `화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n` +
-      `요청하신 CT 맞춤 샘플 제작에 대한 공급 인보이스가 발행되었습니다.\n` +
-      `아래 전용 링크를 통해 PC 및 모바일에서 커스텀 사양, 제작 비용, 예상 감리 일정을 간편하게 확인하실 수 있습니다.\n\n` +
+      `요청하신 CT 맞춤 샘플 제작 인보이스가 발행되었습니다.\n` +
+      `아래 전용 링크에서 커스텀 사양과 제작 비용을 확인하실 수 있습니다.\n\n` +
       `─── CT샘플 인보이스 요약 ───\n` +
-      `• 문서 구분 : CT 맞춤제작 샘플 인보이스\n` +
-      `• 제작 품목 : ${productName}\n` +
+      `• 제작 품목 : ${shortenForMessage(productName)}\n` +
       `• 청구 금액 : ₩${amount.toLocaleString()} (부가세 별도)\n` +
       `• 열람 기한 : 발행일로부터 30일\n` +
-      `──────────────────────\n\n` +
+      `──────────────────\n\n` +
       `🔗 CT샘플 인보이스 확인하기:\n${link}\n\n` +
-      `※ 사양 및 일정 확인 후 링크 화면에서 확인해 주시면 즉시 현지 CT 샘플 제작 공정에 착수합니다.\n\n` +
+      `※ 확인해 주시면 즉시 현지 제작 공정에 착수합니다.\n\n` +
       `(주)비케이브로 코스메팩 드림`
     : `[코스메팩] 일반 샘플 공급 인보이스 도착 안내\n\n` +
       `안녕하세요, ${clientName} 담당자님.\n` +
       `화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n` +
-      `요청하신 일반 샘플 진행에 대한 공급 인보이스가 발행되었습니다.\n` +
-      `아래 전용 링크를 통해 PC 및 모바일에서 샘플 품목, 수량, 샘플비 및 배송 일정을 간편하게 확인하실 수 있습니다.\n\n` +
+      `요청하신 일반 샘플 공급 인보이스가 발행되었습니다.\n` +
+      `아래 전용 링크에서 샘플 품목과 배송 일정을 확인하실 수 있습니다.\n\n` +
       `─── 샘플 인보이스 요약 ───\n` +
-      `• 문서 구분 : 일반 샘플 인보이스\n` +
-      `• 샘플 품목 : ${productName}\n` +
+      `• 샘플 품목 : ${shortenForMessage(productName)}\n` +
       `• 청구 금액 : ₩${amount.toLocaleString()} (부가세 별도)\n` +
       `• 열람 기한 : 발행일로부터 30일\n` +
-      `──────────────────────\n\n` +
+      `──────────────────\n\n` +
       `🔗 샘플 인보이스 확인하기:\n${link}\n\n` +
-      `※ 내용 확인 후 링크 화면에서 바로 승인/인쇄하시거나, 본 카카오톡 채널로 편하게 문의해 주시기 바랍니다.\n\n` +
+      `※ 확인 후 링크 화면에서 바로 승인하실 수 있습니다.\n\n` +
       `(주)비케이브로 코스메팩 드림`;
 
   const [copied, setCopied] = useState("");
