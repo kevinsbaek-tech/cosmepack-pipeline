@@ -121,10 +121,12 @@ if (FIREBASE_ENABLED) {
 const OFFICIAL_SITE_URL = "https://cosmepack.co.kr/";   // 푸터 <a href> 등 실제 이동용(스킴 필요)
 const OFFICIAL_SITE_LABEL = "https://cosmepack.co.kr";  // 푸터 화면 표시용
 const OFFICIAL_SITE_PLAIN = "cosmepack.co.kr";          // 발송 문구 표기용 — 스킴(https://) 제외
-// 발송 문구에서 열람 링크 아래에 붙는 표준 블록(끝에 빈 줄 포함 — 뒤에 "감사합니다"가 이어짐).
+// 발송 문구에서 열람 링크 아래에 붙는 표준 블록(끝에 빈 줄 포함).
 // ⚠️ 카카오톡은 본문에 정식 URL(https://~)이 2개 이상이면 미리보기 카드(OG 박스)를 만들지 않는다.
 //    그래서 홈페이지는 스킴 없는 도메인 표기 한 줄로만 넣어, 정식 링크가 "열람 링크 1개"만 남도록 한다.
 //    이 규칙 때문에 여기에 https://를 다시 붙이면 미리보기 카드가 사라진다 — 절대 되돌리지 말 것.
+// 현재 5종 발송 템플릿(제안서·인보이스·계약서·일반샘플·CT)이 모두 B2B 표준 서식으로 통일되면서
+// 홈페이지 줄을 쓰지 않게 되어 사용처는 없다. 향후 다른 안내문에서 재사용할 수 있도록 남겨둠.
 const OFFICIAL_SITE_BLOCK = `🌐 공식 홈페이지: ${OFFICIAL_SITE_PLAIN}\n\n`;
 
 // Firestore 컬렉션 이름 (요청하신 4개 컬렉션)
@@ -3063,22 +3065,27 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
   const supplyTotal = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
   const grandTotal = Math.round(supplyTotal * 1.1); // 부가세 포함 총 청구금액
 
-  // 고객사에 그대로 나가는 표준 문구 — 임의로 줄이지 말 것
+  /* 고객사에 그대로 나가는 표준 문구(대기업 B2B 서식) — 임의로 줄이거나 표현을 바꾸지 말 것.
+     ⚠️ 본문의 정식 URL(https://~)은 반드시 "열람 링크 1개"만 유지할 것.
+        2개 이상이면 카카오톡이 미리보기 카드(OG 박스)를 만들지 않는다.
+        그래서 공식 홈페이지 줄(OFFICIAL_SITE_BLOCK)은 이 템플릿에 넣지 않는다.
+     ※ 청구 금액은 "부가세 별도" 표기에 맞춰 공급가액(supplyTotal)을 쓴다 —
+        부가세 포함액(grandTotal)을 넣으면 표기와 금액이 어긋나 고객이 오해한다. */
   const message =
-    `[ (주)비케이브로 · 코스메팩 ]\n` +
-    `화장품 용기 본품 양산 인보이스 발행 및 고객 승인 안내\n\n` +
+    `[코스메팩] 제품 공급 인보이스(발주서) 도착 안내\n\n` +
     `안녕하세요, ${invoice.clientName || "고객사"} 담당자님.\n` +
-    `화장품 용기 전문 공급사 (주)비케이브로 (코스메팩)입니다.\n\n` +
-    `요청하신 본품 양산 발주 건에 대하여 최종 단가, 수량, 결제 일정(30%/60%/10%) 및 제작 사양이 확정되어 인보이스를 발행해 드립니다.\n\n` +
-    `내용을 확인하시고 아래 링크를 통해 [최종 발주 승인]을 진행해 주시면, 확인 즉시 현지 원자재 투입 및 양산 발주(착공)가 개시됩니다.\n\n` +
-    `▶ 발주 품목: ${productLabel} (${totalQty.toLocaleString()}개)\n` +
-    `▶ 총 청구금액: ₩${grandTotal.toLocaleString()} (부가세 포함)\n` +
-    `▶ 결제 조건: 계약금(30%) / 중도금(60%) / 잔금(10%)\n\n` +
-    `🔗 인보이스 내역 확인 및 발주 승인하기:\n${link}\n\n` +
-    `※ 세금계산서 발행 및 입금 관련 문의는 카카오 채널 또는 당사(031-977-7322)로 연락 주시면 신속히 안내해 드리겠습니다.\n\n` +
-    OFFICIAL_SITE_BLOCK +
-    `감사합니다.\n` +
-    `- (주)비케이브로 (코스메팩) 드림 -`;
+    `화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n` +
+    `요청 및 협의하신 제품의 공급 인보이스(발주 확인서)가 발행되었습니다.\n` +
+    `아래 전용 링크를 통해 PC 및 모바일에서 최종 공급 사양, 결제 조건, 납기 일정을 간편하게 확인하실 수 있습니다.\n\n` +
+    `─── 인보이스 요약 정보 ───\n` +
+    `• 문서 번호 : ${invoice.code || "INV-발행건"}\n` +
+    `• 공급 품목 : ${productLabel}\n` +
+    `• 청구 금액 : ₩${supplyTotal.toLocaleString()} (부가세 별도)\n` +
+    `• 열람 기한 : 발행일로부터 30일\n` +
+    `──────────────────────\n\n` +
+    `🔗 인보이스 열람 및 확인하기:\n${link}\n\n` +
+    `※ 내용 확인 후 링크 화면에서 바로 승인/인쇄하시거나, 본 카카오톡 채널로 편하게 문의해 주시기 바랍니다.\n\n` +
+    `(주)비케이브로 코스메팩 드림`;
 
   const [copied, setCopied] = useState("");
   const copy = (text, label) => {
@@ -4715,22 +4722,23 @@ function ClientContractViewModal({ client, onClose }) {
 // 계약서 단독 서명 링크 발송 안내 모달
 function ContractSendModal({ client, onClose }) {
   const link = buildContractSignLink(client.id);
-  // 발송 안내문 표준 문구 — 고객사에 그대로 나가는 내용이라 임의로 줄이지 말 것
+  /* 발송 안내문 표준 문구(대기업 B2B 서식) — 고객사에 그대로 나가는 내용이라 임의로 줄이지 말 것.
+     ⚠️ 본문의 정식 URL(https://~)은 반드시 "서명 링크 1개"만 유지할 것.
+        2개 이상이면 카카오톡이 미리보기 카드(OG 박스)를 만들지 않는다. */
   const message =
-    `[ (주)비케이브로 · 코스메팩 ]\n` +
-    `화장품 용기 표준공급계약서 전자서명 요청 안내\n\n` +
-    `안녕하세요, ${client.name} 담당자님.\n` +
-    `화장품 용기 전문 공급사 (주)비케이브로 (코스메팩)입니다.\n\n` +
-    `귀사와의 원활하고 안전한 용기 공급 및 상호 권익 보호(철저한 품질 검품 기준, 수량 공차 정산, 하자보증 기준 확립)를 위하여 연간 표준공급계약서를 송부해 드립니다.\n\n` +
-    `본 계약은 연 1회 체결되는 기본 공급계약으로, 상호 신뢰를 바탕으로 한 안정적인 생산 및 납품을 위한 기본 절차이오니 내용을 확인하시고 전자서명을 완료해 주시기 바랍니다.\n\n` +
-    `▶ 계약 대상: (주)비케이브로 ↔ ${client.name}\n` +
-    `▶ 계약 성격: 화장품 용기 연간 기본공급계약 (1년 유효)\n` +
-    `▶ 간편 서명 방법: 아래 링크 접속 후 모바일/PC에서 서명 진행\n\n` +
-    `🔗 표준공급계약서 확인 및 서명하기:\n${link}\n\n` +
-    `※ 문의사항이 있으시면 언제든지 카카오톡, 카카오 채널, 이메일 또는 당사(031-977-7322)로 연락 부탁드립니다.\n\n` +
-    OFFICIAL_SITE_BLOCK +
-    `감사합니다.\n` +
-    `- (주)비케이브로 (코스메팩) 드림 -`;
+    `[코스메팩] 표준거래계약서 전자서명 요청\n\n` +
+    `안녕하세요, ${client.name || "고객사"} 담당자님.\n` +
+    `화장품 용기 제조·공급 파트너 (주)비케이브로 코스메팩입니다.\n\n` +
+    `안전하고 원활한 거래를 위한 표준거래계약서가 발행되었습니다.\n` +
+    `별도의 서류 출력 없이 아래 전용 링크를 통해 PC 및 모바일에서 계약 조항을 확인하시고 간편하게 전자서명을 진행하실 수 있습니다.\n\n` +
+    `─── 계약 요약 정보 ───\n` +
+    `• 계약 구분 : 화장품 용기 공급 기본계약서\n` +
+    `• 계약 대상 : ${client.name || "고객사명"}\n` +
+    `• 유효 기간 : 체결일로부터 1년 (자동 연장)\n` +
+    `──────────────────────\n\n` +
+    `🔗 계약서 확인 및 전자서명 진행:\n${link}\n\n` +
+    `※ 서명 완료 시 양사에 공인 효력을 갖는 서명본 PDF가 즉시 생성되어 열람/보관이 가능합니다.\n\n` +
+    `(주)비케이브로 코스메팩 드림`;
   const [copied, setCopied] = useState("");
   const copy = (text, label) => {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -7386,46 +7394,49 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
 /* 샘플 인보이스(일반/CT 공용) 고객 승인링크 발송 모달
    kind: "sample"(1차 일반샘플) | "ct"(2차 CT 맞춤제작) — 두 안내문은 취지가 완전히 달라 분기한다.
    금액·수량은 모달을 여는 쪽에서 실시간 계산값을 그대로 넘겨받는다(저장 전 값도 문구에 반영). */
-function SampleApprovalSendModal({ sample, kind, qty, grandTotal, expectedDate, onClose }) {
+function SampleApprovalSendModal({ sample, kind, qty, grandTotal, supplyTotal, expectedDate, onClose }) {
   const isCt = kind === "ct";
   const link = `${window.location.origin}/agree?type=${isCt ? "ct" : "sample"}&id=${sample.id}`;
   const clientName = sample.clientName || "고객사";
-  const productName = sample.productName || (isCt ? "CT 맞춤 품목" : "요청 품목");
-  const amount = Number(grandTotal) || 0;
-  const count = Number(qty) || 1;
+  const productName = sample.productName || (isCt ? "CT 샘플 품목" : "요청 샘플 품목");
+  /* 청구 금액은 "부가세 별도" 표기에 맞춰 공급가액(supplyTotal)을 쓴다 —
+     부가세 포함액(grandTotal)을 넣으면 표기와 금액이 어긋나 고객이 오해한다.
+     구버전 호출부가 supplyTotal을 안 넘기면 grandTotal로 폴백. */
+  const amount = Number(supplyTotal != null ? supplyTotal : grandTotal) || 0;
 
-  // 고객사에 그대로 나가는 표준 문구 — 임의로 줄이지 말 것
+  /* 고객사에 그대로 나가는 표준 문구(대기업 B2B 서식) — 임의로 줄이거나 표현을 바꾸지 말 것.
+     ⚠️ 본문의 정식 URL(https://~)은 반드시 "열람 링크 1개"만 유지할 것.
+        2개 이상이면 카카오톡이 미리보기 카드(OG 박스)를 만들지 않는다.
+        그래서 공식 홈페이지 줄(OFFICIAL_SITE_BLOCK)은 이 템플릿에 넣지 않는다. */
   const message = isCt
-    ? `[ (주)비케이브로 · 코스메팩 ]\n` +
-      `화장품 용기 CT 맞춤제작 샘플 인보이스 발행 및 안내\n\n` +
+    ? `[코스메팩] CT 샘플(맞춤제작) 인보이스 도착 안내\n\n` +
       `안녕하세요, ${clientName} 담당자님.\n` +
-      `화장품 용기 전문 공급사 (주)비케이브로 (코스메팩)입니다.\n\n` +
-      `귀사가 요청하신 본품 양산 대비용 '맞춤형 CT(내용물 적합성 테스트) 샘플' 제작 인보이스를 발행해 드립니다.\n\n` +
-      `본 CT 샘플은 본품과 100% 동일한 원료 비율 및 조색/인쇄 스펙으로 중국 현지 공장에서 별도 특별 생산 투입되며, 결제해 주신 CT 샘플 실비는 향후 '본품 양산 발주(기본 MOQ 이상)' 진행 시 전액 100% 페이백(차감) 처리됩니다.\n\n` +
-      `▶ 맞춤 품목: ${productName} (${count.toLocaleString()}개)\n` +
-      `▶ 총 청구금액: ₩${amount.toLocaleString()} (부가세 포함, 항공특송 포함)\n` +
-      `▶ 입금 계좌: 국민은행 024837-04-007281 (주)비케이브로\n` +
-      `▶ 예상 완료일: ${expectedDate ? `${expectedDate} (입금 확인 기준)` : "입금 확인 후 약 15일 소요"} (국제 항공특송 직배송)\n\n` +
-      `🔗 CT 샘플 인보이스 확인 및 승인하기:\n${link}\n\n` +
-      `※ 입금 확인 즉시 현지 공장에 맞춤 제작이 투입됩니다. 추가 문의사항은 언제든지 연락 주시기 바랍니다.\n\n` +
-      OFFICIAL_SITE_BLOCK +
-      `감사합니다.\n` +
-      `- (주)비케이브로 (코스메팩) 드림 -`
-    : `[ (주)비케이브로 · 코스메팩 ]\n` +
-      `화장품 용기 일반 샘플 인보이스 발행 및 발송 안내\n\n` +
+      `화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n` +
+      `요청하신 CT 맞춤 샘플 제작에 대한 공급 인보이스가 발행되었습니다.\n` +
+      `아래 전용 링크를 통해 PC 및 모바일에서 커스텀 사양, 제작 비용, 예상 감리 일정을 간편하게 확인하실 수 있습니다.\n\n` +
+      `─── CT샘플 인보이스 요약 ───\n` +
+      `• 문서 구분 : CT 맞춤제작 샘플 인보이스\n` +
+      `• 제작 품목 : ${productName}\n` +
+      `• 청구 금액 : ₩${amount.toLocaleString()} (부가세 별도)\n` +
+      `• 열람 기한 : 발행일로부터 30일\n` +
+      `──────────────────────\n\n` +
+      `🔗 CT샘플 인보이스 확인하기:\n${link}\n\n` +
+      `※ 사양 및 일정 확인 후 링크 화면에서 확인해 주시면 즉시 현지 CT 샘플 제작 공정에 착수합니다.\n\n` +
+      `(주)비케이브로 코스메팩 드림`
+    : `[코스메팩] 일반 샘플 공급 인보이스 도착 안내\n\n` +
       `안녕하세요, ${clientName} 담당자님.\n` +
-      `화장품 용기 전문 공급사 (주)비케이브로 (코스메팩)입니다.\n\n` +
-      `요청하신 용기 일반 샘플 발송 건에 대한 인보이스를 발행해 드립니다.\n\n` +
-      `당사는 원활한 샘플 공급을 위해 실비 수준의 샘플비 및 운송료를 청구하고 있으며, 해당 비용은 향후 본품 양산 주문 시 전액 차감(공제) 처리해 드립니다.\n\n` +
-      `▶ 요청 품목: ${productName} (${count.toLocaleString()}개)\n` +
-      `▶ 청구 금액: ₩${amount.toLocaleString()} (부가세 포함)\n` +
-      `▶ 입금 계좌: 국민은행 024837-04-007281 (주)비케이브로\n` +
-      `▶ 발송 안내: 입금 확인 후 즉시 출고 진행 (발송 익일 송장번호 안내)\n\n` +
-      `🔗 샘플 인보이스 확인 및 승인하기:\n${link}\n\n` +
-      `※ 문의사항이 있으시면 언제든지 카카오 채널 또는 당사(031-977-7322)로 연락 주시기 바랍니다.\n\n` +
-      OFFICIAL_SITE_BLOCK +
-      `감사합니다.\n` +
-      `- (주)비케이브로 (코스메팩) 드림 -`;
+      `화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n` +
+      `요청하신 일반 샘플 진행에 대한 공급 인보이스가 발행되었습니다.\n` +
+      `아래 전용 링크를 통해 PC 및 모바일에서 샘플 품목, 수량, 샘플비 및 배송 일정을 간편하게 확인하실 수 있습니다.\n\n` +
+      `─── 샘플 인보이스 요약 ───\n` +
+      `• 문서 구분 : 일반 샘플 인보이스\n` +
+      `• 샘플 품목 : ${productName}\n` +
+      `• 청구 금액 : ₩${amount.toLocaleString()} (부가세 별도)\n` +
+      `• 열람 기한 : 발행일로부터 30일\n` +
+      `──────────────────────\n\n` +
+      `🔗 샘플 인보이스 확인하기:\n${link}\n\n` +
+      `※ 내용 확인 후 링크 화면에서 바로 승인/인쇄하시거나, 본 카카오톡 채널로 편하게 문의해 주시기 바랍니다.\n\n` +
+      `(주)비케이브로 코스메팩 드림`;
 
   const [copied, setCopied] = useState("");
   const copy = (text, label) => {
@@ -7619,7 +7630,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
         <SendCompleteModal onClose={() => setShowSendModal(false)} onConfirm={sendComplete} />
       )}
       {showApprovalSend && (
-        <SampleApprovalSendModal sample={sample} kind="sample" qty={qty} grandTotal={grandTotal} onClose={() => setShowApprovalSend(false)} />
+        <SampleApprovalSendModal sample={sample} kind="sample" qty={qty} grandTotal={grandTotal} supplyTotal={supplyTotal} onClose={() => setShowApprovalSend(false)} />
       )}
       {showStockPicker && (
         <StockPickerModal stock={sampleStock} productName={productName} onClose={() => setShowStockPicker(false)} onPick={pickStockForInvoice} />
@@ -7934,7 +7945,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
         <SendCompleteModal onClose={() => setShowSendModal(false)} onConfirm={sendComplete} />
       )}
       {showApprovalSend && (
-        <SampleApprovalSendModal sample={sample} kind="ct" qty={qty} grandTotal={grandTotal} expectedDate={completionDate} onClose={() => setShowApprovalSend(false)} />
+        <SampleApprovalSendModal sample={sample} kind="ct" qty={qty} grandTotal={grandTotal} supplyTotal={supplyTotal} expectedDate={completionDate} onClose={() => setShowApprovalSend(false)} />
       )}
       {savedFlash && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-emerald-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg shadow-lg no-print">✅ 성공적으로 저장되었습니다.</div>
@@ -12420,9 +12431,14 @@ function parseCustomerRoute() {
   try {
     const q = new URLSearchParams(window.location.search || "");
     const type = (q.get("type") || "").toLowerCase();
-    if (type === "contract" && q.get("clientId")) return { kind: "contract", id: q.get("clientId") };
+    // 계약서는 clientId가 정식 파라미터지만, id로 만든 링크도 열리도록 폴백을 둔다
+    // (발송 문구를 바꾸는 과정에서 형식이 섞여도 고객 링크가 죽지 않게 하기 위함)
+    if (type === "contract" && (q.get("clientId") || q.get("id"))) return { kind: "contract", id: q.get("clientId") || q.get("id") };
     if (type === "invoice" && (q.get("invoiceId") || q.get("id"))) return { kind: "invoice", id: q.get("invoiceId") || q.get("id") };
-    if ((type === "sample" || type === "ct") && q.get("id")) return { kind: type, id: q.get("id") }; // 샘플/CT 샘플 인보이스 승인
+    // 샘플/CT 샘플 인보이스 승인. sample_invoice·ct_invoice 형식으로 만든 링크도 열리도록 별칭을 둔다
+    if ((type === "sample" || type === "ct" || type === "sample_invoice" || type === "ct_invoice") && q.get("id")) {
+      return { kind: (type === "ct" || type === "ct_invoice") ? "ct" : "sample", id: q.get("id") };
+    }
     if (type === "proposal" && (q.get("id") || q.get("proposalId"))) return { kind: "proposal", id: q.get("id") || q.get("proposalId") }; // 제안서 고객 열람
   } catch (e) { /* URLSearchParams 미지원 환경은 해시로 폴백 */ }
   const raw = decodeURIComponent(window.location.hash || "").trim();
