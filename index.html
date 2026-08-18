@@ -109,11 +109,15 @@ if (FIREBASE_ENABLED) {
 }
 
 // 코스메팩 공식 홈페이지 — 고객 발송 문구(카톡·문자)와 고객 열람페이지 푸터가 공유하는 단일 소스.
-// 주소가 바뀌면 이 상수 한 줄만 고치면 발송템플릿 5종·열람페이지 4종에 모두 반영된다.
-const OFFICIAL_SITE_URL = "https://cosmepack.co.kr/";
-const OFFICIAL_SITE_LABEL = "https://cosmepack.co.kr";
-// 발송 문구에서 열람 링크 바로 아래에 붙는 표준 블록(끝에 빈 줄 포함 — 뒤에 "감사합니다"가 이어짐)
-const OFFICIAL_SITE_BLOCK = `🌐 코스메팩 공식 홈페이지:\n${OFFICIAL_SITE_URL}\n\n`;
+// 주소가 바뀌면 이 상수들만 고치면 발송템플릿 5종·열람페이지 4종에 모두 반영된다.
+const OFFICIAL_SITE_URL = "https://cosmepack.co.kr/";   // 푸터 <a href> 등 실제 이동용(스킴 필요)
+const OFFICIAL_SITE_LABEL = "https://cosmepack.co.kr";  // 푸터 화면 표시용
+const OFFICIAL_SITE_PLAIN = "cosmepack.co.kr";          // 발송 문구 표기용 — 스킴(https://) 제외
+// 발송 문구에서 열람 링크 아래에 붙는 표준 블록(끝에 빈 줄 포함 — 뒤에 "감사합니다"가 이어짐).
+// ⚠️ 카카오톡은 본문에 정식 URL(https://~)이 2개 이상이면 미리보기 카드(OG 박스)를 만들지 않는다.
+//    그래서 홈페이지는 스킴 없는 도메인 표기 한 줄로만 넣어, 정식 링크가 "열람 링크 1개"만 남도록 한다.
+//    이 규칙 때문에 여기에 https://를 다시 붙이면 미리보기 카드가 사라진다 — 절대 되돌리지 말 것.
+const OFFICIAL_SITE_BLOCK = `🌐 공식 홈페이지: ${OFFICIAL_SITE_PLAIN}\n\n`;
 
 // Firestore 컬렉션 이름 (요청하신 4개 컬렉션)
 const COLLECTIONS = {
