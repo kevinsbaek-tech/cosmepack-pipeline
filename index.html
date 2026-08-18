@@ -3,7 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CosmePack 파이프라인</title>
+<title>코스메팩 비즈니스 센터</title>
+<meta name="description" content="코스메팩 제품공급제안서 · 인보이스 · 전자계약 확인 시스템">
+<!-- Open Graph / 카카오톡·문자 미리보기 설정 -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="(주)비케이브로 코스메팩">
+<meta property="og:title" content="코스메팩 비즈니스 센터">
+<meta property="og:description" content="제품공급제안서 · 인보이스 · 전자계약 확인">
+<meta property="og:url" content="https://cosmepack-pipeline.vercel.app">
+<!-- 대표 로고/파비콘 이미지 경로가 있다면 연동 -->
+<meta property="og:image" content="https://cosmepack-pipeline.vercel.app/favicon.ico">
+<!-- 문자(MMS)·일부 메신저는 트위터 카드 규격을 먼저 읽으므로 함께 선언 -->
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="코스메팩 비즈니스 센터">
+<meta name="twitter:description" content="제품공급제안서 · 인보이스 · 전자계약 확인">
+<meta name="twitter:image" content="https://cosmepack-pipeline.vercel.app/favicon.ico">
+<link rel="icon" href="/favicon.ico">
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -92,6 +107,13 @@ if (FIREBASE_ENABLED) {
     console.error("Firebase 초기화 실패:", e);
   }
 }
+
+// 코스메팩 공식 홈페이지 — 고객 발송 문구(카톡·문자)와 고객 열람페이지 푸터가 공유하는 단일 소스.
+// 주소가 바뀌면 이 상수 한 줄만 고치면 발송템플릿 5종·열람페이지 4종에 모두 반영된다.
+const OFFICIAL_SITE_URL = "https://cosmepack.co.kr/";
+const OFFICIAL_SITE_LABEL = "https://cosmepack.co.kr";
+// 발송 문구에서 열람 링크 바로 아래에 붙는 표준 블록(끝에 빈 줄 포함 — 뒤에 "감사합니다"가 이어짐)
+const OFFICIAL_SITE_BLOCK = `🌐 코스메팩 공식 홈페이지:\n${OFFICIAL_SITE_URL}\n\n`;
 
 // Firestore 컬렉션 이름 (요청하신 4개 컬렉션)
 const COLLECTIONS = {
@@ -3042,6 +3064,7 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
     `▶ 결제 조건: 계약금(30%) / 중도금(60%) / 잔금(10%)\n\n` +
     `🔗 인보이스 내역 확인 및 발주 승인하기:\n${link}\n\n` +
     `※ 세금계산서 발행 및 입금 관련 문의는 카카오 채널 또는 당사(031-977-7322)로 연락 주시면 신속히 안내해 드리겠습니다.\n\n` +
+    OFFICIAL_SITE_BLOCK +
     `감사합니다.\n` +
     `- (주)비케이브로 (코스메팩) 드림 -`;
 
@@ -4693,6 +4716,7 @@ function ContractSendModal({ client, onClose }) {
     `▶ 간편 서명 방법: 아래 링크 접속 후 모바일/PC에서 서명 진행\n\n` +
     `🔗 표준공급계약서 확인 및 서명하기:\n${link}\n\n` +
     `※ 문의사항이 있으시면 언제든지 카카오톡, 카카오 채널, 이메일 또는 당사(031-977-7322)로 연락 부탁드립니다.\n\n` +
+    OFFICIAL_SITE_BLOCK +
     `감사합니다.\n` +
     `- (주)비케이브로 (코스메팩) 드림 -`;
   const [copied, setCopied] = useState("");
@@ -7372,6 +7396,7 @@ function SampleApprovalSendModal({ sample, kind, qty, grandTotal, expectedDate, 
       `▶ 예상 완료일: ${expectedDate ? `${expectedDate} (입금 확인 기준)` : "입금 확인 후 약 15일 소요"} (국제 항공특송 직배송)\n\n` +
       `🔗 CT 샘플 인보이스 확인 및 승인하기:\n${link}\n\n` +
       `※ 입금 확인 즉시 현지 공장에 맞춤 제작이 투입됩니다. 추가 문의사항은 언제든지 연락 주시기 바랍니다.\n\n` +
+      OFFICIAL_SITE_BLOCK +
       `감사합니다.\n` +
       `- (주)비케이브로 (코스메팩) 드림 -`
     : `[ (주)비케이브로 · 코스메팩 ]\n` +
@@ -7386,6 +7411,7 @@ function SampleApprovalSendModal({ sample, kind, qty, grandTotal, expectedDate, 
       `▶ 발송 안내: 입금 확인 후 즉시 출고 진행 (발송 익일 송장번호 안내)\n\n` +
       `🔗 샘플 인보이스 확인 및 승인하기:\n${link}\n\n` +
       `※ 문의사항이 있으시면 언제든지 카카오 채널 또는 당사(031-977-7322)로 연락 주시기 바랍니다.\n\n` +
+      OFFICIAL_SITE_BLOCK +
       `감사합니다.\n` +
       `- (주)비케이브로 (코스메팩) 드림 -`;
 
@@ -11751,6 +11777,19 @@ function SignaturePad({ onChange }) {
   );
 }
 
+/* 고객 열람 페이지(제안서·인보이스·계약서·샘플) 공용 하단 푸터 — 공식 홈페이지 안내.
+   인쇄물에는 나오지 않도록 no-print. 주소 변경은 OFFICIAL_SITE_URL 한 곳만 고치면 된다. */
+function CustomerFooter() {
+  return (
+    <div className="no-print text-center py-4 text-xs text-slate-500 border-t border-slate-200 mt-8">
+      <p className="font-semibold text-slate-700">(주)비케이브로 | 코스메팩</p>
+      <p className="mt-1">
+        공식 홈페이지: <a href={OFFICIAL_SITE_URL} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline font-medium">{OFFICIAL_SITE_LABEL}</a>
+      </p>
+    </div>
+  );
+}
+
 function CustomerConsentPage({ invoiceId }) {
   const [invoice, setInvoice] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -11875,6 +11914,7 @@ function CustomerConsentPage({ invoiceId }) {
           </aside>
         )}
       </div>
+      <CustomerFooter />
     </div>
   );
 }
@@ -11992,6 +12032,7 @@ function ContractOnlySignPage({ clientId }) {
           </aside>
         )}
       </div>
+      <CustomerFooter />
     </div>
   );
 }
@@ -12132,6 +12173,7 @@ function SampleApprovalPage({ sampleId, kind }) {
           )}
         </aside>
       </div>
+      <CustomerFooter />
     </div>
   );
 }
@@ -12157,6 +12199,7 @@ function ProposalSendModal({ proposal, onClose, onSent }) {
     `▶ 제안 금액: ₩${Math.round(totalAmount).toLocaleString()} (부가세 별도)\n` +
     `▶ 열람 유효기간: 발행일로부터 30일\n\n` +
     `🔗 제품공급제안서 확인하기:\n${link}\n\n` +
+    OFFICIAL_SITE_BLOCK +
     `감사합니다!\n` +
     `- (주)비케이브로 (코스메팩) 드림 -`;
 
@@ -12349,6 +12392,7 @@ function ProposalViewPage({ proposalId }) {
           )}
         </aside>
       </div>
+      <CustomerFooter />
     </div>
   );
 }
@@ -12372,6 +12416,17 @@ function parseCustomerRoute() {
   if (mi) return { kind: "invoice", id: mi[1] };
   return { kind: "", id: "" };
 }
+
+// 고객에게 카카오톡/문자로 공유되는 링크는 종류에 따라 브라우저 탭 이름을 맞춤 표시한다.
+// (고객이 여러 링크를 동시에 열어둬도 어떤 문서인지 탭만 보고 구분할 수 있게 함)
+const BRAND_TITLE = "코스메팩 비즈니스 센터";
+const CUSTOMER_PAGE_TITLES = {
+  proposal: `제품공급제안서 | ${BRAND_TITLE}`,
+  invoice: `공급 인보이스 | ${BRAND_TITLE}`,
+  contract: `표준계약서 전자서명 | ${BRAND_TITLE}`,
+  sample: `샘플 인보이스 | ${BRAND_TITLE}`,
+  ct: `CT 맞춤샘플 인보이스 | ${BRAND_TITLE}`,
+};
 
 function RoleLoginScreen({ accounts, onLogin }) {
   const [username, setUsername] = useState("");
@@ -12566,6 +12621,11 @@ function Root() {
     window.addEventListener("popstate", onNav);
     return () => { window.removeEventListener("hashchange", onNav); window.removeEventListener("popstate", onNav); };
   }, []);
+  // 라우트가 바뀔 때마다 탭 타이틀 갱신 — 고객 링크는 문서 종류별 이름, 내부 관리화면은 브랜드명으로 되돌린다.
+  // (인쇄/PDF 저장 시 handlePrint가 document.title을 잠깐 파일명으로 바꿨다가 원복하는 로직과는 서로 간섭하지 않음)
+  useEffect(() => {
+    document.title = CUSTOMER_PAGE_TITLES[customerRoute.kind] || BRAND_TITLE;
+  }, [customerRoute.kind]);
   const [checking, setChecking] = useState(FIREBASE_ENABLED);
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState("");
