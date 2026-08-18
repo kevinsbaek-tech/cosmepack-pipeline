@@ -11,13 +11,21 @@
 <meta property="og:title" content="코스메팩 비즈니스 센터">
 <meta property="og:description" content="제품공급제안서 · 인보이스 · 전자계약 확인">
 <meta property="og:url" content="https://cosmepack-pipeline.vercel.app">
-<!-- 대표 로고/파비콘 이미지 경로가 있다면 연동 -->
-<meta property="og:image" content="https://cosmepack-pipeline.vercel.app/favicon.ico">
+<!-- 카카오톡 미리보기 대표 썸네일 (1200x630 권장 규격)
+     ⚠️ og-image.jpg를 저장소 루트(index.html과 같은 위치)에 함께 커밋해야 한다.
+        이미지가 404면 카카오톡은 미리보기 카드를 만들지 않는다. -->
+<meta property="og:image" content="https://cosmepack-pipeline.vercel.app/og-image.jpg">
+<meta property="og:image:secure_url" content="https://cosmepack-pipeline.vercel.app/og-image.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="코스메팩 비즈니스 센터">
 <!-- 문자(MMS)·일부 메신저는 트위터 카드 규격을 먼저 읽으므로 함께 선언 -->
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="코스메팩 비즈니스 센터">
 <meta name="twitter:description" content="제품공급제안서 · 인보이스 · 전자계약 확인">
-<meta name="twitter:image" content="https://cosmepack-pipeline.vercel.app/favicon.ico">
+<meta name="twitter:image" content="https://cosmepack-pipeline.vercel.app/og-image.jpg">
+<meta name="twitter:image:alt" content="코스메팩 비즈니스 센터">
 <link rel="icon" href="/favicon.ico">
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
