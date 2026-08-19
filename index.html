@@ -4238,8 +4238,15 @@ function ProposalEditStage({ draftItems, setDraftItems, removeDraftItem, clientI
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] no-print">
         <div className="max-w-5xl mx-auto px-6 py-4 flex justify-end gap-3">
           {!readOnly && !isEditingExisting && (
-            <button onClick={onSave} className="px-5 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
+            <button onClick={() => onSave()} className="px-5 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
               {isAdmin ? "✅ 최종 승인 및 저장" : "📤 대표님 검토 요청 (저장)"}
+            </button>
+          )}
+          {/* 기존 제안서를 수정 중일 때만 노출 — 미리보기를 거치지 않고 폼에서 바로 저장하고 목록으로 돌아간다.
+              (PDF 미리보기 모달 상단의 [💾 제안서 저장]은 그대로 유지되며 서로 독립적으로 동작) */}
+          {!readOnly && isEditingExisting && (
+            <button onClick={() => onSave({ returnToList: true })} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm flex items-center gap-1.5 text-sm transition-all">
+              💾 수정 후 저장
             </button>
           )}
           <button onClick={onPrint} className="px-5 py-2.5 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 transition-opacity">
@@ -8983,9 +8990,14 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setView("pipeline");
     setActiveStep(4);
   };
-  // "💾 저장" 버튼(제안서 미리보기 · 본품 인보이스 미리보기 공용) — 미리보기 화면에서 직접 고친 품목/사진/단가/수량/문구를
-  // 실제 문서(제안서 또는 인보이스)에 저장하고, 해당 목록에도 즉시 반영한다.
-  const savePreviewEdits = async (id, patch, previewMode) => {
+  /* 제안서·인보이스 저장의 단일 창구.
+     - PDF 미리보기 모달의 [💾 저장]
+     - 3단계 폼 하단의 [💾 수정 후 저장]
+     두 경로가 이 함수 하나만 호출한다(Firestore 반영·목록 갱신·열린 미리보기 동기화·토스트가 한 곳에 있음).
+     patch에는 "각 화면이 실제로 들고 있는 값만" 담는다 — 폼에만 있는 담당자·총액이나
+     미리보기에만 있는 인사말·참고사항을 서로 undefined로 덮어쓰지 않게 하기 위함.
+     opts.toast를 주면 기본 문구 대신 그 문구를 띄운다. 반환값은 실제 저장된 fullPatch. */
+  const savePreviewEdits = async (id, patch, previewMode, opts) => {
     const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
     const fullPatch = { ...patch, updatedAt: nowDateTimeStr(), updatedBy: actorName };
     const collectionName = previewMode === "invoice" ? COLLECTIONS.invoices : COLLECTIONS.proposals;
@@ -8995,11 +9007,12 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setPreviewState((prev) => (prev && prev.id === id ? { ...prev, ...fullPatch } : prev));
     try {
       if (FIREBASE_ENABLED && typeof id === "string") await fsUpdate(collectionName, id, fullPatch);
-      setToast(previewMode === "invoice" ? "✅ 성공적으로 저장되었습니다." : "✅ 해당 제안서가 제안서 관리목록에 추가되었습니다.");
+      setToast((opts && opts.toast) || (previewMode === "invoice" ? "✅ 성공적으로 저장되었습니다." : "✅ 해당 제안서가 제안서 관리목록에 추가되었습니다."));
     } catch (e) {
       console.error(e);
       setToast("저장 중 오류가 발생했습니다. (화면에는 반영됨)");
     }
+    return fullPatch;
   };
   // 제안서를 기반으로 인보이스를 발행 — 품목/수량/단가/고객사 정보를 100% 그대로 가져오고, 미리보기를 바로 띄운다(버튼 한 번으로 자동입력)
   const [invoiceEditProposal, setInvoiceEditProposal] = useState(null); // "📄 인보이스 발행" 클릭시 열리는 후가공/수량 재선택 편집단계
@@ -11580,7 +11593,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           supplierLogo={supplierLogo} isAdmin={isAdmin}
           readOnly={proposalReadOnly} isEditingExisting={!!editingProposalId} historyRecord={editingProposalHistory}
           onBack={() => setActiveStep(2)}
-          onSave={async () => {
+          onSave={async (opts) => {
+            const returnToList = !!(opts && opts.returnToList); // 하단 [💾 수정 후 저장]에서만 true
             if (draftItems.length === 0) { setToast("먼저 품목을 추가해주세요."); return; }
             if (!clientInfo.clientName.trim() || !clientInfo.employee.trim()) { setToast("고객사명과 담당 직원명을 입력해주세요."); return; }
             // 직원도 승인완료/발송완료 제안서를 자유롭게 저장할 수 있도록 잠금 가드를 제거함(요청에 따름)
@@ -11592,21 +11606,26 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             const nextReviewStatus = isAdmin ? "승인완료" : "검토대기";
 
             if (editingProposalId) {
-              // 기존 제안서 수정 저장 — 새로 만들지 않고 덮어쓰기
+              // 기존 제안서 수정 저장 — 새로 만들지 않고 덮어쓰기.
+              // ⚠️ 저장 실행은 미리보기 [💾 저장]과 완전히 같은 savePreviewEdits를 통과한다(경로 단일화).
+              //    다만 patch에는 이 폼이 실제로 들고 있는 값만 담는다 — greeting/terms/supplier는
+              //    미리보기에서만 편집하는 값이라 여기서 넘기면 undefined로 덮어써 문구가 날아간다.
               const patch = {
                 clientName: clientInfo.clientName, contact: clientInfo.contact, channel: clientInfo.channel, employee: clientInfo.employee,
                 proposalTitle, itemSummary, totalAmount, totalCbm, items: draftItems,
                 reviewStatus: nextReviewStatus,
-                updatedAt: nowDateTimeStr(), updatedBy: actorName,
               };
-              setProposalList((prev) => prev.map((p) => (p.id === editingProposalId ? { ...p, ...patch } : p)));
-              setEditingProposalHistory((prev) => ({ ...(prev || {}), updatedAt: patch.updatedAt, updatedBy: patch.updatedBy }));
-              try {
-                await fsUpdate(COLLECTIONS.proposals, editingProposalId, patch);
-                setToast(isAdmin ? "최종 승인되어 저장되었습니다. (같은 제안번호로 갱신됨)" : "수정사항이 저장되어 대표님 검토 요청되었습니다.");
-              } catch (e) {
-                console.error(e);
-                setToast("Firestore 저장 중 오류가 발생했습니다. (화면에는 반영됨)");
+              const saved = await savePreviewEdits(editingProposalId, patch, "proposal", {
+                toast: returnToList ? "제안서가 성공적으로 수정되었습니다." : (isAdmin ? "최종 승인되어 저장되었습니다. (같은 제안번호로 갱신됨)" : "수정사항이 저장되어 대표님 검토 요청되었습니다."),
+              });
+              setEditingProposalHistory((prev) => ({ ...(prev || {}), updatedAt: saved.updatedAt, updatedBy: saved.updatedBy }));
+              // 하단 [💾 수정 후 저장]으로 저장한 경우에만 편집 상태를 정리하고 제안서 관리 목록으로 복귀한다.
+              // (미리보기 모달의 저장 버튼은 그 자리에 머무르는 기존 동작을 유지)
+              if (returnToList) {
+                setEditingProposalId(null);
+                setProposalReadOnly(false);
+                setEditingProposalHistory(null);
+                setView("proposals");
               }
               return;
             }
