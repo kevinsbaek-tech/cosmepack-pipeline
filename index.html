@@ -3130,8 +3130,13 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
   const first = items[0] || {};
   const productLabel = (first.productName || "주문 품목") + (items.length > 1 ? ` 외 ${items.length - 1}건` : "");
   const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-  const supplyTotal = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
-  const grandTotal = Math.round(supplyTotal * 1.1); // 부가세 포함 총 청구금액
+  const itemsTotal = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
+  /* 차감(샘플비 등)이 있으면 공급가액에서 먼저 뺀다 — 안 그러면 고객에게 안내되는 청구 금액이
+     인보이스 문서의 금액과 달라진다. 저장된 totalAmount가 이미 "차감 후 공급가액"이지만,
+     옛 문서(차감 필드 없음)도 있으므로 없을 때는 품목 합계로 폴백한다. */
+  const invDiscount = Math.min(Math.max(Number(invoice.discountAmount) || 0, 0), itemsTotal);
+  const supplyTotal = invoice.totalAmount != null ? Number(invoice.totalAmount) : (itemsTotal - invDiscount);
+  const grandTotal = supplyTotal + Math.floor(supplyTotal * 0.1); // 부가세 포함 총 청구금액
 
   /* 고객사에 그대로 나가는 표준 문구(대기업 B2B 서식) — 임의로 줄이거나 표현을 바꾸지 말 것.
      ⚠️ 본문의 정식 URL(https://~)은 반드시 "열람 링크 1개"만 유지할 것.
@@ -3241,9 +3246,14 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
 
   if (!open || !data) return null;
   const DARK = "#111827";
-  const totalAmount = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
-  // 인보이스 하단 정산표: 합계 → 부가가치세 → 합계금액 → 계약금(30%) → 중도금(60%) → 잔금(10%)
-  const vat = Math.round(totalAmount * 0.1);
+  const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0); // 품목 금액 합계(차감 전)
+  /* 차감/할인 — 발행 시 InvoiceEditModal에서 입력한 값이 문서에 함께 저장돼 있다.
+     공급가액에서 먼저 빼고 그 금액을 기준으로 부가세를 매긴다(세금계산서와 일치시키기 위함). */
+  const discountAmount = Math.min(Math.max(Number(data.discountAmount) || 0, 0), subtotal);
+  const discountReason = data.discountReason || "차감";
+  const totalAmount = subtotal - discountAmount; // 공급가액
+  // 인보이스 하단 정산표: (합계 → 차감) → 공급가액 → 부가가치세 → 합계금액 → 계약금(30%) → 중도금(60%) → 잔금(10%)
+  const vat = Math.floor(totalAmount * 0.1);
   const grandTotal = totalAmount + vat;
   // 3단계 분할 청구(계약금30% / 중도금60% / 잔금10%) — 잔금은 반올림 오차가 생기지 않도록 총액에서 앞의 둘을 뺀 나머지로 계산
   const depositAmount = Math.round(grandTotal * 0.3);
@@ -3294,7 +3304,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   })();
   const handleSave = () => {
     if (!onSave || !data.id) return;
-    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress } : {}) }, isInvoice ? "invoice" : "proposal");
+    // 인보이스는 여기서 품목을 고칠 수 있으므로 재계산된 금액(subtotal/차감 후 공급가액)도 함께 저장한다.
+    // discountAmount/discountReason은 넘기지 않아 발행 시 입력한 값이 그대로 보존된다.
+    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress, subtotal, totalAmount } : {}) }, isInvoice ? "invoice" : "proposal");
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
@@ -3554,8 +3566,17 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
         {isInvoice && (
           <table className="w-full border-collapse text-xs mb-6" style={{ color: DARK }}>
             <tbody>
-              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium w-1/2">합　계</td><td className="border border-slate-300 py-1.5 px-3 text-right w-1/4">{Math.round(totalAmount).toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
-              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">부가가치세</td><td className="border border-slate-300 py-1.5 px-3 text-right">{vat.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
+              {/* 차감이 있을 때만 [합계(품목총액) → 차감 → 공급가액] 3줄로 펼치고, 없으면 기존처럼 [합계] 한 줄로 유지 */}
+              {discountAmount > 0 ? (
+                <React.Fragment>
+                  <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium w-1/2">합　계 (품목 총액)</td><td className="border border-slate-300 py-1.5 px-3 text-right w-1/4">{Math.round(subtotal).toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
+                  <tr><td className="border border-slate-300 py-1.5 px-3 bg-rose-50 font-medium text-rose-700">차감 금액 ({discountReason})</td><td className="border border-slate-300 py-1.5 px-3 text-right font-semibold text-rose-700">- {discountAmount.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
+                  <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">공급가액</td><td className="border border-slate-300 py-1.5 px-3 text-right">{Math.round(totalAmount).toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
+                </React.Fragment>
+              ) : (
+                <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium w-1/2">합　계</td><td className="border border-slate-300 py-1.5 px-3 text-right w-1/4">{Math.round(totalAmount).toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
+              )}
+              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">부가가치세{discountAmount > 0 ? " (10%)" : ""}</td><td className="border border-slate-300 py-1.5 px-3 text-right">{vat.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
               <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-100 font-bold">합계금액</td><td className="border border-slate-300 py-1.5 px-3 text-right font-bold">{grandTotal.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
               <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">계약금 청구금액 (30%)</td><td className="border border-slate-300 py-1.5 px-3 text-right">{depositAmount.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3 text-[11px] text-slate-600">계약 체결 및 발주 시 (생산 착수금)</td></tr>
               <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">중도금 청구금액 (60%)</td><td className="border border-slate-300 py-1.5 px-3 text-right">{interimAmount.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3 text-[11px] text-slate-600">현지 생산검품 완료 후 출고(선적) 전</td></tr>
@@ -4555,9 +4576,20 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
     updateItem(item.id, { selectedFinishingIds: nextIds, notes: nextNotes });
   };
 
+  /* 차감/할인 — 샘플비를 본품 대금에서 빼주는 등의 처리.
+     공급가액 자체를 줄이므로 부가세도 차감 후 금액 기준으로 계산된다(세금계산서와 일치시키기 위함). */
+  const [discountReason, setDiscountReason] = useState(proposal.discountReason || "샘플비용 차감");
+  const [discountPreset, setDiscountPreset] = useState(() => {
+    const r = proposal.discountReason || "샘플비용 차감";
+    return r === "샘플비용 차감" ? "sample" : (r === "기타 차감" ? "etc" : "custom");
+  });
+  const [discountAmount, setDiscountAmount] = useState(Number(proposal.discountAmount) || 0);
+
   // 인보이스 화면에서도 부가세·계약금(30%)·중도금(60%)·잔금(10%)이 실시간으로 어떻게 나올지 바로 보여준다(최종 미리보기와 동일한 계산식)
-  const totalAmount = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
-  const vat = Math.round(totalAmount * 0.1);
+  const subtotal = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0); // 품목 금액 합계(차감 전)
+  const discountValue = Math.min(Math.max(Number(discountAmount) || 0, 0), subtotal); // 음수·합계 초과 방지
+  const totalAmount = subtotal - discountValue; // 공급가액 = 품목합계 - 차감
+  const vat = Math.floor(totalAmount * 0.1);
   const grandTotal = totalAmount + vat;
   // 3단계 분할 청구(계약금30% / 중도금60% / 잔금10%) — 잔금은 반올림 오차가 생기지 않도록 총액에서 앞의 둘을 뺀 나머지로 계산
   const depositAmount = Math.round(grandTotal * 0.3);
@@ -4623,8 +4655,58 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
           })}
           <button onClick={addItem} className="w-full text-xs py-2.5 rounded-lg border-2 border-dashed border-slate-200 text-slate-500 hover:border-[#1E3A8A] hover:text-[#1E3A8A] font-medium">➕ 품목 추가</button>
 
+          {/* 차감/할인 설정 — 샘플비를 본품 대금에서 빼주는 경우 등 */}
+          <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-4 text-xs space-y-2.5">
+            <div className="font-semibold text-rose-700">🧾 차감 / 할인 설정</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-slate-500 mb-1">차감 사유</label>
+                <select
+                  className={inputCls}
+                  value={discountPreset}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setDiscountPreset(v);
+                    if (v === "sample") setDiscountReason("샘플비용 차감");
+                    else if (v === "etc") setDiscountReason("기타 차감");
+                  }}
+                >
+                  <option value="sample">샘플비 차감</option>
+                  <option value="etc">기타 차감</option>
+                  <option value="custom">직접 입력</option>
+                </select>
+                {discountPreset === "custom" && (
+                  <input
+                    className={`${inputCls} mt-1.5`}
+                    value={discountReason}
+                    placeholder="샘플비용 차감"
+                    onChange={(e) => setDiscountReason(e.target.value)}
+                  />
+                )}
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 mb-1">차감 금액 (원)</label>
+                <input
+                  type="number" min="0" className={inputCls}
+                  value={discountAmount}
+                  onChange={(e) => setDiscountAmount(e.target.value === "" ? 0 : Number(e.target.value))}
+                />
+                {discountValue > 0 && (
+                  <div className="mt-1.5 text-right font-semibold text-rose-600">- {discountValue.toLocaleString("ko-KR")}원</div>
+                )}
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">※ 차감된 금액은 공급가액에서 자동으로 마이너스(-) 처리됩니다.</p>
+          </div>
+
           <div className="bg-slate-50 rounded-xl p-4 text-xs space-y-1.5">
             <div className="font-semibold text-slate-600 mb-1">💰 실시간 정산 요약</div>
+            {discountValue > 0 && (
+              <React.Fragment>
+                <div className="flex justify-between"><span className="text-slate-500">합계 (품목 총액)</span><span className="font-medium">{Math.round(subtotal).toLocaleString("ko-KR")}원</span></div>
+                <div className="flex justify-between"><span className="text-rose-600">차감 금액 ({discountReason || "차감"})</span><span className="font-semibold text-rose-600">- {discountValue.toLocaleString("ko-KR")}원</span></div>
+              </React.Fragment>
+            )}
             <div className="flex justify-between"><span className="text-slate-500">① 공급가액 합계</span><span className="font-medium">{Math.round(totalAmount).toLocaleString("ko-KR")}원</span></div>
             <div className="flex justify-between"><span className="text-slate-500">② 부가가치세 (10%)</span><span className="font-medium">{vat.toLocaleString("ko-KR")}원</span></div>
             <div className="flex justify-between border-t border-slate-200 pt-1.5"><span className="text-slate-700 font-semibold">③ 총 합계금액 (①+②)</span><span className="font-bold text-[#1E3A8A]">{grandTotal.toLocaleString("ko-KR")}원</span></div>
@@ -4634,10 +4716,13 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
           </div>
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
-          <span className="text-sm text-slate-500">품목 합계: <b className="text-[#1E3A8A]">{Math.round(totalAmount).toLocaleString("ko-KR")}원</b></span>
+          <span className="text-sm text-slate-500">
+            품목 합계: <b className="text-[#1E3A8A]">{Math.round(subtotal).toLocaleString("ko-KR")}원</b>
+            {discountValue > 0 && <span className="ml-2 text-rose-600">(차감 -{discountValue.toLocaleString("ko-KR")}원 → 공급가액 {Math.round(totalAmount).toLocaleString("ko-KR")}원)</span>}
+          </span>
           <div className="flex gap-2">
             <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
-            <button onClick={() => onConfirm(items)} className="px-5 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:opacity-90">확정하고 인보이스 미리보기 →</button>
+            <button onClick={() => onConfirm(items, { discountReason: discountValue > 0 ? (discountReason || "차감") : "", discountAmount: discountValue })} className="px-5 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:opacity-90">확정하고 인보이스 미리보기 →</button>
           </div>
         </div>
       </div>
@@ -9022,11 +9107,17 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setInvoiceEditProposal(p);
   };
   // 2단계: 편집 모달에서 "확정"하면, 그 결과(editedItems)로 실제 인보이스를 발행하고 미리보기를 연다
-  const finalizeInvoice = async (p, editedItems) => {
+  const finalizeInvoice = async (p, editedItems, discount) => {
     const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
     const code = `INV-${todayStr()}-${String(invoiceList.length + 1).padStart(3, "0")}`;
     const cleanItems = editedItems.map(({ selectedFinishingIds, ...rest }) => rest); // 편집용 임시 필드는 저장 전에 제거
-    const totalAmount = cleanItems.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
+    const subtotal = cleanItems.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0); // 품목 합계(차감 전)
+    /* 차감/할인 — 샘플비를 본품 대금에서 빼주는 경우 등.
+       totalAmount에는 "차감 후 공급가액"을 담는다. 목록·발송문구·정산표가 모두 이 값을 쓰므로
+       여기서 빼두지 않으면 화면마다 금액이 어긋난다. subtotal은 원본 보존용으로 함께 저장. */
+    const discountAmount = Math.min(Math.max(Number(discount && discount.discountAmount) || 0, 0), subtotal);
+    const discountReason = discountAmount > 0 ? ((discount && discount.discountReason) || "차감") : "";
+    const totalAmount = subtotal - discountAmount;
     /* 업체 관리에 등록된 대표자명·주소를 인보이스에 자동으로 실어준다 —
        인보이스 모드의 계약서 서식이 clientCeo/clientAddress를 (갑) 서명란에 그대로 쓰므로,
        여기서 안 채우면 발행할 때마다 손으로 다시 입력해야 한다. */
@@ -9036,7 +9127,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "", employee: p.employee || "",
       clientCeo: (matchedClient && (matchedClient.ceoName || matchedClient.contractSignerName || matchedClient.ceo)) || "",
       clientAddress: (matchedClient && matchedClient.address) || "",
-      proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", totalAmount, totalCbm: p.totalCbm || 0,
+      proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", subtotal, discountReason, discountAmount, totalAmount, totalCbm: p.totalCbm || 0,
       items: cleanItems, validUntil: addDays(30),
       createdAt: nowDateTimeStr(), createdBy: actorName,
     };
@@ -10834,7 +10925,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           proposal={invoiceEditProposal}
           finishingOptions={finishingOptions}
           onCancel={() => setInvoiceEditProposal(null)}
-          onConfirm={(editedItems) => finalizeInvoice(invoiceEditProposal, editedItems)}
+          onConfirm={(editedItems, discount) => finalizeInvoice(invoiceEditProposal, editedItems, discount)}
         />
       )}
       <SettingsModal open={settingsOpen} onClose={() => { setSettingsOpen(false); window.location.hash = VIEW_TO_HASH[view] || ""; }} onSave={saveSettingsConfig} logistics={logistics} setLogistics={setLogistics} marginTable={marginTable} setMarginTable={setMarginTable} customsRates={customsRates} setCustomsRates={setCustomsRates} difficultyMargins={difficultyMargins} setDifficultyMargins={setDifficultyMargins} supplierLogo={supplierLogo} setSupplierLogo={setSupplierLogo} finishingOptions={finishingOptions} setFinishingOptions={setFinishingOptions} onShowAnalysis={() => setShowFinishingAnalysis(true)} />
