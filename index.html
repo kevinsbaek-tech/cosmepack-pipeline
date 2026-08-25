@@ -1752,9 +1752,38 @@ function composeNotes({ spec, finishing, leadTime, cbm, extraOptions, selectedFi
 
 /* ===================== 공통 UI ===================== */
 
-function Card({ title, children, right }) {
+/* 자동완성 검색 결과 드롭다운 공용 스타일 — 고객사·공장명·위챗방·제품명 등에서 함께 쓴다.
+   ⚠️ 이 클래스만으로는 부족하다. 드롭다운을 감싼 부모에 `relative z-30`을 주고,
+      조상 중 어느 하나라도 overflow-hidden이면 z-index와 무관하게 잘리므로 함께 걷어내야 한다. */
+const DROPDOWN_CLS = "absolute top-full left-0 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-2xl z-50 max-h-60 overflow-y-auto";
+
+/* ── 인보이스 금액 조정(추가 + / 할인·차감 −) ────────────────────────────
+   adjustmentAmount는 부호를 그대로 갖는다: 양수=추가 비용, 음수=할인·차감.
+   ⚠️ 옛 문서는 discountAmount(양수 = 차감액)로 저장돼 있으므로 읽을 때 부호를 뒤집어 흡수한다.
+      저장할 땐 adjustmentAmount와 함께 discountAmount도 계속 기록해, 아직 옛 필드를 읽는
+      경로(발송 문구 폴백 등)가 어긋나지 않게 한다. */
+// 조정 사유 프리셋 — 할인·차감과 추가 비용 양쪽에서 자주 쓰는 항목
+const ADJUST_PRESETS = ["샘플비용 차감", "기타 할인", "추가 비용", "금형비 추가", "특수포장 추가"];
+const readAdjustment = (doc) => {
+  if (!doc) return 0;
+  if (doc.adjustmentAmount !== undefined && doc.adjustmentAmount !== null) return Number(doc.adjustmentAmount) || 0;
+  return -(Number(doc.discountAmount) || 0); // 구버전: 양수 차감 → 음수 조정
+};
+// 공급가액이 음수가 되지 않도록만 제한한다(추가 금액에는 상한을 두지 않음)
+const clampAdjustment = (amt, subtotal) => Math.max(Number(amt) || 0, -(Number(subtotal) || 0));
+// 표시용 라벨·금액·스타일을 한 곳에서 결정 — 미리보기 폼·A4 정산표·편집 모달이 같은 규칙을 쓴다
+const adjustmentMeta = (amt, reason) => (amt > 0
+  ? { isPlus: true, label: `추가 금액 (${reason || "추가 비용"})`, text: `+ ${Math.abs(amt).toLocaleString("ko-KR")}원`, cls: "text-blue-600 bg-blue-50/40 font-semibold", textCls: "text-blue-600" }
+  : { isPlus: false, label: `할인·차감 금액 (${reason || "샘플비/할인 차감"})`, text: `- ${Math.abs(amt).toLocaleString("ko-KR")}원`, cls: "text-rose-600 bg-rose-50/50 font-semibold", textCls: "text-rose-600" });
+
+function Card({ title, children, right, className }) {
+  /* ⚠️ overflow-hidden을 쓰면 안 된다 — 카드 안의 자동완성 드롭다운이 카드 경계에서 잘린다.
+     자식에 z-50을 줘도 소용없다(클리핑은 z-index와 무관). 모서리 라운딩은 헤더가 border-b로
+     구분돼 있어 overflow-visible이어도 시각적 차이가 없다.
+     className으로 `relative z-20` 같은 레이어 클래스를 받아, 검색창이 있는 카드를
+     아래 카드보다 확실히 위에 오게 할 수 있다. */
   return (
-    <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm">
+    <div className={"bg-white border border-slate-300 rounded-xl overflow-visible shadow-sm " + (className || "")}>
       <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
         {right}
@@ -3134,8 +3163,8 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
   /* 차감(샘플비 등)이 있으면 공급가액에서 먼저 뺀다 — 안 그러면 고객에게 안내되는 청구 금액이
      인보이스 문서의 금액과 달라진다. 저장된 totalAmount가 이미 "차감 후 공급가액"이지만,
      옛 문서(차감 필드 없음)도 있으므로 없을 때는 품목 합계로 폴백한다. */
-  const invDiscount = Math.min(Math.max(Number(invoice.discountAmount) || 0, 0), itemsTotal);
-  const supplyTotal = invoice.totalAmount != null ? Number(invoice.totalAmount) : (itemsTotal - invDiscount);
+  const invAdjust = clampAdjustment(readAdjustment(invoice), itemsTotal); // 양수=추가, 음수=할인·차감
+  const supplyTotal = invoice.totalAmount != null ? Number(invoice.totalAmount) : (itemsTotal + invAdjust);
   const grandTotal = supplyTotal + Math.floor(supplyTotal * 0.1); // 부가세 포함 총 청구금액
 
   /* 고객사에 그대로 나가는 표준 문구(대기업 B2B 서식) — 임의로 줄이거나 표현을 바꾸지 말 것.
@@ -3227,8 +3256,8 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
      ⚠️ 훅이므로 반드시 아래 `if (!open || !data) return null;` 보다 위에 선언할 것
      초기값을 data에서 바로 읽는다(지연 초기화) — 상수로 두면 첫 렌더에서 차감이 0으로 그려졌다가
      useEffect 후에야 반영돼 정산표가 한 번 깜빡인다. */
-  const [discountReasonInput, setDiscountReasonInput] = useState(() => (data && data.discountReason) || "샘플비용 차감");
-  const [discountAmountInput, setDiscountAmountInput] = useState(() => Number(data && data.discountAmount) || 0);
+  const [adjustReasonInput, setAdjustReasonInput] = useState(() => (data && (data.adjustmentReason || data.discountReason)) || "");
+  const [adjustAmountInput, setAdjustAmountInput] = useState(() => readAdjustment(data));
   const [clientName, setClientName] = useState("");
   const [validUntil, setValidUntil] = useState("");
   const [items, setItems] = useState(() => ((data && data.items) || []).map((it) => ({ ...it }))); // 지연 초기화 — 상수 []로 두면 모달 열 때 빈 표가 한 프레임 보였다가 채워진다
@@ -3242,8 +3271,8 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setContractDate(data.contractDate || todayDisplay());
     setClientCeo(data.clientCeo || "");
     setClientAddress(data.clientAddress || "");
-    setDiscountReasonInput(data.discountReason || "샘플비용 차감");
-    setDiscountAmountInput(Number(data.discountAmount) || 0);
+    setAdjustReasonInput(data.adjustmentReason || data.discountReason || "");
+    setAdjustAmountInput(readAdjustment(data));
     setValidUntil(data.validUntil || "");
     setItems((data.items || []).map((it) => ({ ...it }))); // 각 품목의 고유 제품명(it.productName)을 그대로 쓴다 — 예전엔 제안서 제목으로 모든 행을 덮어써서 전 품목이 같은 이름으로 통일되어 보이는 버그가 있었음
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3257,9 +3286,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0); // 품목 금액 합계(차감 전)
   /* 차감/할인 — 좌측 폼에서 실시간으로 고칠 수 있고, 발행 단계에서 넣은 값이 초기값으로 들어온다.
      공급가액에서 먼저 빼고 그 금액을 기준으로 부가세를 매긴다(세금계산서와 일치시키기 위함). */
-  const discountAmount = Math.min(Math.max(Number(discountAmountInput) || 0, 0), subtotal);
-  const discountReason = discountReasonInput || "차감";
-  const totalAmount = subtotal - discountAmount; // 공급가액
+  const adjustAmount = clampAdjustment(adjustAmountInput, subtotal); // 양수=추가, 음수=할인·차감
+  const adjustInfo = adjustmentMeta(adjustAmount, adjustReasonInput);
+  const totalAmount = subtotal + adjustAmount; // 공급가액 = 품목 총액 + 조정
   // 인보이스 하단 정산표: (합계 → 차감) → 공급가액 → 부가가치세 → 합계금액 → 계약금(30%) → 중도금(60%) → 잔금(10%)
   const vat = Math.floor(totalAmount * 0.1);
   const grandTotal = totalAmount + vat;
@@ -3313,7 +3342,12 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   const handleSave = () => {
     if (!onSave || !data.id) return;
     // 인보이스는 여기서 품목·차감을 고칠 수 있으므로 재계산된 금액과 차감 정보도 함께 저장한다.
-    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress, subtotal, totalAmount, discountReason: discountAmount > 0 ? discountReason : "", discountAmount } : {}) }, isInvoice ? "invoice" : "proposal");
+    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress, subtotal, totalAmount,
+      adjustmentReason: adjustAmount !== 0 ? (adjustReasonInput || (adjustAmount > 0 ? "추가 비용" : "샘플비/할인 차감")) : "",
+      adjustmentAmount: adjustAmount,
+      /* 레거시 동기화 — 아직 discountAmount를 읽는 경로가 남아 있어 함께 기록(차감일 때만 양수) */
+      discountReason: adjustAmount < 0 ? (adjustReasonInput || "샘플비/할인 차감") : "",
+      discountAmount: adjustAmount < 0 ? -adjustAmount : 0 } : {}) }, isInvoice ? "invoice" : "proposal");
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
@@ -3472,32 +3506,34 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
             </div>
           ))}
 
-          {/* 차감 / 할인 — 발행 후에도 이 화면에서 바로 수정할 수 있다(저장 시 문서에 반영) */}
-          <div className="rounded-lg bg-rose-50/60 border border-rose-100 p-3 text-xs space-y-2">
-            <div className="font-semibold text-rose-700">🧾 차감 / 할인</div>
-            <Field label="차감 사유">
-              <select className={inputCls} value={["샘플비용 차감", "기타 차감"].includes(discountReasonInput) ? discountReasonInput : "직접입력"}
-                onChange={(e) => setDiscountReasonInput(e.target.value === "직접입력" ? "" : e.target.value)}>
-                <option value="샘플비용 차감">샘플비 차감</option>
-                <option value="기타 차감">기타 차감</option>
+          {/* 금액 조정 — 추가(+) / 할인·차감(−). 발행 후에도 이 화면에서 바로 수정할 수 있다(저장 시 문서에 반영) */}
+          <div className={"rounded-lg border p-3 text-xs space-y-2 " + (adjustAmount === 0 ? "bg-slate-50 border-slate-200" : (adjustAmount > 0 ? "bg-blue-50/60 border-blue-100" : "bg-rose-50/60 border-rose-100"))}>
+            <div className={"font-semibold " + (adjustAmount === 0 ? "text-slate-600" : adjustInfo.textCls)}>
+              🧾 금액 조정 {adjustAmount !== 0 && `— ${adjustInfo.isPlus ? "추가" : "할인·차감"}`}
+            </div>
+            <Field label="조정 사유">
+              <select className={inputCls} value={ADJUST_PRESETS.includes(adjustReasonInput) ? adjustReasonInput : "직접입력"}
+                onChange={(e) => setAdjustReasonInput(e.target.value === "직접입력" ? "" : e.target.value)}>
+                {ADJUST_PRESETS.map((r) => <option key={r} value={r}>{r}</option>)}
                 <option value="직접입력">직접 입력</option>
               </select>
-              {!["샘플비용 차감", "기타 차감"].includes(discountReasonInput) && (
-                <input className={`${inputCls} mt-1.5`} value={discountReasonInput} placeholder="샘플비용 차감" onChange={(e) => setDiscountReasonInput(e.target.value)} />
+              {!ADJUST_PRESETS.includes(adjustReasonInput) && (
+                <input className={`${inputCls} mt-1.5`} value={adjustReasonInput} placeholder={adjustAmount > 0 ? "추가 비용" : "샘플비/할인 차감"} onChange={(e) => setAdjustReasonInput(e.target.value)} />
               )}
             </Field>
-            <Field label="차감 금액 (원)">
-              <input type="number" min="0" className={inputCls} value={discountAmountInput}
-                onChange={(e) => setDiscountAmountInput(e.target.value === "" ? 0 : Number(e.target.value))} />
+            <Field label="조정 금액 (원)">
+              <input type="number" className={inputCls} value={adjustAmountInput}
+                onChange={(e) => setAdjustAmountInput(e.target.value === "" || e.target.value === "-" ? 0 : Number(e.target.value))} />
+              {adjustAmount !== 0 && <div className={"mt-1.5 text-right font-semibold " + adjustInfo.textCls}>{adjustInfo.text}</div>}
             </Field>
-            <p className="text-[11px] text-slate-500 leading-relaxed">※ 차감된 금액은 공급가액에서 자동으로 마이너스(-) 처리됩니다.</p>
+            <p className="text-[11px] text-slate-500 leading-relaxed">※ 추가 비용은 양수(+), 할인/차감은 음수(-)로 입력하세요.</p>
           </div>
 
           <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs space-y-1">
-            {discountAmount > 0 && (
+            {adjustAmount !== 0 && (
               <React.Fragment>
                 <div className="flex justify-between"><span className="text-slate-500">합계 (품목 총액)</span><span>{won(Math.round(subtotal))}</span></div>
-                <div className="flex justify-between"><span className="text-rose-600">차감 ({discountReason})</span><span className="font-semibold text-rose-600">- {won(discountAmount)}</span></div>
+                <div className="flex justify-between"><span className={adjustInfo.textCls}>{adjustInfo.label}</span><span className={"font-semibold " + adjustInfo.textCls}>{adjustInfo.text}</span></div>
               </React.Fragment>
             )}
             <div className="flex justify-between"><span className="text-slate-500">공급가액 합계</span><span className="font-semibold">{won(Math.round(totalAmount))}</span></div>
@@ -3601,16 +3637,16 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           <table className="w-full border-collapse text-xs mb-6" style={{ color: DARK }}>
             <tbody>
               {/* 차감이 있을 때만 [합계(품목총액) → 차감 → 공급가액] 3줄로 펼치고, 없으면 기존처럼 [합계] 한 줄로 유지 */}
-              {discountAmount > 0 ? (
+              {adjustAmount !== 0 ? (
                 <React.Fragment>
                   <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium w-1/2">합　계 (품목 총액)</td><td className="border border-slate-300 py-1.5 px-3 text-right w-1/4">{Math.round(subtotal).toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
-                  <tr><td className="border border-slate-300 py-1.5 px-3 bg-rose-50 font-medium text-rose-700">차감 금액 ({discountReason})</td><td className="border border-slate-300 py-1.5 px-3 text-right font-semibold text-rose-700">- {discountAmount.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
+                  <tr><td className={"border border-slate-300 py-1.5 px-3 " + adjustInfo.cls}>{adjustInfo.label}</td><td className={"border border-slate-300 py-1.5 px-3 text-right " + adjustInfo.cls}>{adjustInfo.text}</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
                   <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">공급가액</td><td className="border border-slate-300 py-1.5 px-3 text-right">{Math.round(totalAmount).toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
                 </React.Fragment>
               ) : (
                 <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium w-1/2">합　계</td><td className="border border-slate-300 py-1.5 px-3 text-right w-1/4">{Math.round(totalAmount).toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
               )}
-              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">부가가치세{discountAmount > 0 ? " (10%)" : ""}</td><td className="border border-slate-300 py-1.5 px-3 text-right">{vat.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
+              <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">부가가치세{adjustAmount !== 0 ? " (10%)" : ""}</td><td className="border border-slate-300 py-1.5 px-3 text-right">{vat.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
               <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-100 font-bold">합계금액</td><td className="border border-slate-300 py-1.5 px-3 text-right font-bold">{grandTotal.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3"></td></tr>
               <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">계약금 청구금액 (30%)</td><td className="border border-slate-300 py-1.5 px-3 text-right">{depositAmount.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3 text-[11px] text-slate-600">계약 체결 및 발주 시 (생산 착수금)</td></tr>
               <tr><td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">중도금 청구금액 (60%)</td><td className="border border-slate-300 py-1.5 px-3 text-right">{interimAmount.toLocaleString("ko-KR")}원</td><td className="border border-slate-300 py-1.5 px-3 text-[11px] text-slate-600">현지 생산검품 완료 후 출고(선적) 전</td></tr>
@@ -4177,7 +4213,7 @@ function HistoryBadge({ record, compact }) {
         {compact ? "📜" : "📜 수정 이력"}
       </button>
       {show && (
-        <div className="absolute z-30 top-full right-0 mt-1 w-80 bg-white border border-slate-300 rounded-lg shadow-xl p-3 text-xs space-y-1.5 text-left" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+        <div className="absolute z-50 top-full right-0 mt-1 w-80 bg-white border border-slate-300 rounded-lg shadow-2xl p-3 text-xs space-y-1.5 text-left" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
           {/* 단계별 일시 + 처리자 — 실제로 기록이 있는 항목만 줄바꿈 리스트로 노출 */}
           <div><span className="text-slate-400">생성일자:</span> <b className="text-slate-700">{record.createdAt || "-"}</b>
             {record.createdBy ? <span className="text-slate-500"> (작성자: {displayStaffName(record.createdBy)})</span> : ""}</div>
@@ -4612,17 +4648,14 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
 
   /* 차감/할인 — 샘플비를 본품 대금에서 빼주는 등의 처리.
      공급가액 자체를 줄이므로 부가세도 차감 후 금액 기준으로 계산된다(세금계산서와 일치시키기 위함). */
-  const [discountReason, setDiscountReason] = useState(proposal.discountReason || "샘플비용 차감");
-  const [discountPreset, setDiscountPreset] = useState(() => {
-    const r = proposal.discountReason || "샘플비용 차감";
-    return r === "샘플비용 차감" ? "sample" : (r === "기타 차감" ? "etc" : "custom");
-  });
-  const [discountAmount, setDiscountAmount] = useState(Number(proposal.discountAmount) || 0);
+  const [adjustReason, setAdjustReason] = useState(proposal.adjustmentReason || proposal.discountReason || "");
+  const [adjustAmountRaw, setAdjustAmountRaw] = useState(() => readAdjustment(proposal));
 
   // 인보이스 화면에서도 부가세·계약금(30%)·중도금(60%)·잔금(10%)이 실시간으로 어떻게 나올지 바로 보여준다(최종 미리보기와 동일한 계산식)
-  const subtotal = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0); // 품목 금액 합계(차감 전)
-  const discountValue = Math.min(Math.max(Number(discountAmount) || 0, 0), subtotal); // 음수·합계 초과 방지
-  const totalAmount = subtotal - discountValue; // 공급가액 = 품목합계 - 차감
+  const subtotal = items.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0); // 품목 금액 합계(조정 전)
+  const adjustAmount = clampAdjustment(adjustAmountRaw, subtotal); // 양수=추가, 음수=할인·차감
+  const adjustInfo = adjustmentMeta(adjustAmount, adjustReason);
+  const totalAmount = subtotal + adjustAmount; // 공급가액 = 품목합계 + 조정
   const vat = Math.floor(totalAmount * 0.1);
   const grandTotal = totalAmount + vat;
   // 3단계 분할 청구(계약금30% / 중도금60% / 잔금10%) — 잔금은 반올림 오차가 생기지 않도록 총액에서 앞의 둘을 뺀 나머지로 계산
@@ -4689,56 +4722,52 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
           })}
           <button onClick={addItem} className="w-full text-xs py-2.5 rounded-lg border-2 border-dashed border-slate-200 text-slate-500 hover:border-[#1E3A8A] hover:text-[#1E3A8A] font-medium">➕ 품목 추가</button>
 
-          {/* 차감/할인 설정 — 샘플비를 본품 대금에서 빼주는 경우 등 */}
-          <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-4 text-xs space-y-2.5">
-            <div className="font-semibold text-rose-700">🧾 차감 / 할인 설정</div>
+          {/* 금액 조정 — 추가(+) / 할인·차감(−) */}
+          <div className={"rounded-xl border p-4 text-xs space-y-2.5 " + (adjustAmount === 0 ? "bg-slate-50 border-slate-200" : (adjustAmount > 0 ? "bg-blue-50/60 border-blue-100" : "bg-rose-50/60 border-rose-100"))}>
+            <div className={"font-semibold " + (adjustAmount === 0 ? "text-slate-600" : adjustInfo.textCls)}>
+              🧾 금액 조정 {adjustAmount !== 0 && `— ${adjustInfo.isPlus ? "추가" : "할인·차감"}`}
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">차감 사유</label>
+                <label className="block text-[11px] text-slate-500 mb-1">조정 사유</label>
                 <select
                   className={inputCls}
-                  value={discountPreset}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setDiscountPreset(v);
-                    if (v === "sample") setDiscountReason("샘플비용 차감");
-                    else if (v === "etc") setDiscountReason("기타 차감");
-                  }}
+                  value={ADJUST_PRESETS.includes(adjustReason) ? adjustReason : "직접입력"}
+                  onChange={(e) => setAdjustReason(e.target.value === "직접입력" ? "" : e.target.value)}
                 >
-                  <option value="sample">샘플비 차감</option>
-                  <option value="etc">기타 차감</option>
-                  <option value="custom">직접 입력</option>
+                  {ADJUST_PRESETS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  <option value="직접입력">직접 입력</option>
                 </select>
-                {discountPreset === "custom" && (
+                {!ADJUST_PRESETS.includes(adjustReason) && (
                   <input
                     className={`${inputCls} mt-1.5`}
-                    value={discountReason}
-                    placeholder="샘플비용 차감"
-                    onChange={(e) => setDiscountReason(e.target.value)}
+                    value={adjustReason}
+                    placeholder={adjustAmount > 0 ? "추가 비용" : "샘플비/할인 차감"}
+                    onChange={(e) => setAdjustReason(e.target.value)}
                   />
                 )}
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">차감 금액 (원)</label>
+                <label className="block text-[11px] text-slate-500 mb-1">조정 금액 (원)</label>
                 <input
-                  type="number" min="0" className={inputCls}
-                  value={discountAmount}
-                  onChange={(e) => setDiscountAmount(e.target.value === "" ? 0 : Number(e.target.value))}
+                  type="number" className={inputCls}
+                  value={adjustAmountRaw}
+                  onChange={(e) => setAdjustAmountRaw(e.target.value === "" || e.target.value === "-" ? 0 : Number(e.target.value))}
                 />
-                {discountValue > 0 && (
-                  <div className="mt-1.5 text-right font-semibold text-rose-600">- {discountValue.toLocaleString("ko-KR")}원</div>
+                {adjustAmount !== 0 && (
+                  <div className={"mt-1.5 text-right font-semibold " + adjustInfo.textCls}>{adjustInfo.text}</div>
                 )}
               </div>
             </div>
-            <p className="text-[11px] text-slate-500 leading-relaxed">※ 차감된 금액은 공급가액에서 자동으로 마이너스(-) 처리됩니다.</p>
+            <p className="text-[11px] text-slate-500 leading-relaxed">※ 추가 비용은 양수(+), 할인/차감은 음수(-)로 입력하세요.</p>
           </div>
 
           <div className="bg-slate-50 rounded-xl p-4 text-xs space-y-1.5">
             <div className="font-semibold text-slate-600 mb-1">💰 실시간 정산 요약</div>
-            {discountValue > 0 && (
+            {adjustAmount !== 0 && (
               <React.Fragment>
                 <div className="flex justify-between"><span className="text-slate-500">합계 (품목 총액)</span><span className="font-medium">{Math.round(subtotal).toLocaleString("ko-KR")}원</span></div>
-                <div className="flex justify-between"><span className="text-rose-600">차감 금액 ({discountReason || "차감"})</span><span className="font-semibold text-rose-600">- {discountValue.toLocaleString("ko-KR")}원</span></div>
+                <div className="flex justify-between"><span className={adjustInfo.textCls}>{adjustInfo.label}</span><span className={"font-semibold " + adjustInfo.textCls}>{adjustInfo.text}</span></div>
               </React.Fragment>
             )}
             <div className="flex justify-between"><span className="text-slate-500">① 공급가액 합계</span><span className="font-medium">{Math.round(totalAmount).toLocaleString("ko-KR")}원</span></div>
@@ -4752,11 +4781,11 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
           <span className="text-sm text-slate-500">
             품목 합계: <b className="text-[#1E3A8A]">{Math.round(subtotal).toLocaleString("ko-KR")}원</b>
-            {discountValue > 0 && <span className="ml-2 text-rose-600">(차감 -{discountValue.toLocaleString("ko-KR")}원 → 공급가액 {Math.round(totalAmount).toLocaleString("ko-KR")}원)</span>}
+            {adjustAmount !== 0 && <span className={"ml-2 " + adjustInfo.textCls}>({adjustInfo.isPlus ? "추가" : "차감"} {adjustInfo.text} → 공급가액 {Math.round(totalAmount).toLocaleString("ko-KR")}원)</span>}
           </span>
           <div className="flex gap-2">
             <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
-            <button onClick={() => onConfirm(items, { discountReason: discountValue > 0 ? (discountReason || "차감") : "", discountAmount: discountValue })} className="px-5 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:opacity-90">확정하고 인보이스 미리보기 →</button>
+            <button onClick={() => onConfirm(items, { adjustmentReason: adjustAmount !== 0 ? (adjustReason || (adjustAmount > 0 ? "추가 비용" : "샘플비/할인 차감")) : "", adjustmentAmount: adjustAmount })} className="px-5 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:opacity-90">확정하고 인보이스 미리보기 →</button>
           </div>
         </div>
       </div>
@@ -6101,7 +6130,7 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
             <div className="mt-4 space-y-5">
               <div className="grid grid-cols-3 gap-4">
                 <Field label="중국공장명" hint="공장 관리 DB와 연동, 선택 시 위챗방/URL 자동입력">
-                  <div className="relative">
+                  <div className="relative z-30">
                     <input
                       className={inputCls} value={factory}
                       onChange={(e) => { setFactory(e.target.value); setShowFactorySuggest(true); }}
@@ -6114,7 +6143,7 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
                       const matches = factories.filter((f) => (f.name || "").toLowerCase().includes(q)).slice(0, 8);
                       if (matches.length === 0) return null;
                       return (
-                        <div className="absolute z-50 left-0 top-full mt-1 w-full max-h-56 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                        <div className={DROPDOWN_CLS}>
                           {matches.map((f) => (
                             <button key={f.id} type="button" onMouseDown={() => applyFactory(f)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 border-b border-slate-50 last:border-0">
                               <div className="font-medium text-slate-700">{f.name}</div>
@@ -6127,7 +6156,7 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
                   </div>
                 </Field>
                 <Field label="위쳇단체방이름" hint="선택 시 공장명/URL 자동입력">
-                  <div className="relative">
+                  <div className="relative z-30">
                     <input
                       className={inputCls} value={wechatGroup}
                       onChange={(e) => { setWechatGroup(e.target.value); setShowWechatSuggest(true); }}
@@ -6140,7 +6169,7 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
                       const matches = factories.filter((f) => (f.wechatGroup || "").toLowerCase().includes(q)).slice(0, 8);
                       if (matches.length === 0) return null;
                       return (
-                        <div className="absolute z-50 left-0 top-full mt-1 w-full max-h-56 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                        <div className={DROPDOWN_CLS}>
                           {matches.map((f) => (
                             <button key={f.id} type="button" onMouseDown={() => applyFactory(f)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 border-b border-slate-50 last:border-0">
                               <div className="font-medium text-slate-700">{f.wechatGroup}</div>
@@ -8575,7 +8604,7 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onSaveEdi
         <div className="p-5 overflow-y-auto flex-1">
           {isAdmin && (
             <div className="flex gap-2 mb-4 pb-4 border-b border-slate-100">
-              <div className="relative" style={{ flex: "2 1 0%" }}>
+              <div className="relative z-30" style={{ flex: "2 1 0%" }}>
                 <input
                   value={newName}
                   onChange={(e) => { setNewName(e.target.value); setShowSuggestions(true); }}
@@ -8585,7 +8614,7 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onSaveEdi
                   className="w-full text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]"
                 />
                 {showSuggestions && suggestions.length > 0 && (
-                  <div className="absolute z-50 left-0 top-full mt-1 w-full max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                  <div className={DROPDOWN_CLS}>
                     {suggestions.map((p) => (
                       <button key={p.id} type="button" onMouseDown={() => pickSuggestion(p)} className="w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-slate-50 text-left border-b border-slate-50 last:border-0">
                         <div className="w-9 h-9 rounded bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
@@ -9149,9 +9178,12 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     /* 차감/할인 — 샘플비를 본품 대금에서 빼주는 경우 등.
        totalAmount에는 "차감 후 공급가액"을 담는다. 목록·발송문구·정산표가 모두 이 값을 쓰므로
        여기서 빼두지 않으면 화면마다 금액이 어긋난다. subtotal은 원본 보존용으로 함께 저장. */
-    const discountAmount = Math.min(Math.max(Number(discount && discount.discountAmount) || 0, 0), subtotal);
-    const discountReason = discountAmount > 0 ? ((discount && discount.discountReason) || "차감") : "";
-    const totalAmount = subtotal - discountAmount;
+    const adjustmentAmount = clampAdjustment(discount && discount.adjustmentAmount, subtotal); // 양수=추가, 음수=할인·차감
+    const adjustmentReason = adjustmentAmount !== 0 ? ((discount && discount.adjustmentReason) || (adjustmentAmount > 0 ? "추가 비용" : "샘플비/할인 차감")) : "";
+    // 레거시 필드도 함께 기록 — 아직 discountAmount를 읽는 경로가 남아 있다(차감일 때만 양수)
+    const discountAmount = adjustmentAmount < 0 ? -adjustmentAmount : 0;
+    const discountReason = adjustmentAmount < 0 ? adjustmentReason : "";
+    const totalAmount = subtotal + adjustmentAmount;
     /* 업체 관리에 등록된 대표자명·주소를 인보이스에 자동으로 실어준다 —
        인보이스 모드의 계약서 서식이 clientCeo/clientAddress를 (갑) 서명란에 그대로 쓰므로,
        여기서 안 채우면 발행할 때마다 손으로 다시 입력해야 한다. */
@@ -9161,7 +9193,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "", employee: p.employee || "",
       clientCeo: (matchedClient && (matchedClient.ceoName || matchedClient.contractSignerName || matchedClient.ceo)) || "",
       clientAddress: (matchedClient && matchedClient.address) || "",
-      proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", subtotal, discountReason, discountAmount, totalAmount, totalCbm: p.totalCbm || 0,
+      proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", subtotal, adjustmentReason, adjustmentAmount, discountReason, discountAmount, totalAmount, totalCbm: p.totalCbm || 0,
       items: cleanItems, validUntil: addDays(30),
       createdAt: nowDateTimeStr(), createdBy: actorName,
     };
@@ -11264,7 +11296,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                   <span className="text-[#1D4ED8]">가격조사 대기열에 <b>{pendingQueue.length}건</b> 더 있습니다. 현재 품목을 추가하면 자동으로 다음 품목이 채워집니다.</span>
                 </div>
               )}
-              <Card title="① 제품 기본정보">
+              <Card title="① 제품 기본정보" className="relative z-20">
                 <Field label="제품 사진"><ImageUpload value={productImage} onChange={setProductImage} /></Field>
                 <Field label="제품명" hint="예: 300ml PE 샴푸 바디로션 용기"><input className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="제품명 입력" /></Field>
                 <div className="grid grid-cols-2 gap-4">
@@ -11279,7 +11311,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                   <Field label="위챗 그룹방"><input className={inputCls} value={itemWechatGroup} onChange={(e) => setItemWechatGroup(e.target.value)} placeholder="위챗 단체방명" /></Field>
                 </div>
                 <Field label="고객사 선택" hint="선택 시 업체 난이도 마진 차등율이 자동 반영됩니다">
-                  <div className="relative">
+                  <div className="relative z-30">
                     <input
                       className={inputCls}
                       value={marginClientSearch}
@@ -11292,7 +11324,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                       const q = marginClientSearch.trim().toLowerCase();
                       const matches = q ? clientsList.filter((c) => (c.name || "").toLowerCase().includes(q)) : clientsList;
                       return (
-                        <div className="absolute z-50 left-0 top-full mt-1 w-full max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                        <div className={DROPDOWN_CLS}>
                           <button
                             type="button"
                             onMouseDown={() => { setMarginClientName(""); setMarginClientSearch(""); setShowMarginClientSuggestions(false); }}
@@ -11327,7 +11359,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                   })()}
                 </Field>
               </Card>
-              <Card title="② 기본 조건 입력" right={
+              <Card title="② 기본 조건 입력" className="relative z-10" right={
                 <button onClick={() => setCostLocked((v) => !v)} className={"text-xs px-3 py-1.5 rounded-lg font-medium whitespace-nowrap " + (costLocked ? "bg-slate-100 text-slate-500 hover:bg-slate-200" : "bg-amber-50 text-amber-700")}>
                   {costLocked ? "✏️ 원가 데이터 수정" : "🔒 잠금"}
                 </button>
@@ -11338,7 +11370,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                   <Field label="관세율" hint="% (자동입력, 수정 가능)"><input type="number" className={inputCls} value={customsRate} onChange={(e) => setCustomsRate(e.target.value)} /></Field>
                 </div>
               </Card>
-              <Card title="③ 위안화 원가 입력" right={<span className="text-sm font-bold text-[#1E3A8A]">단위: RMB/개</span>}>
+              <Card title="③ 위안화 원가 입력" className="relative z-10" right={<span className="text-sm font-bold text-[#1E3A8A]">단위: RMB/개</span>}>
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="공장원가" hint="RMB/개 (단가 그대로)"><input type="number" disabled={costLocked} className={inputCls + (costLocked ? " bg-slate-50 text-slate-400 cursor-not-allowed" : "")} value={rmbBase} onChange={(e) => setRmbBase(e.target.value)} /></Field>
                   <Field label="박스비용" hint={`총액(RMB) · 개당 ${rmb(calc.boxPerUnit)}`}><input type="number" className={inputCls} value={rmbBox} onChange={(e) => setRmbBox(e.target.value)} /></Field>
@@ -11347,7 +11379,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 </div>
                 <div className="mt-3 pt-3 border-t border-dashed border-slate-200 text-xs text-slate-500 flex justify-between"><span>상품대금 합계 (RMB/개)</span><span className="font-semibold text-slate-700">{rmb(calc.unitRmb)}</span></div>
               </Card>
-              <Card title="④ 후가공 선택" right={<button onClick={() => setSettingsOpen(true)} className="text-xs text-[#1D4ED8] hover:underline">기준정보에서 항목 관리 →</button>}>
+              <Card title="④ 후가공 선택" className="relative z-10" right={<button onClick={() => setSettingsOpen(true)} className="text-xs text-[#1D4ED8] hover:underline">기준정보에서 항목 관리 →</button>}>
                 <div className="flex gap-2 mb-3">
                   <button onClick={() => setFinishingApplyMode("apply")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium " + (finishingApplyMode === "apply" ? "bg-[#1E3A8A] text-white" : "border border-slate-200 text-slate-600 hover:bg-slate-50")}>✅ 후가공 선택(단가 반영)</button>
                   <button onClick={() => setFinishingApplyMode("guide")} className={"flex-1 text-xs px-3 py-2 rounded-lg font-medium " + (finishingApplyMode === "guide" ? "bg-amber-500 text-white" : "border border-slate-200 text-slate-600 hover:bg-slate-50")}>📝 미선택 / 별도 안내</button>
