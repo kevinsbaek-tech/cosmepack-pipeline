@@ -3223,9 +3223,15 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   const [contractDate, setContractDate] = useState(todayDisplay()); // 계약체결일자
   const [clientCeo, setClientCeo] = useState(""); // (갑) 대표자명
   const [clientAddress, setClientAddress] = useState(""); // (갑) 주소 — 공급계약서 서명란에 연동
+  /* 차감/할인 — 발행 단계(InvoiceEditModal)에서 넣은 값을 여기서도 고칠 수 있게 state로 관리.
+     ⚠️ 훅이므로 반드시 아래 `if (!open || !data) return null;` 보다 위에 선언할 것
+     초기값을 data에서 바로 읽는다(지연 초기화) — 상수로 두면 첫 렌더에서 차감이 0으로 그려졌다가
+     useEffect 후에야 반영돼 정산표가 한 번 깜빡인다. */
+  const [discountReasonInput, setDiscountReasonInput] = useState(() => (data && data.discountReason) || "샘플비용 차감");
+  const [discountAmountInput, setDiscountAmountInput] = useState(() => Number(data && data.discountAmount) || 0);
   const [clientName, setClientName] = useState("");
   const [validUntil, setValidUntil] = useState("");
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState(() => ((data && data.items) || []).map((it) => ({ ...it }))); // 지연 초기화 — 상수 []로 두면 모달 열 때 빈 표가 한 프레임 보였다가 채워진다
 
   useEffect(() => {
     if (!data) return;
@@ -3236,6 +3242,8 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setContractDate(data.contractDate || todayDisplay());
     setClientCeo(data.clientCeo || "");
     setClientAddress(data.clientAddress || "");
+    setDiscountReasonInput(data.discountReason || "샘플비용 차감");
+    setDiscountAmountInput(Number(data.discountAmount) || 0);
     setValidUntil(data.validUntil || "");
     setItems((data.items || []).map((it) => ({ ...it }))); // 각 품목의 고유 제품명(it.productName)을 그대로 쓴다 — 예전엔 제안서 제목으로 모든 행을 덮어써서 전 품목이 같은 이름으로 통일되어 보이는 버그가 있었음
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3247,10 +3255,10 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   if (!open || !data) return null;
   const DARK = "#111827";
   const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0); // 품목 금액 합계(차감 전)
-  /* 차감/할인 — 발행 시 InvoiceEditModal에서 입력한 값이 문서에 함께 저장돼 있다.
+  /* 차감/할인 — 좌측 폼에서 실시간으로 고칠 수 있고, 발행 단계에서 넣은 값이 초기값으로 들어온다.
      공급가액에서 먼저 빼고 그 금액을 기준으로 부가세를 매긴다(세금계산서와 일치시키기 위함). */
-  const discountAmount = Math.min(Math.max(Number(data.discountAmount) || 0, 0), subtotal);
-  const discountReason = data.discountReason || "차감";
+  const discountAmount = Math.min(Math.max(Number(discountAmountInput) || 0, 0), subtotal);
+  const discountReason = discountReasonInput || "차감";
   const totalAmount = subtotal - discountAmount; // 공급가액
   // 인보이스 하단 정산표: (합계 → 차감) → 공급가액 → 부가가치세 → 합계금액 → 계약금(30%) → 중도금(60%) → 잔금(10%)
   const vat = Math.floor(totalAmount * 0.1);
@@ -3304,9 +3312,8 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   })();
   const handleSave = () => {
     if (!onSave || !data.id) return;
-    // 인보이스는 여기서 품목을 고칠 수 있으므로 재계산된 금액(subtotal/차감 후 공급가액)도 함께 저장한다.
-    // discountAmount/discountReason은 넘기지 않아 발행 시 입력한 값이 그대로 보존된다.
-    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress, subtotal, totalAmount } : {}) }, isInvoice ? "invoice" : "proposal");
+    // 인보이스는 여기서 품목·차감을 고칠 수 있으므로 재계산된 금액과 차감 정보도 함께 저장한다.
+    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress, subtotal, totalAmount, discountReason: discountAmount > 0 ? discountReason : "", discountAmount } : {}) }, isInvoice ? "invoice" : "proposal");
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
@@ -3465,7 +3472,34 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
             </div>
           ))}
 
+          {/* 차감 / 할인 — 발행 후에도 이 화면에서 바로 수정할 수 있다(저장 시 문서에 반영) */}
+          <div className="rounded-lg bg-rose-50/60 border border-rose-100 p-3 text-xs space-y-2">
+            <div className="font-semibold text-rose-700">🧾 차감 / 할인</div>
+            <Field label="차감 사유">
+              <select className={inputCls} value={["샘플비용 차감", "기타 차감"].includes(discountReasonInput) ? discountReasonInput : "직접입력"}
+                onChange={(e) => setDiscountReasonInput(e.target.value === "직접입력" ? "" : e.target.value)}>
+                <option value="샘플비용 차감">샘플비 차감</option>
+                <option value="기타 차감">기타 차감</option>
+                <option value="직접입력">직접 입력</option>
+              </select>
+              {!["샘플비용 차감", "기타 차감"].includes(discountReasonInput) && (
+                <input className={`${inputCls} mt-1.5`} value={discountReasonInput} placeholder="샘플비용 차감" onChange={(e) => setDiscountReasonInput(e.target.value)} />
+              )}
+            </Field>
+            <Field label="차감 금액 (원)">
+              <input type="number" min="0" className={inputCls} value={discountAmountInput}
+                onChange={(e) => setDiscountAmountInput(e.target.value === "" ? 0 : Number(e.target.value))} />
+            </Field>
+            <p className="text-[11px] text-slate-500 leading-relaxed">※ 차감된 금액은 공급가액에서 자동으로 마이너스(-) 처리됩니다.</p>
+          </div>
+
           <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs space-y-1">
+            {discountAmount > 0 && (
+              <React.Fragment>
+                <div className="flex justify-between"><span className="text-slate-500">합계 (품목 총액)</span><span>{won(Math.round(subtotal))}</span></div>
+                <div className="flex justify-between"><span className="text-rose-600">차감 ({discountReason})</span><span className="font-semibold text-rose-600">- {won(discountAmount)}</span></div>
+              </React.Fragment>
+            )}
             <div className="flex justify-between"><span className="text-slate-500">공급가액 합계</span><span className="font-semibold">{won(Math.round(totalAmount))}</span></div>
             <div className="flex justify-between"><span className="text-slate-500">부가가치세 (10%)</span><span>{won(vat)}</span></div>
             <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="font-semibold text-slate-700">총 합계금액</span><span className="font-bold text-[#1E3A8A]">{won(grandTotal)}</span></div>
