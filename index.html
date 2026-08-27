@@ -3081,6 +3081,31 @@ function EditArea({ value, onChange, className, placeholder }) {
   );
 }
 
+/* 입력 폼용 자동 높이 textarea — 내용이 늘어나는 만큼 높이가 따라 커져 스크롤 없이 전문이 보인다.
+   ⚠️ scrollHeight 기반이라 **display:none 안에서 마운트되면 높이가 0으로 접힌다**(계약서 탭에서 겪은 사고).
+      숨겨진 탭 안에 넣을 때는 보이게 된 시점에 다시 resize를 태워야 한다.
+   초기 데이터(기존 제품 불러오기 등)로 마운트될 때도 useEffect가 value를 보고 높이를 잡아준다. */
+function AutoTextarea({ value, onChange, className, placeholder, minHeight }) {
+  const ref = useRef(null);
+  const resize = (el) => {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.max(el.scrollHeight, minHeight || 80) + "px";
+  };
+  useEffect(() => { resize(ref.current); }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      value={value || ""}
+      placeholder={placeholder}
+      onChange={(e) => { onChange(e.target.value); resize(e.target); }}
+      onInput={(e) => resize(e.target)}
+      style={{ overflow: "hidden", resize: "none", minHeight: (minHeight || 80) + "px" }}
+      className={"w-full text-xs p-2.5 border border-slate-200 rounded-lg outline-none focus:border-[#1E3A8A] whitespace-pre-wrap leading-relaxed " + (className || "")}
+    />
+  );
+}
+
 function EditNumberField({ value, onChange, className, placeholder, readOnly }) {
   const display = value === "" || value === null || value === undefined ? "" : Number(value).toLocaleString("ko-KR");
   return (
@@ -3506,15 +3531,13 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
               {/* ⚠️ 우측 인보이스 표의 "재원" 칸은 specSize(사이즈)+material(재질) 두 필드로 렌더링된다.
                   예전엔 여기서 존재하지 않는 it.spec을 편집해서 값이 항상 비어 보이고 입력해도 표에 반영되지 않았음 */}
               <Field label="제원 / 규격 및 사양" hint="표의 '사이즈' 줄에 표시됩니다">
-                <textarea rows="4" className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y outline-none focus:border-[#1E3A8A]"
-                  value={it.specSize || ""} onChange={(e) => updateItem(it.id, "specSize", e.target.value)} />
+                <AutoTextarea value={it.specSize} minHeight={80} onChange={(v) => updateItem(it.id, "specSize", v)} />
               </Field>
               <Field label="재질" hint="표의 '재질' 줄에 표시됩니다">
                 <input className={inputCls} value={it.material || ""} onChange={(e) => updateItem(it.id, "material", e.target.value)} />
               </Field>
               <Field label="비고 (추가 메모)">
-                <textarea rows="6" className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y outline-none focus:border-[#1E3A8A]"
-                  value={it.notes || ""} onChange={(e) => updateItem(it.id, "notes", e.target.value)} />
+                <AutoTextarea value={it.notes} minHeight={100} onChange={(v) => updateItem(it.id, "notes", v)} />
               </Field>
               <div className="grid grid-cols-2 gap-2">
                 <Field label="주문수량"><input type="number" className={inputCls} value={it.quantity} onChange={(e) => updateItem(it.id, "quantity", e.target.value)} /></Field>
@@ -4696,7 +4719,8 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
 
   const blankItem = () => ({ id: Date.now() + Math.random(), image: "", productName: "", specSize: "", material: "", category: "", quantity: 0, unitPrice: 0, totalPrice: 0, notes: "" });
   const addBlank = () => setItems((prev) => [...prev, blankItem()]);
-  const openPicker = () => { const it = blankItem(); setItems((prev) => [...prev, it]); setPickerFor(it.id); setPickerQuery(""); };
+  // 팝업만 먼저 연다("new" = 아직 카드 없음). 취소하면 빈 카드가 남지 않는다.
+  const openPicker = () => { setPickerFor("new"); setPickerQuery(""); };
   const removeItem = (id) => setItems((prev) => prev.filter((it) => it.id !== id));
   const updateItem = (id, patch) => setItems((prev) => prev.map((it) => {
     if (it.id !== id) return it;
@@ -4704,8 +4728,15 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
     next.totalPrice = (Number(next.quantity) || 0) * (Number(next.unitPrice) || 0); // 수량·단가 바뀔 때마다 금액 자동 계산
     return next;
   }));
+  /* 제품 선택 반영 — "new"면 새 카드를 만들어 목록 맨 아래에 추가하고,
+     기존 카드에서 [📦 제품 불러오기]로 연 경우엔 그 카드만 덮어쓴다. */
   const applyPicked = (p) => {
-    updateItem(pickerFor, { productName: p.productName, specSize: p.specSize, material: p.material, category: p.category, unitPrice: p.unitPrice, notes: p.notes || "", image: p.image || "" });
+    const picked = { productName: p.productName, specSize: p.specSize, material: p.material, category: p.category, unitPrice: Number(p.unitPrice) || 0, notes: p.notes || "", image: p.image || "" };
+    if (pickerFor === "new") {
+      setItems((prev) => [...prev, { ...blankItem(), ...picked }]);
+    } else {
+      updateItem(pickerFor, picked);
+    }
     setPickerFor(null);
   };
 
@@ -4765,22 +4796,22 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => {
                           setClientName(c.name || "");
-                          setContact(c.contact || c.managerPhone || "");
+                          setContact(c.contact || ""); // 업체에 저장된 담당자명
                           setChannel(c.channel || "카카오채널");
                           setShowClientList(false);
                         }}
                         className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0"
                       >
                         <div className="font-medium text-slate-700">{c.name}</div>
-                        {(c.contact || c.ceoName) && <div className="text-[11px] text-slate-400">{[c.ceoName, c.contact].filter(Boolean).join(" · ")}</div>}
+                        {(c.contact || c.ceoName) && <div className="text-[11px] text-slate-400">{[c.ceoName && `대표 ${c.ceoName}`, c.contact && `담당 ${c.contact}`].filter(Boolean).join(" · ")}</div>}
                       </button>
                     ))}
                   </div>
                 )}
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">연락처</label>
-                <input className={inputCls} value={contact} onChange={(e) => setContact(e.target.value)} />
+                <label className="block text-[11px] text-slate-500 mb-1">담당자명</label>
+                <input className={inputCls} value={contact} placeholder="담당자명 입력" onChange={(e) => setContact(e.target.value)} />
               </div>
               <div>
                 <label className="block text-[11px] text-slate-500 mb-1">문의 경로</label>
@@ -4814,6 +4845,10 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
                     <button onClick={() => removeItem(it.id)} className="text-[11px] text-rose-500 hover:underline">삭제</button>
                   </div>
                 </div>
+                <div>
+                  <label className="block text-[11px] text-slate-500 mb-1">📷 제품 사진</label>
+                  <ImageUpload value={it.image} onChange={(v) => updateItem(it.id, { image: v })} />
+                </div>
                 <input className={inputCls} placeholder="제품명" value={it.productName} onChange={(e) => updateItem(it.id, { productName: e.target.value })} />
                 <div className="grid grid-cols-2 gap-2">
                   <input className={inputCls} placeholder="규격/사이즈" value={it.specSize} onChange={(e) => updateItem(it.id, { specSize: e.target.value })} />
@@ -4830,7 +4865,11 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
                   </div>
                   <div className="text-right font-semibold text-slate-700 pb-2">{(Number(it.totalPrice) || 0).toLocaleString("ko-KR")}원</div>
                 </div>
-                <textarea rows={2} className={inputCls} placeholder="비고" value={it.notes} onChange={(e) => updateItem(it.id, { notes: e.target.value })} />
+                <div>
+                  <label className="block text-[11px] text-slate-500 mb-1">비고</label>
+                  <AutoTextarea value={it.notes} placeholder="사양·포장·인쇄 등 상세 내용을 자유롭게 적어주세요" minHeight={80}
+                    onChange={(v) => updateItem(it.id, { notes: v })} />
+                </div>
               </div>
             ))}
           </div>
@@ -4906,7 +4945,7 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
         <div className="fixed inset-0 bg-black/40 z-[80] flex items-center justify-center p-4" onClick={() => setPickerFor(null)}>
           <div className="bg-white rounded-xl w-full max-w-2xl flex flex-col" style={{ maxHeight: "80vh" }} onClick={(e) => e.stopPropagation()}>
             <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between shrink-0">
-              <h4 className="text-sm font-bold text-slate-800">📦 기존 제품 불러오기</h4>
+              <h4 className="text-sm font-bold text-slate-800">📦 기존 제품 불러오기 {pickerFor === "new" && <span className="text-xs font-normal text-slate-400">— 선택하면 품목이 추가됩니다</span>}</h4>
               <button onClick={() => setPickerFor(null)} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
             <div className="p-4 shrink-0">
@@ -5028,7 +5067,7 @@ function InvoiceEditModal({ proposal, finishingOptions, onCancel, onConfirm }) {
                 ) : (
                   <p className="text-xs text-slate-300">이 카테고리에 등록된 후가공 항목이 없습니다.</p>
                 )}
-                <Field label="비고" span={2}><textarea className={inputCls} rows={2} value={it.notes || ""} onChange={(e) => updateItem(it.id, { notes: e.target.value })} /></Field>
+                <Field label="비고" span={2}><AutoTextarea value={it.notes} minHeight={80} onChange={(v) => updateItem(it.id, { notes: v })} /></Field>
               </div>
             );
           })}
