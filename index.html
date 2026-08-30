@@ -1491,12 +1491,28 @@ function proposalOptionLabel(p) {
   return `[${p.code}] ${p.clientName}` + (productPart ? ` — ${productPart}` : "");
 }
 
+/* 제품 ↔ 제안서 연결 조회.
+   ⭐ 매칭 우선순위: ①품목에 심어둔 originProductId(제품명을 바꿔도 유지됨)
+                    ②제품의 proposalIds[] 역방향 링크
+                    ③제품명 텍스트 일치(옛 데이터 폴백)
+   ①이 없던 시절엔 제안서에서 제품명을 조금만 고쳐도 연결이 끊겨 "관련 제안서"에서 사라졌다. */
 function getLinkedProposals(product, proposals) {
-  if (product.proposalIds && product.proposalIds.length > 0) {
-    const idSet = new Set(product.proposalIds);
-    return (proposals || []).filter((p) => idSet.has(p.id));
-  }
-  return (proposals || []).filter((p) => (p.items || []).some((it) => it.productName === product.name));
+  const list = proposals || [];
+  const pid = product.id;
+  const byOrigin = list.filter((p) => (p.items || []).some((it) => it && it.originProductId != null && String(it.originProductId) === String(pid)));
+  const idSet = new Set(product.proposalIds || []);
+  const byLink = list.filter((p) => idSet.has(p.id));
+  const byName = (product.proposalIds && product.proposalIds.length > 0)
+    ? [] // 역방향 링크가 있으면 이름 폴백은 쓰지 않는다(중복·오매칭 방지)
+    : list.filter((p) => (p.items || []).some((it) => it && it.productName === product.name));
+  // 세 경로를 합치되 같은 제안서가 두 번 들어가지 않게 id로 중복 제거
+  const seen = new Set();
+  return [...byOrigin, ...byLink, ...byName].filter((p) => {
+    const k = String(p.id);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 function buildProductGroups(products) {
@@ -3936,7 +3952,7 @@ function SourcingCard({ item, checked, onToggle, onSend, onEdit, onDelete }) {
         <div className="font-semibold text-slate-800 text-sm">{item.name}</div>
         <div className="text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-0.5">
           <span>단가 {rmb(item.rmbCost)}/개</span>
-          <span>수량 {item.quantity.toLocaleString("ko-KR")}개</span>
+          <span>수량 {(Number(item.quantity) || 0).toLocaleString("ko-KR")}개</span>
           <span>운송비 {rmb(item.totalShippingRmb)} <span className="text-slate-400">(개당 {rmb(item.unitShippingRmb)})</span></span>
         </div>
         {(item.wechatGroup || item.factory || item.factoryContact) && (
@@ -3963,7 +3979,7 @@ function SourcingCard({ item, checked, onToggle, onSend, onEdit, onDelete }) {
   );
 }
 
-function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSendBulk, products, pickedProduct, onConsumePicked, currentUserName }) {
+function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSendBulk, products, pickedProduct, onConsumePicked, currentUserName, onGoProductRegister }) {
   const [sourcingFilter, setSourcingFilter] = useState("mine"); // mine=내 조사건(기본) | others=직원 조사건 | all=전체 조사건
   const [editingSourcingItem, setEditingSourcingItem] = useState(null);
   const [image, setImage] = useState("");
@@ -4022,9 +4038,23 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
     setShowRmbPicker(false);
   };
 
+  // 제품 DB에서 불러온 원본 제품의 id. 제품명을 수정해도 유지되어 "관련 제안서" 집계가 끊기지 않는다.
+  const [originProductId, setOriginProductId] = useState(null);
+  /* 제품DB를 거치지 않고 직접 입력하려 할 때 한 번만 안내한다.
+     매번 띄우면 방해가 되므로 이 등록 건에서 한 번 안내했거나(guideShown),
+     이미 제품DB에서 불러온 상태(originProductId)면 다시 뜨지 않는다. */
+  const [showDbGuide, setShowDbGuide] = useState(false);
+  const [guideShown, setGuideShown] = useState(false);
+  const maybeGuideToProductDb = () => {
+    if (originProductId != null || guideShown) return;
+    setGuideShown(true);
+    setShowDbGuide(true);
+  };
   const productMatches = smartProductSearch(products, productSearch);
 
   const pickProduct = (p) => {
+    // ⭐ 원본 제품 id를 붙잡아 둔다 — 이후 제품명을 바꿔도 이 id로 원본을 계속 추적한다
+    setOriginProductId(p.id != null ? p.id : (p.originProductId != null ? p.originProductId : null));
     setName(p.name || "");
     setImage(p.image || "");
     setSpec([p.specSize ? `사이즈: ${p.specSize}` : "", p.material ? `재질: ${p.material}` : ""].filter(Boolean).join("\n"));
@@ -4065,7 +4095,9 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
       unitShippingRmb: qty > 0 ? (Number(totalShippingRmb) || 0) / qty : 0,
       inspectionRmb: Number(inspectionRmb) || 0,
       factory, factoryContact, wechatGroup, link, factoryLink, spec, category,
+      originProductId, // 제품DB에서 불러온 건이면 원본 id를 함께 넘긴다(직접 입력이면 null)
     });
+    setOriginProductId(null); // 새로 입력하는 건이므로 원본 연결 해제
     setImage(""); setName(""); setRmbCost(""); setQuantity(""); setTotalShippingRmb(""); setInspectionRmb("");
     setFactory(""); setFactoryContact(""); setWechatGroup(""); setLink(""); setFactoryLink(""); setSpec(""); setCategory("");
   };
@@ -4092,16 +4124,41 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
         <SourcingEditModal item={editingSourcingItem} onClose={() => setEditingSourcingItem(null)}
           onSave={(id, patch) => { onUpdateItem(id, patch); setEditingSourcingItem(null); }} />
       )}
+      {/* 신규 제품 등록 안내 — 제품DB를 거치지 않고 직접 입력하려 할 때 1회 노출 */}
+      {showDbGuide && (
+        <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl w-full max-w-md p-6">
+            <h3 className="text-base font-bold text-slate-800 mb-3">📢 신규 제품 등록 안내</h3>
+            <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-line">
+              {"정확한 제품 이력 추적과 제안서 분석을 위해, 신규 제품은 먼저 [제품관리] 메뉴에 등록하신 후 불러오기를 권장합니다.\n\n지금 [제품관리]로 이동하시겠습니까?"}
+            </p>
+            <div className="flex gap-2 mt-5">
+              <button onClick={() => setShowDbGuide(false)}
+                className="flex-1 px-4 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">
+                임시로 직접 작성하기
+              </button>
+              <button onClick={() => { setShowDbGuide(false); if (onGoProductRegister) onGoProductRegister(); }}
+                className="flex-1 px-4 py-2.5 rounded-lg bg-[#1E3A8A] text-white text-sm font-semibold hover:opacity-90">
+                ✨ 제품관리로 바로가기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="space-y-6">
         <div className="text-xs font-semibold text-slate-400 tracking-wide px-1">1단계 · 가격조사 등록</div>
         <Card title="신규 가격조사 건 등록">
+          {/* 제품DB 선등록 유도 — 여기서 바로 입력하면 originProductId가 안 붙어 제품 이력 추적이 끊긴다 */}
+          <div className="mb-3 rounded-lg bg-blue-50/70 border border-blue-100 px-3 py-2.5 text-xs text-blue-800 leading-relaxed">
+            💡 체계적인 제품 관리 및 제안서 연동을 위해, 신규 제품은 <b>[제품관리]</b>에 먼저 등록 후 <b>[기존 제품 DB에서 불러오기]</b>로 진행하는 것을 권장합니다.
+          </div>
           <div className="mb-4 pb-4 border-b border-dashed border-slate-200">
             <button
               type="button" onClick={() => setShowProductPicker((v) => !v)}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50"
+              className="w-full flex items-center justify-between px-4 py-2.5 rounded-lg bg-[#1E3A8A] text-white text-sm font-semibold hover:opacity-90 shadow-sm"
             >
-              <span>🔍 기존 제품 DB에서 불러오기</span>
-              <span className="text-xs text-slate-400">{showProductPicker ? "닫기 ▲" : "열기 ▼"}</span>
+              <span>📦 기존 제품 DB에서 불러오기</span>
+              <span className="text-xs opacity-80">{showProductPicker ? "닫기 ▲" : "열기 ▼"}</span>
             </button>
             {showProductPicker && (
               <div className="mt-2">
@@ -4129,7 +4186,11 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
             )}
           </div>
           <Field label="제품 사진"><ImageUpload value={image} onChange={setImage} /></Field>
-          <Field label="품명" hint="예: 40ml 유리 스포이드 용기"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="품명" hint="예: 40ml 유리 스포이드 용기">
+            <input className={inputCls} value={name}
+              onFocus={maybeGuideToProductDb}
+              onChange={(e) => { maybeGuideToProductDb(); setName(e.target.value); }} />
+          </Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="위안화 원가" hint="RMB/개 · 클릭하면 기존 데이터 불러오기">
               <div className="relative">
@@ -4696,6 +4757,102 @@ function ClientFormModal({ client, onClose, onSave }) {
 /* ➕ 신규 인보이스 직접 작성 — 제안서 없이 5단계에서 바로 인보이스를 만든다.
    저장은 기존 finalizeInvoice를 그대로 재사용하므로(가짜 proposal 객체를 넘김)
    채번(INV-YYYYMMDD-XXX)·Firestore 저장·5단계 목록 이관·미리보기 오픈이 전부 동일하게 동작한다. */
+/* 🧾 검품비용 일괄 정리 — 실행 전 "무엇이 어떻게 바뀌는지" 먼저 보여주는 미리보기 모달.
+   740건을 되돌릴 수 없게 한 번에 덮어쓰기 전에, 변경 대상·유지 대상·예외 단가를 눈으로 확인하게 한다. */
+function InspectionMigratePreviewModal({ rows, summary, running, progress, onCancel, onConfirm }) {
+  const [onlyChanged, setOnlyChanged] = useState(true);
+  const view = onlyChanged ? rows.filter((r) => r.changed) : rows;
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl w-full max-w-3xl flex flex-col" style={{ maxHeight: "88vh" }}>
+        <div className="px-6 py-4 border-b border-slate-200 shrink-0">
+          <h3 className="text-base font-bold text-slate-800">🧾 검품비용 일괄 정리 — 변경 내역 미리보기</h3>
+          <p className="text-xs text-slate-500 mt-1">기준: {INSPECTION_FEE_HINT}</p>
+        </div>
+
+        <div className="px-6 py-3 grid grid-cols-3 gap-3 text-center shrink-0 border-b border-slate-100">
+          <div className="rounded-lg bg-slate-50 py-2">
+            <div className="text-lg font-bold text-slate-700">{summary.totalTiers.toLocaleString()}</div>
+            <div className="text-[11px] text-slate-500">전체 수량 구간</div>
+          </div>
+          <div className="rounded-lg bg-amber-50 py-2">
+            <div className="text-lg font-bold text-amber-700">{summary.changedTiers.toLocaleString()}</div>
+            <div className="text-[11px] text-amber-600">값이 바뀌는 구간</div>
+          </div>
+          <div className="rounded-lg bg-slate-50 py-2">
+            <div className="text-lg font-bold text-slate-700">{summary.changedProducts.toLocaleString()}</div>
+            <div className="text-[11px] text-slate-500">영향받는 제품</div>
+          </div>
+        </div>
+
+        {summary.customTiers > 0 && (
+          <div className="mx-6 my-3 rounded-lg bg-rose-50 border border-rose-200 px-3 py-2.5 text-xs text-rose-700 shrink-0">
+            ⚠️ 아래 표에서 <b>예외</b> 표시된 <b>{summary.customTiers}건</b>은 기준 계산값과 다른 금액이 들어가 있습니다.
+            공장별로 따로 정한 단가일 수 있으니 확인 후 진행해 주세요. 실행하면 이 값도 기준값으로 덮어써집니다.
+          </div>
+        )}
+
+        <div className="px-6 pb-2 flex items-center justify-between text-xs shrink-0">
+          <label className="flex items-center gap-1.5 text-slate-600 cursor-pointer">
+            <input type="checkbox" checked={onlyChanged} onChange={(e) => setOnlyChanged(e.target.checked)} />
+            바뀌는 구간만 보기
+          </label>
+          <span className="text-slate-400">{view.length.toLocaleString()}건 표시</span>
+        </div>
+
+        <div className="px-6 pb-4 overflow-y-auto" style={{ minHeight: 0 }}>
+          <table className="w-full text-xs border-collapse">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-slate-500 border-b border-slate-200">
+                <th className="text-left py-2 font-medium">제품명</th>
+                <th className="text-right py-2 font-medium w-24">기준수량</th>
+                <th className="text-right py-2 font-medium w-24">현재</th>
+                <th className="text-right py-2 font-medium w-24">변경 후</th>
+                <th className="text-center py-2 font-medium w-16">구분</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.length === 0 && (
+                <tr><td colSpan={5} className="py-8 text-center text-slate-400">바뀌는 구간이 없습니다. 이미 기준에 맞게 정리돼 있습니다.</td></tr>
+              )}
+              {view.map((r, i) => (
+                <tr key={i} className="border-b border-slate-100">
+                  <td className="py-1.5 pr-2 text-slate-700" style={{ wordBreak: "keep-all" }}>{r.name}</td>
+                  <td className="py-1.5 text-right text-slate-600">{Number(r.qty) ? Number(r.qty).toLocaleString() : "-"}</td>
+                  <td className="py-1.5 text-right text-slate-400">{r.before === "" ? "(비어있음)" : `¥${r.before}`}</td>
+                  <td className={"py-1.5 text-right font-semibold " + (r.changed ? "text-[#1D4ED8]" : "text-slate-400")}>
+                    {r.after === "" ? "(비움)" : `¥${r.after}`}
+                  </td>
+                  <td className="py-1.5 text-center">
+                    {r.isCustom
+                      ? <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-bold">예외</span>
+                      : (r.changed ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">변경</span>
+                        : <span className="text-slate-300">유지</span>)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between shrink-0">
+          <span className="text-xs text-slate-400">
+            {running ? `처리 중… ${progress.done}/${progress.total}` : "실행하면 되돌릴 수 없습니다."}
+          </span>
+          <div className="flex gap-2">
+            <button onClick={onCancel} disabled={running}
+              className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">취소</button>
+            <button onClick={onConfirm} disabled={running || summary.changedTiers === 0}
+              className={"px-5 py-2 rounded-lg text-white text-sm font-semibold " + (running || summary.changedTiers === 0 ? "bg-slate-300 cursor-not-allowed" : "bg-[#1E3A8A] hover:opacity-90")}>
+              {running ? "처리 중…" : `${summary.changedTiers}건 실행`}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserName, onCancel, onCreate }) {
   const [clientName, setClientName] = useState("");
   const [clientQuery, setClientQuery] = useState("");
@@ -6697,7 +6854,7 @@ function BatchFactoryUpdateModal({ products, onRun, onClose }) {
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection, openNewProductForm, onConsumeOpenNew, onProductRegistered }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -6716,6 +6873,14 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
       if (onConsumeInitialView) onConsumeInitialView();
     }
   }, [initialViewProduct]);
+  // 1단계 가격조사에서 "제품관리로 바로가기"로 들어온 경우 — 신규 등록 폼을 곧바로 띄운다
+  useEffect(() => {
+    if (openNewProductForm) {
+      setEditingProduct({});
+      setIsDuplicateFlow(false);
+      if (onConsumeOpenNew) onConsumeOpenNew();
+    }
+  }, [openNewProductForm]);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [zipBusy, setZipBusy] = useState(false);
   const zipRef = useRef(null);
@@ -6749,7 +6914,11 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
     } else if (isDuplicateFlow && onAddDuplicate) {
       onAddDuplicate({ id: Date.now() + Math.random(), ...patch }); // 복사플로우는 전용 토스트("복사되어 등록되었습니다")를 띄우는 별도 저장함수로
     } else {
-      onAdd({ id: Date.now() + Math.random(), ...patch });
+      const created = { id: Date.now() + Math.random(), ...patch };
+      onAdd(created);
+      /* 1단계 가격조사에서 "제품관리로 바로가기"로 넘어온 흐름이면,
+         등록 직후 그 제품을 가격조사에 바로 불러올지 물어본다(왕복 이동 수고 제거). */
+      if (openNewProductForm !== undefined && onProductRegistered) onProductRegistered(created);
     }
     setEditingProduct(null);
     setIsDuplicateFlow(false);
@@ -6978,6 +7147,15 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
               className="text-xs px-3 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 font-medium hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
             >
               {bulkCompressProgress ? `🗜️ 압축 중... (${bulkCompressProgress.done}/${bulkCompressProgress.total})` : "🗜️ 사진 일괄 압축(속도 개선)"}
+            </button>
+          )}
+          {isAdmin && onBulkMigrateInspection && (
+            <button
+              onClick={onBulkMigrateInspection}
+              title="전체 제품의 수량별 검품비용을 현재 기준으로 다시 계산합니다. 실행 전 변경 내역을 먼저 보여줍니다."
+              className="text-xs px-3 py-1.5 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap"
+            >
+              🧾 검품비용 일괄 정리
             </button>
           )}
           <button
@@ -9416,6 +9594,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
      ⚠️ 값이 들어있으면 마진율·환율·검품비가 바뀌어도 이 단가를 유지한다 —
         저장해 둔 확정 단가가 재계산으로 날아가던 버그(제안서를 다시 열면 추천가로 되돌아감)를 막기 위함. */
   const [manualUnitPrice, setManualUnitPrice] = useState(null);
+  /* 현재 편집 중인 품목이 어느 제품DB 레코드에서 왔는지. 제품명을 바꿔도 이 값은 유지되어
+     ①제안서 저장시 새 제품이 중복 생성되지 않고 ②제품관리 "N개 제안서" 집계가 끊기지 않는다. */
+  const [originProductId, setOriginProductId] = useState(null);
   const [selectedFinishingIds, setSelectedFinishingIds] = useState([]); // "④ 후가공 선택"에서 체크된 항목 id들(가격반영모드)
   const [selectedFinishingQty, setSelectedFinishingQty] = useState({}); // { [후가공id]: 선택된 수량/도수 } — 가변형 항목에서만 의미있음
   const [guideSelectedIds, setGuideSelectedIds] = useState([]); // "미선택/별도안내" 모드에서 체크된 후가공id들
@@ -9485,6 +9666,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [sampleList, setSampleList] = useState([]);
   const [sampleStockList, setSampleStockList] = useState([]);
   const [productToPick, setProductToPick] = useState(null);
+  /* 1단계 가격조사 → [제품관리로 바로가기] 흐름.
+     openNewProductForm: 제품관리 진입시 신규 등록 폼을 자동으로 열지 여부
+     cameFromSourcing: 이 흐름으로 넘어왔는지 — 등록 완료 후 "가격조사로 바로 불러올까요?"를 물어보는 판단에 쓴다 */
+  const [openNewProductForm, setOpenNewProductForm] = useState(false);
+  const [cameFromSourcing, setCameFromSourcing] = useState(false);
   const [sampleInitProposalId, setSampleInitProposalId] = useState(null); // "🧪 샘플요청 등록"으로 4단계에 전달할 발송완료 제안서 id
   // 발송완료된 제안서 하나를 골라 4단계(샘플진행)로 "선택적" 전환 — 자동이관이 아니라 사용자가 명시적으로 누를 때만
   const createSampleFromProposal = (p) => {
@@ -9665,6 +9851,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setSelectedFinishingIds([]); setSelectedFinishingQty({}); setGuideSelectedIds([]); setGuideTexts({}); setFinishingApplyMode("apply");
     setMarginOverride(null);
     setManualUnitPrice(null); // 신규 작성은 다시 계산기 추천가를 따른다
+    setOriginProductId(null); // 원본 제품 연결도 해제(직접 입력한 신규 품목)
   };
 
   // 1→2단계 데이터 연동 (단건)
@@ -9680,6 +9867,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setQuantity(sourcingItem.quantity || 3000);
     setRmbBase(sourcingItem.rmbCost || 0);
     setManualUnitPrice(null); // 1단계에서 새로 넘어온 건이므로 추천가 기준
+    setOriginProductId(sourcingItem.originProductId != null ? sourcingItem.originProductId : null); // 1단계에서 붙잡아 둔 원본 제품 id 인계
     setRmbBox(0); setRmbInspect(sourcingItem.inspectionRmb || 0);
     setRmbShip(Number((sourcingItem.totalShippingRmb || 0).toFixed(4)));
     setItemFactory(sourcingItem.factory || "");
@@ -10863,20 +11051,61 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [bulkCompressProgress, setBulkCompressProgress] = useState(null); // {done,total} — 진행중일 때만 값이 있음
   // 🧾 전체 제품 DB 검품비용 일괄 정리 — 모든 수량 구간을 개당 단가(INSPECTION_RMB_PER_UNIT) 기준으로 다시 계산해 통일한다.
   // 예전엔 5,000/10,000개만 고정값으로 채우고 나머지는 비웠으나, 이제 어떤 수량이든 일관되게 산출된다.
-  const bulkMigrateInspectionFees = async () => {
+  /* 🧾 검품비용 일괄 정리 — 바로 덮어쓰지 않고 먼저 변경 내역을 계산해 미리보기 모달을 띄운다.
+     되돌릴 수 없는 작업이라, 몇 건이 어떻게 바뀌는지와 "기준과 다른 예외 단가"를 눈으로 확인하게 하기 위함. */
+  const [inspectMigrate, setInspectMigrate] = useState(null); // {rows, summary} — 미리보기 열림 상태
+  const [inspectMigrateRunning, setInspectMigrateRunning] = useState(false);
+  const [inspectMigrateProgress, setInspectMigrateProgress] = useState({ done: 0, total: 0 });
+
+  const openInspectionMigratePreview = () => {
     const targets = productsList.filter((p) => p.priceTiers && p.priceTiers.length > 0);
     if (targets.length === 0) { setToast("수량 구간 데이터가 있는 제품이 없습니다."); return; }
-    if (!window.confirm(`전체 제품 ${targets.length}건의 수량별 검품비용을 아래 기준으로 다시 계산합니다.\n\n· 기준: ${INSPECTION_FEE_HINT}\n· 5,000개 → ¥${getInspectionFee(5000)}\n· 10,000개 → ¥${getInspectionFee(10000)}\n· 20,000개 → ¥${getInspectionFee(20000)}\n· 그 외 수량도 같은 개당 단가로 자동 계산됩니다\n\n계속할까요?`)) return;
-    for (const p of targets) {
-      const nextTiers = p.priceTiers.map((t) => {
-        const qtyNum = Number(t.qty);
-        return { ...t, inspectionRmb: getInspectionFee(qtyNum) };
+    const rows = [];
+    let changedTiers = 0, customTiers = 0;
+    const changedProductIds = new Set();
+    targets.forEach((p) => {
+      (p.priceTiers || []).forEach((t) => {
+        const after = getInspectionFee(t.qty);
+        const before = t.inspectionRmb === undefined || t.inspectionRmb === null ? "" : t.inspectionRmb;
+        const changed = String(before) !== String(after);
+        // 값이 들어있는데 기준 계산값과 다르면 "예외 단가"로 표시 — 공장별로 따로 정한 금액일 수 있다
+        const isCustom = before !== "" && String(before) !== String(after);
+        if (changed) { changedTiers++; changedProductIds.add(p.id); }
+        if (isCustom) customTiers++;
+        rows.push({ name: p.name || "(이름 없음)", qty: t.qty, before, after, changed, isCustom });
       });
-      setProductsList((prev) => prev.map((x) => (x.id === p.id ? { ...x, priceTiers: nextTiers } : x)));
-      try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, { priceTiers: nextTiers }); } catch (e) { console.error(e); }
-    }
-    setToast(`✅ 제품 ${targets.length}건의 검품비용을 정리했습니다.`);
+    });
+    setInspectMigrateProgress({ done: 0, total: changedProductIds.size });
+    setInspectMigrate({
+      rows,
+      summary: { totalTiers: rows.length, changedTiers, customTiers, changedProducts: changedProductIds.size },
+    });
   };
+
+  const runInspectionMigrate = async () => {
+    if (!inspectMigrate) return;
+    // 실제로 값이 바뀌는 제품만 저장한다(불필요한 Firestore 쓰기 방지)
+    const targets = productsList.filter((p) => (p.priceTiers || []).some((t) => String(t.inspectionRmb ?? "") !== String(getInspectionFee(t.qty))));
+    setInspectMigrateRunning(true);
+    setInspectMigrateProgress({ done: 0, total: targets.length });
+    let ok = 0, failed = 0;
+    for (let i = 0; i < targets.length; i++) {
+      const p = targets[i];
+      const nextTiers = (p.priceTiers || []).map((t) => ({ ...t, inspectionRmb: getInspectionFee(t.qty) }));
+      setProductsList((prev) => prev.map((x) => (x.id === p.id ? { ...x, priceTiers: nextTiers } : x)));
+      try {
+        if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, { priceTiers: nextTiers });
+        ok++;
+      } catch (e) { console.error("검품비용 저장 실패:", p.name, e); failed++; }
+      setInspectMigrateProgress({ done: i + 1, total: targets.length });
+    }
+    setInspectMigrateRunning(false);
+    setInspectMigrate(null);
+    setToast(failed > 0
+      ? `검품비용 정리 완료 — 성공 ${ok}건 / 실패 ${failed}건 (실패분은 새로고침 후 다시 시도해주세요)`
+      : `✅ 제품 ${ok}건의 검품비용을 새 기준으로 정리했습니다.`);
+  };
+
   const bulkCompressProductImages = async () => {
     const targets = productsList.filter((p) => p.image && p.image.length * 0.75 > 150 * 1024); // 150KB 넘는 사진만 대상
     if (targets.length === 0) { setToast("압축이 필요한 큰 사진이 없습니다. 이미 충분히 가볍습니다."); return; }
@@ -11036,8 +11265,34 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   };
 
   // 제안서 품목 추가시 제품DB 자동 저장/갱신 (같은 제품명+사이즈 매칭시 최신단가로 업데이트)
+  /* 제안서 품목을 제품DB에 반영한다.
+     ⚠️ 매칭은 **originProductId 우선** — 예전엔 제품명+규격 텍스트로만 찾아서,
+        제품DB에서 불러온 뒤 제안서에서 제품명을 조금만 고쳐도 원본을 못 찾고
+        **제품관리에 똑같은 제품이 하나 더 생기는 중복 생성 버그**가 있었다.
+     ⚠️ 원본에서 온 품목(originProductId 있음)은 이름이 달라져도 **절대 새로 만들지 않는다**.
+        바뀐 제품명은 제안서 문서(proposals) 안에만 남고 제품DB 이름은 건드리지 않는다. */
   const upsertProductRecord = async (item) => {
-    const match = productsList.find((p) => p.name === item.productName && p.specSize === item.specSize);
+    const byOrigin = item.originProductId != null
+      ? productsList.find((p) => String(p.id) === String(item.originProductId))
+      : null;
+    const match = byOrigin || productsList.find((p) => p.name === item.productName && p.specSize === item.specSize);
+
+    if (byOrigin) {
+      /* 원본 제품이 확인된 경우 — 이름은 그대로 두고 부가 정보만 보강한다.
+         (제안서에서 고친 이름으로 마스터 제품명을 덮어쓰면 다른 제안서·발주 이력과 어긋난다) */
+      const patch = {
+        lastUnitPrice: item.unitPrice,
+        ...(byOrigin.image ? {} : { image: item.image }),
+        ...(byOrigin.specSize ? {} : { specSize: item.specSize }),
+        ...(byOrigin.material ? {} : { material: item.material }),
+        ...(byOrigin.factory ? {} : { factory: item.factory || "" }),
+        ...(byOrigin.wechatGroup ? {} : { wechatGroup: item.wechatGroup || "" }),
+      };
+      setProductsList((prev) => prev.map((p) => (p.id === byOrigin.id ? { ...p, ...patch } : p)));
+      try { if (FIREBASE_ENABLED && typeof byOrigin.id === "string") await fsUpdate(COLLECTIONS.products, byOrigin.id, patch); } catch (e) { console.error(e); }
+      return;
+    }
+
     const record = {
       name: item.productName, specSize: item.specSize, material: item.material, image: item.image,
       lastUnitPrice: item.unitPrice, factory: item.factory || "", wechatGroup: item.wechatGroup || "",
@@ -11046,6 +11301,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       setProductsList((prev) => prev.map((p) => (p.id === match.id ? { ...p, ...record } : p)));
       try { if (FIREBASE_ENABLED && typeof match.id === "string") await fsUpdate(COLLECTIONS.products, match.id, record); } catch (e) { console.error(e); }
     } else {
+      // 원본 연결이 없고 이름도 처음 보는 경우에만 신규 등록(직접 입력한 새 품목)
       const newRec = { id: Date.now() + Math.random(), ...record };
       setProductsList((prev) => [newRec, ...prev]);
       try { await fsAdd(COLLECTIONS.products, record); } catch (e) { console.error(e); }
@@ -11129,6 +11385,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
        isCustomPrice가 없는 옛 저장건도 unitPrice가 있으면 그 값을 확정가로 본다
        (그래야 마진표·환율이 바뀌어도 당시 제안가가 그대로 유지된다). */
     setManualUnitPrice(item.unitPrice != null && item.unitPrice !== "" ? Number(item.unitPrice) || 0 : null);
+    setOriginProductId(item.originProductId != null ? item.originProductId : null); // 원본 제품 연결 복원
     setProductImage(item.image || "");
     setProductName(item.productName || "");
     setSpecSize(item.specSize || "");
@@ -11172,6 +11429,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       name: firstItem.productName, image: firstItem.image, specSize: firstItem.specSize, material: firstItem.material,
       category: firstItem.category, factory: firstItem.factory, wechatGroup: firstItem.wechatGroup,
       rmbCost: firstItem.calcSnapshot ? firstItem.calcSnapshot.rmbBase : undefined, moqQuantity: firstItem.quantity,
+      // ⚠️ id가 아니라 originProductId로 넘긴다 — 이 객체는 제품DB 레코드가 아니라 제안서 품목이라,
+      //    id를 넣으면 1단계 pickProduct가 품목 id를 원본 제품 id로 오인한다.
+      originProductId: firstItem.originProductId != null ? firstItem.originProductId : null,
     });
   };
 
@@ -11197,6 +11457,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       unitPrice: finalUnitPrice,
       totalPrice: finalUnitPrice * (Number(quantity) || 0),
       isCustomPrice: manualUnitPrice != null,
+      originProductId, // ⭐ 제품명을 바꿔도 원본 제품 추적이 끊기지 않게 함께 저장
       cbm: Number(cbm) || 0, notes, calcSnapshot,
     };
     upsertProductRecord(item);
@@ -11248,6 +11509,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       unitPrice: savedUnitPrice,
       totalPrice: savedUnitPrice * (Number(quantity) || 0),
       isCustomPrice: manualUnitPrice != null,
+      originProductId, // ⭐ 원본 제품 연결 유지
       cbm: Number(cbm) || 0, notes, calcSnapshot,
       // 누를 때마다 덮어쓰지 않고 배열에 계속 추가(push) — 몇 차 수정인지(round)까지 함께 기록해 전체 이력을 나중에 그대로 보여줄 수 있다.
       historyList: [...(prevItem && prevItem.historyList ? prevItem.historyList : []), {
@@ -11388,6 +11650,16 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         onSave={(id, patch) => savePreviewEdits(id, patch, "invoice")}
         onEmergencyApprove={emergencyApprove}
       />
+      {inspectMigrate && (
+        <InspectionMigratePreviewModal
+          rows={inspectMigrate.rows}
+          summary={inspectMigrate.summary}
+          running={inspectMigrateRunning}
+          progress={inspectMigrateProgress}
+          onCancel={() => { if (!inspectMigrateRunning) setInspectMigrate(null); }}
+          onConfirm={runInspectionMigrate}
+        />
+      )}
       {showNewInvoice && (
         <NewInvoiceModal
           clientsList={clientsList} productsList={productsList} invoiceList={invoiceList}
@@ -11681,8 +11953,18 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onDeleteAllUploaded={deleteAllUploadedProductData}
           isAdmin={isAdmin}
           initialViewProduct={productToView} onConsumeInitialView={() => setProductToView(null)}
+          openNewProductForm={openNewProductForm} onConsumeOpenNew={() => setOpenNewProductForm(false)}
+          onProductRegistered={(created) => {
+            if (!cameFromSourcing) return; // 평소 제품관리에서 등록한 경우엔 방해하지 않는다
+            setCameFromSourcing(false);
+            if (window.confirm("제품이 등록되었습니다. 1단계 가격조사에서 해당 제품을 바로 불러오시겠습니까?")) {
+              setProductToPick(created); // 1단계 pickProduct 경로로 자동 바인딩(originProductId도 함께 실린다)
+              setView("pipeline");
+              setActiveStep(1);
+            }
+          }}
           onBulkCompressImages={bulkCompressProductImages} bulkCompressProgress={bulkCompressProgress}
-          onBulkMigrateInspection={bulkMigrateInspectionFees}
+          onBulkMigrateInspection={openInspectionMigratePreview}
         />
       )}
 
@@ -11696,7 +11978,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           <div className="max-w-7xl mx-auto px-6 pt-6"><div className="bg-[#1E3A8A]/5 text-[#1E3A8A] text-xs px-4 py-2 rounded-lg">📄 현재 열람 중인 제안서: <b>{clientInfo.clientName}</b>{clientInfo.proposalTitle ? ` — ${clientInfo.proposalTitle}` : ""} (원본 조사 정보가 아래 입력창에 채워져 있습니다)</div></div>
         )}
         <fieldset disabled={proposalReadOnly} className="contents" style={{ border: 0, margin: 0, padding: 0 }}>
-          <SourcingStage items={sourcingItems} onAdd={addSourcingItem} onUpdateItem={updateSourcingItem} onDeleteItem={deleteSourcingItem} onSend={sendToProposal} onSendBulk={sendBulkToProposal} products={productsList} pickedProduct={productToPick} onConsumePicked={() => setProductToPick(null)} currentUserName={(roleUser && roleUser.displayName) || ""} />
+          <SourcingStage items={sourcingItems} onAdd={addSourcingItem} onUpdateItem={updateSourcingItem} onDeleteItem={deleteSourcingItem} onSend={sendToProposal} onSendBulk={sendBulkToProposal} products={productsList} pickedProduct={productToPick} onConsumePicked={() => setProductToPick(null)} currentUserName={(roleUser && roleUser.displayName) || ""}
+            onGoProductRegister={() => { setCameFromSourcing(true); setOpenNewProductForm(true); setView("products"); }} />
         </fieldset>
         </>
       )}
