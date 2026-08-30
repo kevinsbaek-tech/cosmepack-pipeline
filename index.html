@@ -981,6 +981,24 @@ const DIFFICULTY_BADGE_STYLE = {
    단가를 바꿀 일이 생기면 이 상수 한 줄만 고치면 전 구간·전 단계에 반영된다. */
 const INSPECTION_RMB_PER_UNIT = 0.027;
 const INSPECTION_FEE_HINT = `개당 ¥${INSPECTION_RMB_PER_UNIT} (5천개 ¥${(5000 * INSPECTION_RMB_PER_UNIT).toLocaleString()} / 1만개 ¥${(10000 * INSPECTION_RMB_PER_UNIT).toLocaleString()})`;
+/* 가격조사 건에서 예상 CBM을 뽑아낸다.
+   ①정식 필드(cbm / expectedCbm / estimatedCbm) ②옛 데이터는 스펙 메모의 "예상 CBM: 3" 텍스트 파싱
+   ③둘 다 없으면 1(2단계 기존 기본값). 0이나 음수는 물류비 계산이 무의미하므로 1로 본다. */
+const pickSourcingCbm = (item) => {
+  if (!item) return 1;
+  const direct = item.cbm != null && item.cbm !== "" ? item.cbm
+    : (item.expectedCbm != null && item.expectedCbm !== "" ? item.expectedCbm
+      : (item.estimatedCbm != null && item.estimatedCbm !== "" ? item.estimatedCbm : null));
+  const n = Number(direct);
+  if (direct !== null && Number.isFinite(n) && n > 0) return n;
+  const m = String(item.spec || "").match(/CBM\s*[:：]?\s*([\d.]+)/i);
+  if (m) {
+    const parsed = Number(m[1]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 1;
+};
+
 // 주문수량으로 검품비용 총액(RMB)을 산출. 수량이 없거나 0이면 빈 값(직접 입력용)
 const getInspectionFee = (qty) => {
   const n = Number(qty) || 0;
@@ -4034,12 +4052,18 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
     if (row.rmbCost) setRmbCost(row.rmbCost);
     if (row.shippingRmb) setTotalShippingRmb(row.shippingRmb);
     if (row.inspectionRmb) { setInspectionRmb(row.inspectionRmb); setInspectionTouched(true); } // 제품DB에 저장된 값이 우선
-    if (row.cbm) setSpec((prev) => (prev ? prev + `\n예상 CBM: ${row.cbm}` : `예상 CBM: ${row.cbm}`));
+    if (row.cbm) {
+      setExpectedCbm(row.cbm); // 계산에 쓰이는 정식 값
+      setSpec((prev) => (prev ? prev + `\n예상 CBM: ${row.cbm}` : `예상 CBM: ${row.cbm}`)); // 사람이 읽는 스펙 메모에도 병기
+    }
     setShowRmbPicker(false);
   };
 
   // 제품 DB에서 불러온 원본 제품의 id. 제품명을 수정해도 유지되어 "관련 제안서" 집계가 끊기지 않는다.
   const [originProductId, setOriginProductId] = useState(null);
+  /* 예상 CBM — 예전엔 별도 필드 없이 "상세 스펙" 텍스트에 `예상 CBM: 3`으로만 적혀서
+     2단계로 넘어갈 때 값이 사라지고 기본값 1로 리셋됐다. 이제 정식 필드로 저장·전달한다. */
+  const [expectedCbm, setExpectedCbm] = useState("");
   /* 제품DB를 거치지 않고 직접 입력하려 할 때 한 번만 안내한다.
      매번 띄우면 방해가 되므로 이 등록 건에서 한 번 안내했거나(guideShown),
      이미 제품DB에서 불러온 상태(originProductId)면 다시 뜨지 않는다. */
@@ -4096,8 +4120,10 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
       inspectionRmb: Number(inspectionRmb) || 0,
       factory, factoryContact, wechatGroup, link, factoryLink, spec, category,
       originProductId, // 제품DB에서 불러온 건이면 원본 id를 함께 넘긴다(직접 입력이면 null)
+      cbm: Number(expectedCbm) || 0, // 2단계 물류비 계산에 그대로 쓰인다
     });
     setOriginProductId(null); // 새로 입력하는 건이므로 원본 연결 해제
+    setExpectedCbm("");
     setImage(""); setName(""); setRmbCost(""); setQuantity(""); setTotalShippingRmb(""); setInspectionRmb("");
     setFactory(""); setFactoryContact(""); setWechatGroup(""); setLink(""); setFactoryLink(""); setSpec(""); setCategory("");
   };
@@ -4243,6 +4269,14 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
               </div>
             </Field>
             <Field label="수량" hint="개"><input type="number" className={inputCls} value={quantity} onChange={(e) => setQuantity(e.target.value)} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {/* 예상 CBM — 2단계 해운운송료 계산에 그대로 넘어간다(비워두면 2단계 기본값 1이 적용됨) */}
+            <Field label="예상 CBM" hint="비워두면 2단계에서 1로 계산">
+              <input type="number" step="0.01" className={inputCls} value={expectedCbm}
+                onChange={(e) => setExpectedCbm(e.target.value)} placeholder="예: 3" />
+            </Field>
+            <div />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="중국 내 운송료" hint={`총 RMB · 개당 자동환산 ${unitShippingPreview ? rmb(unitShippingPreview) + "/개" : ""}`}>
@@ -9870,6 +9904,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setOriginProductId(sourcingItem.originProductId != null ? sourcingItem.originProductId : null); // 1단계에서 붙잡아 둔 원본 제품 id 인계
     setRmbBox(0); setRmbInspect(sourcingItem.inspectionRmb || 0);
     setRmbShip(Number((sourcingItem.totalShippingRmb || 0).toFixed(4)));
+    /* ⭐ 예상 CBM 인계 — 예전엔 이 줄이 아예 없어서 2단계 기본값 1로 리셋됐다.
+       정식 필드(cbm/expectedCbm)를 우선 쓰고, 없으면 옛 조사건의 스펙 메모에 적힌
+       "예상 CBM: 3" 문구에서 숫자를 뽑아 살린다. 그것도 없으면 1(기존 기본값). */
+    setCbm(pickSourcingCbm(sourcingItem));
     setItemFactory(sourcingItem.factory || "");
     setItemWechatGroup(sourcingItem.wechatGroup || "");
   };
