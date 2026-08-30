@@ -981,6 +981,25 @@ const DIFFICULTY_BADGE_STYLE = {
    단가를 바꿀 일이 생기면 이 상수 한 줄만 고치면 전 구간·전 단계에 반영된다. */
 const INSPECTION_RMB_PER_UNIT = 0.027;
 const INSPECTION_FEE_HINT = `개당 ¥${INSPECTION_RMB_PER_UNIT} (5천개 ¥${(5000 * INSPECTION_RMB_PER_UNIT).toLocaleString()} / 1만개 ¥${(10000 * INSPECTION_RMB_PER_UNIT).toLocaleString()})`;
+/* 한글 초성 검색 지원 — "ㄷㅅㅋ"로 "닥터스칼프"를 찾을 수 있게 한다.
+   한글 음절(가~힣)은 유니코드상 초성 19개가 588칸씩 규칙적으로 배열돼 있어 나눗셈으로 초성을 뽑는다. */
+const HANGUL_CHOSUNG = ["ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"];
+const toChosung = (text) => String(text || "").split("").map((ch) => {
+  const code = ch.charCodeAt(0) - 0xac00;
+  return (code >= 0 && code <= 11171) ? HANGUL_CHOSUNG[Math.floor(code / 588)] : ch;
+}).join("");
+/* 업체 검색 매칭 — ①부분 일치(대소문자·공백 무시) ②초성 일치.
+   질의가 초성만으로 이뤄졌을 때만 초성 비교를 하므로 "다"로 검색해도 엉뚱한 결과가 안 나온다. */
+const matchClientQuery = (name, query) => {
+  const n = String(name || "");
+  const q = String(query || "").trim();
+  if (!q) return true;
+  const norm = (v) => v.toLowerCase().replace(/\s+/g, "");
+  if (norm(n).includes(norm(q))) return true;
+  if (/^[ㄱ-ㅎ]+$/.test(q.replace(/\s+/g, ""))) return toChosung(n).replace(/\s+/g, "").includes(q.replace(/\s+/g, ""));
+  return false;
+};
+
 /* 가격조사 건에서 예상 CBM을 뽑아낸다.
    ①정식 필드(cbm / expectedCbm / estimatedCbm) ②옛 데이터는 스펙 메모의 "예상 CBM: 3" 텍스트 파싱
    ③둘 다 없으면 1(2단계 기존 기본값). 0이나 음수는 물류비 계산이 무의미하므로 1로 본다. */
@@ -1005,6 +1024,53 @@ const getInspectionFee = (qty) => {
   if (n <= 0) return "";
   return Math.round(n * INSPECTION_RMB_PER_UNIT * 100) / 100; // 소수 2자리까지 유지
 };
+
+/* 🏢 고객사명 입력 공용 컴포넌트 — 파이프라인 전 화면에서 업체관리 DB를 불러올 수 있게 한다.
+   화면마다 자동완성을 따로 만들면 규칙이 어긋나므로 이 하나만 쓴다.
+   · 부분 일치 + 초성 검색(matchClientQuery)
+   · 선택시 onPick(client)으로 담당자·clientId 등 부가 정보를 넘겨준다(원하는 화면만 받아 쓰면 됨)
+   · DB에 없는 신규 업체는 그대로 직접 입력 가능 */
+function ClientNameInput({ value, onChange, onPick, clients, disabled, placeholder, className, autoFocus }) {
+  const [open, setOpen] = useState(false);
+  const matches = useMemo(() => {
+    const list = (Array.isArray(clients) ? clients : []).filter(Boolean);
+    return list.filter((c) => matchClientQuery(c.name, value)).slice(0, 30);
+  }, [clients, value]);
+  const cls = className || "w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]";
+  return (
+    <div className="relative z-30">
+      <input
+        disabled={disabled}
+        autoFocus={autoFocus}
+        className={cls + (disabled ? " bg-slate-50 text-slate-500" : "")}
+        value={value || ""}
+        placeholder={placeholder || "업체명 입력 또는 검색 (초성 가능)"}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+      />
+      {!disabled && open && matches.length > 0 && (
+        <div className={DROPDOWN_CLS}>
+          {matches.map((c) => (
+            <button
+              key={c.id} type="button"
+              onMouseDown={(e) => e.preventDefault()} // blur보다 먼저 눌리도록
+              onClick={() => { onChange(c.name || ""); if (onPick) onPick(c); setOpen(false); }}
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0"
+            >
+              <div className="text-sm font-medium text-slate-700">{c.name}</div>
+              {(c.contact || c.ceoName) && (
+                <div className="text-[11px] text-slate-400">
+                  {[c.ceoName && `대표 ${c.ceoName}`, c.contact && `담당 ${c.contact}`].filter(Boolean).join(" · ")}
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const CATEGORIES = [
   "PE튜브(2겹)", "PE튜브(5겹)", "라미튜브", "드로퍼튜브", "기능성튜브",
@@ -2184,7 +2250,7 @@ function SettingsModal({ open, onClose, onSave, logistics, setLogistics, marginT
 
 /* ===================== 고객정보 입력 모달 ===================== */
 
-function ClientInfoModal({ open, mode, initial, itemCount, onClose, onSubmit }) {
+function ClientInfoModal({ open, mode, initial, itemCount, onClose, onSubmit, clients }) {
   const [clientName, setClientName] = useState(initial.clientName || "");
   const [contact, setContact] = useState(initial.contact || "");
   const [channel, setChannel] = useState(initial.channel || "카카오채널");
@@ -2206,7 +2272,7 @@ function ClientInfoModal({ open, mode, initial, itemCount, onClose, onSubmit }) 
         </div>
         <div className="p-6">
           <p className="text-xs text-slate-500 mb-4">현재 담긴 품목 <b className="text-slate-700">{itemCount}건</b>으로 제안서를 {mode === "save" ? "저장" : "생성"}합니다.</p>
-          <Field label="고객사명" hint="필수"><input className={inputCls} placeholder="예: 주식회사 닥터스칼프" value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
+          <Field label="고객사명" hint="필수"><ClientNameInput clients={clients} value={clientName} onChange={setClientName} onPick={(c) => { if (c.contact || c.ceoName) setContact(c.contact || c.ceoName); if (c.channel) setChannel(c.channel); }} className={inputCls} placeholder="예: 주식회사 닥터스칼프" /></Field>
           <Field label="담당자명"><input className={inputCls} placeholder="예: 홍길동" value={contact} onChange={(e) => setContact(e.target.value)} /></Field>
           <Field label="문의 채널">
             <select className={inputCls} value={channel} onChange={(e) => setChannel(e.target.value)}><option>카카오채널</option><option>이메일</option><option>전화</option></select>
@@ -4415,7 +4481,7 @@ function HistoryBadge({ record, compact }) {
   );
 }
 
-function ProposalEditStage({ draftItems, setDraftItems, removeDraftItem, clientInfo, setClientInfo, onBack, onSave, onPrint, readOnly, isEditingExisting, historyRecord, isAdmin }) {
+function ProposalEditStage({ draftItems, setDraftItems, removeDraftItem, clientInfo, setClientInfo, onBack, onSave, onPrint, readOnly, isEditingExisting, historyRecord, isAdmin, clientsList }) {
   const updateItem = (id, field, value) => {
     if (readOnly) return;
     setDraftItems((prev) => prev.map((it) => {
@@ -4450,7 +4516,23 @@ function ProposalEditStage({ draftItems, setDraftItems, removeDraftItem, clientI
           <input disabled={readOnly} className={inputCls + (readOnly ? " bg-slate-50 text-slate-500" : "")} value={clientInfo.proposalTitle} onChange={(e) => setClientInfo({ ...clientInfo, proposalTitle: e.target.value })} placeholder="제안서 제목을 입력해주세요" />
         </Field>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="고객사명" hint="필수"><input disabled={readOnly} className={inputCls + (readOnly ? " bg-slate-50 text-slate-500" : "")} value={clientInfo.clientName} onChange={(e) => setClientInfo({ ...clientInfo, clientName: e.target.value })} placeholder="예: 주식회사 닥터스칼프" /></Field>
+          {/* 고객사명 — 등록된 업체 자동완성(초성 검색 지원). DB에 없으면 그대로 직접 입력해도 된다. */}
+          <Field label="고객사명" hint="필수">
+            <ClientNameInput
+              clients={clientsList}
+              value={clientInfo.clientName}
+              disabled={readOnly}
+              className={inputCls}
+              onChange={(v) => setClientInfo({ ...clientInfo, clientName: v, clientId: "" })} // 직접 타이핑하면 기존 연결 해제
+              onPick={(c) => setClientInfo({
+                ...clientInfo,
+                clientName: c.name || "",
+                contact: c.contact || c.ceoName || "", // 담당자명이 비면 대표자명으로
+                channel: c.channel || clientInfo.channel,
+                clientId: c.id, // 고객 관리 이력 연동
+              })}
+            />
+          </Field>
           <Field label="담당자명"><input disabled={readOnly} className={inputCls + (readOnly ? " bg-slate-50 text-slate-500" : "")} value={clientInfo.contact} onChange={(e) => setClientInfo({ ...clientInfo, contact: e.target.value })} placeholder="예: 홍길동" /></Field>
           <Field label="문의 채널">
             <select disabled={readOnly} className={inputCls + (readOnly ? " bg-slate-50 text-slate-500" : "")} value={clientInfo.channel} onChange={(e) => setClientInfo({ ...clientInfo, channel: e.target.value })}><option>카카오채널</option><option>이메일</option><option>전화</option></select>
@@ -4889,8 +4971,6 @@ function InspectionMigratePreviewModal({ rows, summary, running, progress, onCan
 
 function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserName, onCancel, onCreate }) {
   const [clientName, setClientName] = useState("");
-  const [clientQuery, setClientQuery] = useState("");
-  const [showClientList, setShowClientList] = useState(false);
   const [contact, setContact] = useState("");
   const [channel, setChannel] = useState("카카오채널");
   const [employee, setEmployee] = useState(currentUserName || "");
@@ -4922,11 +5002,6 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
     return [...map.values()];
   }, [productsList, invoiceList]);
 
-  const clientMatches = useMemo(() => {
-    const q = clientQuery.trim().toLowerCase();
-    const list = (clientsList || []).filter(Boolean);
-    return (q ? list.filter((c) => (c.name || "").toLowerCase().includes(q)) : list).slice(0, 30);
-  }, [clientsList, clientQuery]);
 
   const pickerMatches = useMemo(() => {
     const q = pickerQuery.trim().toLowerCase();
@@ -4995,35 +5070,18 @@ function NewInvoiceModal({ clientsList, productsList, invoiceList, currentUserNa
           <div className="rounded-xl border border-slate-200 p-4 space-y-3">
             <div className="text-sm font-semibold text-slate-700">① 고객사 정보</div>
             <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="relative z-30">
+              <div>
                 <label className="block text-[11px] text-slate-500 mb-1">고객사명 <span className="text-rose-500">*</span></label>
-                <input
-                  className={inputCls} value={clientName}
-                  placeholder="업체명 입력 또는 검색"
-                  onChange={(e) => { setClientName(e.target.value); setClientQuery(e.target.value); setShowClientList(true); }}
-                  onFocus={() => setShowClientList(true)}
-                  onBlur={() => setTimeout(() => setShowClientList(false), 150)}
+                <ClientNameInput
+                  clients={clientsList}
+                  value={clientName}
+                  className={inputCls}
+                  onChange={setClientName}
+                  onPick={(c) => {
+                    setContact(c.contact || ""); // 업체에 저장된 담당자명
+                    setChannel(c.channel || "카카오채널");
+                  }}
                 />
-                {showClientList && clientMatches.length > 0 && (
-                  <div className={DROPDOWN_CLS}>
-                    {clientMatches.map((c) => (
-                      <button
-                        key={c.id} type="button"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          setClientName(c.name || "");
-                          setContact(c.contact || ""); // 업체에 저장된 담당자명
-                          setChannel(c.channel || "카카오채널");
-                          setShowClientList(false);
-                        }}
-                        className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0"
-                      >
-                        <div className="font-medium text-slate-700">{c.name}</div>
-                        {(c.contact || c.ceoName) && <div className="text-[11px] text-slate-400">{[c.ceoName && `대표 ${c.ceoName}`, c.contact && `담당 ${c.contact}`].filter(Boolean).join(" · ")}</div>}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
               <div>
                 <label className="block text-[11px] text-slate-500 mb-1">담당자명</label>
@@ -5408,7 +5466,7 @@ const CONTRACT_VALID_DAYS = 365;
       지정 저장시에도 isKeyClient를 함께 맞춰줘 다른 화면(주거래 정렬 등)이 깨지지 않게 한다. */
 const CLIENT_TIERS = [
   // cls = 배지용, onCls = 행 토글 버튼이 켜졌을 때(테두리 포함)
-  { key: "MAIN", label: "주거래", cls: "bg-amber-100 text-amber-800 font-bold", onCls: "bg-amber-100 text-amber-800 border-amber-300" },
+  { key: "MAIN", label: "주거래", cls: "bg-amber-100 text-amber-800 font-bold", onCls: "bg-amber-100 text-amber-800 border-amber-300 font-semibold" },
   { key: "CLIENT", label: "고객사", cls: "bg-blue-100 text-blue-800 font-bold", onCls: "bg-blue-100 text-blue-800 border-blue-300" },
   { key: "VIP", label: "대형사", cls: "bg-purple-100 text-purple-800 font-bold", onCls: "bg-purple-100 text-purple-800 border-purple-300" },
   { key: "RISK", label: "주의", cls: "bg-rose-100 text-rose-800 font-bold", onCls: "bg-rose-100 text-rose-800 border-rose-300" },
@@ -5764,7 +5822,13 @@ function ClientsView({ clients, proposals, onBack, onAdd, onUpdate, onDelete, on
                             e.stopPropagation();
                             const cur = getClientTags(c);
                             const next = on ? cur.filter((k) => k !== t.key) : [...cur, t.key];
-                            onUpdate(c.id, buildClientTagPatch(next));
+                            const patch = buildClientTagPatch(next);
+                            /* ⚠️ 이 카드는 같은 상호의 중복 업체를 하나로 묶은 "병합 카드"라
+                               c.id는 대표 1건만 가리킨다. 대표에만 저장하면 나머지 원본은 옛 태그를 유지해,
+                               탭을 바꿀 때(전체 ↔ 주거래) 같은 업체가 다른 상태로 보이게 된다.
+                               → _mergedIds에 담긴 원본 전부에 같은 태그를 저장해 단일 소스로 맞춘다. */
+                            const targetIds = (c._mergedIds && c._mergedIds.length > 0) ? c._mergedIds : [c.id];
+                            targetIds.forEach((id) => onUpdate(id, patch));
                           }}
                           title={on ? `${t.label} 태그 해제` : `${t.label} 태그 지정`}
                           className={"text-xs px-2 py-1 rounded-lg border font-semibold whitespace-nowrap transition " + (on ? t.onCls : "bg-white text-slate-400 border-slate-200 hover:bg-slate-50")}
@@ -7336,7 +7400,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
 }
 
 /* ===================== 업무 지시 & 소통방 ===================== */
-function TaskCreateModal({ accounts, currentUserName, onClose, onSave }) {
+function TaskCreateModal({ accounts, currentUserName, onClose, onSave, clients }) {
   const staffOptions = (accounts || []).filter((a) => a.role !== "admin");
   const [requestedBy, setRequestedBy] = useState(currentUserName || "백상선"); // 요청 직원명 — 기본값은 로그인한 사용자, 필요시 수정 가능
   const [clientName, setClientName] = useState("");
@@ -7384,7 +7448,7 @@ function TaskCreateModal({ accounts, currentUserName, onClose, onSave }) {
               {(accounts || []).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
             </select>
           </Field>
-          <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: 비저블유스" /></Field>
+          <Field label="고객사명"><ClientNameInput clients={clients} value={clientName} onChange={setClientName} className={inputCls} placeholder="예: 비저블유스" /></Field>
           <Field label="담당 직원">
             <select className={inputCls} value={assignee} onChange={(e) => setAssignee(e.target.value)}>
               {staffOptions.length === 0 && <option value="">등록된 직원 계정이 없습니다</option>}
@@ -7594,7 +7658,7 @@ function TaskCard({ task, isAdmin, currentUserName, accounts, proposals, onUpdat
   );
 }
 
-function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserName, onBack, onCreate, onUpdate, onAddComment, onLinkProposal, onDelete }) {
+function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserName, onBack, onCreate, onUpdate, onAddComment, onLinkProposal, onDelete, clients }) {
   const [showCreate, setShowCreate] = useState(false);
   const [filter, setFilter] = useState("전체"); // 전체 | 요청 | 진행중 | 완료
   const [page, setPage] = useState(1);
@@ -7660,7 +7724,7 @@ function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserNa
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
 
-      {showCreate && <TaskCreateModal accounts={accounts} currentUserName={currentUserName} onClose={() => setShowCreate(false)} onSave={onCreate} />}
+      {showCreate && <TaskCreateModal clients={clients} accounts={accounts} currentUserName={currentUserName} onClose={() => setShowCreate(false)} onSave={onCreate} />}
       {detailTask && (
         <SampleDetailModal onClose={() => setDetailTask(null)}>
           <TaskCard task={detailTask} isAdmin={isAdmin} currentUserName={currentUserName} accounts={accounts} proposals={proposals}
@@ -7990,7 +8054,7 @@ function StockPickerModal({ stock, productName, onClose, onPick }) {
   );
 }
 
-function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId, presetData, onClose, onSave }) {
+function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId, presetData, onClose, onSave, clients }) {
   const preset = presetData || {};
   const assigneeOptions = accounts || [];
   const [sampleType, setSampleType] = useState(preset.sampleType || "general"); // "general"(1차 일반확인) | "ct"(2차 CT맞춤제작)
@@ -8108,7 +8172,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
               {(proposals || []).slice(0, 200).map((p) => <option key={p.id} value={p.id}>{proposalOptionLabel(p)}</option>)}
             </select>
           </Field>
-          <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
+          <Field label="고객사명"><ClientNameInput clients={clients} value={clientName} onChange={setClientName} className={inputCls} /></Field>
           <Field label="요청 제품">
             {itemOptions.length > 0 ? (
               <select className={inputCls} value={productName} onChange={(e) => { setProductName(e.target.value); setProductImage(itemImageMap[e.target.value] || ""); }}>
@@ -8293,7 +8357,7 @@ function SampleApprovalSendModal({ sample, kind, qty, grandTotal, supplyTotal, e
   );
 }
 
-function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onUpdate, onClose, readOnly, publicView }) {
+function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onUpdate, onClose, readOnly, publicView, clients }) {
   /* publicView = 고객용 승인 페이지에서 띄운 경우. 모달 오버레이·관리자 툴바·좌측 편집폼을 전부 걷어내고
      A4 인보이스 용지만 단독으로 렌더링한다(고객에게 편집 UI가 노출되면 안 되기 때문). */
   const fees = shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
@@ -8470,7 +8534,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
                 </div>
               )}
             </Field>
-            <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
+            <Field label="고객사명"><ClientNameInput clients={clients} value={clientName} onChange={setClientName} className={inputCls} /></Field>
             <Field label="작성일자"><input type="date" className={inputCls} value={writeDate} onChange={(e) => setWriteDate(e.target.value)} /></Field>
             <Field label="제품명"><input className={inputCls} value={productName} onChange={(e) => setProductName(e.target.value)} /></Field>
             <Field label="📷 제품 사진 (선택 시 실물 사진으로 교체)">
@@ -8635,7 +8699,7 @@ function buildCtSpecText(s) {
   return parts.join("\n");
 }
 
-function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpdate, onClose, readOnly, publicView }) {
+function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpdate, onClose, readOnly, publicView, clients }) {
   // publicView: 고객용 승인 페이지 전용 — 오버레이/툴바/좌측 편집폼 없이 A4 용지만 단독 렌더링
 
   const matchedProduct = (products || []).find((p) => p.name === sample.productName);
@@ -8770,7 +8834,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
           {!publicView && (
           <fieldset disabled={readOnly} className="p-5 border-r border-slate-200 overflow-y-auto max-h-[calc(100vh-120px)] pr-2 no-print" style={{ minHeight: 0 }}>
             <div className="text-sm font-bold text-slate-800 mb-3">🧪 CT 샘플 인보이스 입력</div>
-            <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} /></Field>
+            <Field label="고객사명"><ClientNameInput clients={clients} value={clientName} onChange={setClientName} className={inputCls} /></Field>
             <Field label="작성일자"><input type="date" className={inputCls} value={writeDate} onChange={(e) => changeWriteDate(e.target.value)} /></Field>
             <Field label="예상 제작완료일자" hint="작성일자 +15일이 기본값입니다">
               <input type="date" className={inputCls} value={completionDate} onChange={(e) => { setCompletionDate(e.target.value); setCompletionTouched(true); }} />
@@ -8935,7 +8999,7 @@ function ShippingFeeSettingsModal({ shippingFees, shippingFeeNotes, onSave, onCl
   );
 }
 
-function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete, onAddMemo, onDeleteMemo }) {
+function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onUpdate, onDelete, onAddMemo, onDeleteMemo, clients }) {
   const [showInvoice, setShowInvoice] = useState(false);
   const [showAnnounce, setShowAnnounce] = useState(false);
 
@@ -9143,9 +9207,9 @@ function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecr
       {showAnnounce && <SampleAnnounceModal shippingFees={fees} onClose={() => setShowAnnounce(false)} />}
       {showInvoice && (
         getSampleType(sample) === "ct" ? (
-          <CtSampleInvoiceModal sample={sample} products={products} proposals={proposals} supplierLogo={supplierLogo} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />
+          <CtSampleInvoiceModal clients={clients} sample={sample} products={products} proposals={proposals} supplierLogo={supplierLogo} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />
         ) : (
-          <SampleInvoiceModal sample={sample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={fees} shippingFeeNotes={shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />
+          <SampleInvoiceModal clients={clients} sample={sample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={fees} shippingFeeNotes={shippingFeeNotes || DEFAULT_SAMPLE_SHIPPING_FEE_NOTES} onUpdate={onUpdate} onClose={() => setShowInvoice(false)} />
         )
       )}
 
@@ -9274,7 +9338,7 @@ function SampleDetailModal({ onClose, children }) {
   );
 }
 
-function SampleStageView({ samples, accounts, proposals, products, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onSaveStockEdits, onDeleteStock, onAddMemo, onDeleteMemo, initialProposalId, onConsumeInitialProposal, onBack }) {
+function SampleStageView({ samples, accounts, proposals, products, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onSaveStockEdits, onDeleteStock, onAddMemo, onDeleteMemo, initialProposalId, onConsumeInitialProposal, onBack , clients}) {
   const [showCreate, setShowCreate] = useState(false);
   const [pendingProposalId, setPendingProposalId] = useState(null); // "🧪 샘플요청 등록"으로 넘어온 제안서 id를 등록모달에 넘겨주기 위한 로컬 보관
   // "🧪 샘플요청 등록"으로 특정(발송완료된) 제안서에서 넘어온 경우, 등록모달을 자동으로 열어준다.
@@ -9461,7 +9525,7 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
 
-      {showCreate && <SampleCreateModal accounts={accounts} proposals={proposals} sampleStock={sampleStock} initialProposalId={pendingProposalId} presetData={ctPreset} onClose={() => { setShowCreate(false); setPendingProposalId(null); setCtPreset(null); }} onSave={handleCreateSample} />}
+      {showCreate && <SampleCreateModal clients={clients} accounts={accounts} proposals={proposals} sampleStock={sampleStock} initialProposalId={pendingProposalId} presetData={ctPreset} onClose={() => { setShowCreate(false); setPendingProposalId(null); setCtPreset(null); }} onSave={handleCreateSample} />}
       {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onSaveEdits={onSaveStockEdits} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
       {showFeeSettings && (
         <ShippingFeeSettingsModal
@@ -9473,14 +9537,14 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
       )}
       {invoiceSample && (
         getSampleType(invoiceSample) === "ct" ? (
-          <CtSampleInvoiceModal readOnly={invoiceViewMode === "view"} sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
+          <CtSampleInvoiceModal clients={clients} readOnly={invoiceViewMode === "view"} sample={invoiceSample} products={products} proposals={proposals} supplierLogo={supplierLogo} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
         ) : (
-          <SampleInvoiceModal readOnly={invoiceViewMode === "view"} sample={invoiceSample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
+          <SampleInvoiceModal clients={clients} readOnly={invoiceViewMode === "view"} sample={invoiceSample} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onUpdate={onUpdate} onClose={() => setInvoiceSampleId(null)} />
         )
       )}
       {detailSample && (
         <SampleDetailModal onClose={() => setDetailSample(null)}>
-          <SampleCard sample={detailSample} accounts={accounts} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={(s) => { onDelete(s); setDetailSample(null); }} onAddMemo={onAddMemo} onDeleteMemo={onDeleteMemo} />
+          <SampleCard clients={clients} sample={detailSample} accounts={accounts} products={products} proposals={proposals} sampleStock={sampleStock} onDecrementStock={onDecrementStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={onSaveShippingFees} currentUserName={currentUserName} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={(s) => { onDelete(s); setDetailSample(null); }} onAddMemo={onAddMemo} onDeleteMemo={onDeleteMemo} />
         </SampleDetailModal>
       )}
     </main>
@@ -9690,7 +9754,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   }, [category, quantity, cbm, customsRate, rmbBase, rmbBox, rmbInspect, rmbShip, marginTable, logistics, exRate, marginOverride, clientsList, difficultyMargins, marginClientName, finishingOptions, selectedFinishingIds, selectedFinishingQty, finishingApplyMode]);
 
   const [draftItems, setDraftItems] = useState([]);
-  const [clientInfo, setClientInfo] = useState(() => ({ clientName: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" }));
+  const [clientInfo, setClientInfo] = useState(() => ({ clientName: "", clientId: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" }));
   const [proposalList, setProposalList] = useState([]);
   const [invoiceList, setInvoiceList] = useState([]); // INVOICE(인보이스) 발행 목록 — 제안서에서 파생, proposalId로 연결
   const [factoriesList, setFactoriesList] = useState([]);
@@ -9925,7 +9989,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const startNewProposal = () => {
     setDraftItems([]);
     setPendingQueue([]);
-    setClientInfo({ clientName: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" });
+    setClientInfo({ clientName: "", clientId: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" });
     setEditingItemId(null);
     resetItemForm();
     setEditingProposalId(null);
@@ -11647,7 +11711,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         </div>
       )}
 
-      <ClientInfoModal open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
+      <ClientInfoModal clients={clientsList} open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
         onClose={() => setClientModal({ open: false, mode: clientModal.mode })} onSubmit={handleClientSubmit} />
       <PdfPreview
         open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo}
@@ -11855,7 +11919,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onCreateInvoice={openInvoiceEditor}
           onView={(p) => {
             setDraftItems((p.items || []).map((it) => ({ ...it, id: it.id && typeof it.id !== "string" ? it.id : Date.now() + Math.random() })));
-            setClientInfo({ clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
+            setClientInfo({ clientName: p.clientName || "", clientId: p.clientId || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
             setEditingItemId(null);
             setProposalReadOnly(true);
             setEditingProposalId(typeof p.id === "string" ? p.id : null);
@@ -11869,7 +11933,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onLoad={(p) => {
             // 직원도 승인완료/발송완료 제안서를 자유롭게 수정할 수 있도록 잠금 가드를 제거함(요청에 따름)
             setDraftItems((p.items || []).map((it) => ({ ...it, id: it.id && typeof it.id !== "string" ? it.id : Date.now() + Math.random() })));
-            setClientInfo({ clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
+            setClientInfo({ clientName: p.clientName || "", clientId: p.clientId || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
             setEditingItemId(null);
             setProposalReadOnly(false);
             setEditingProposalId(typeof p.id === "string" ? p.id : null);
@@ -11882,7 +11946,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           }}
           onCopy={(p) => {
             setDraftItems((p.items || []).map((it) => ({ ...it, id: Date.now() + Math.random() })));
-            setClientInfo({ clientName: p.clientName || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: (p.proposalTitle || "") + " (복사본)" });
+            setClientInfo({ clientName: p.clientName || "", clientId: p.clientId || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: (p.proposalTitle || "") + " (복사본)" });
             setProposalReadOnly(false);
             setEditingProposalId(null);
             setEditingProposalHistory(null);
@@ -11939,6 +12003,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
       {view === "sampleInvoices" && (
         <SampleStageView
+          clients={clientsList}
           samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} onDecrementStock={decrementSampleStock} supplierLogo={supplierLogo}
           shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
@@ -11961,6 +12026,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
       {view === "tasks" && (
         <TaskAssignmentView
+          clients={clientsList}
           tasks={taskList} accounts={accounts} proposals={proposalList} isAdmin={isAdmin}
           currentUserName={(roleUser && roleUser.displayName) || ""}
           onBack={() => setView("pipeline")}
@@ -12516,6 +12582,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <ProposalEditStage
           draftItems={draftItems} setDraftItems={setDraftItems} removeDraftItem={removeDraftItem}
           clientInfo={clientInfo} setClientInfo={setClientInfo}
+          clientsList={clientsList}
           supplierLogo={supplierLogo} isAdmin={isAdmin}
           readOnly={proposalReadOnly} isEditingExisting={!!editingProposalId} historyRecord={editingProposalHistory}
           onBack={() => setActiveStep(2)}
@@ -12537,7 +12604,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               //    다만 patch에는 이 폼이 실제로 들고 있는 값만 담는다 — greeting/terms/supplier는
               //    미리보기에서만 편집하는 값이라 여기서 넘기면 undefined로 덮어써 문구가 날아간다.
               const patch = {
-                clientName: clientInfo.clientName, contact: clientInfo.contact, channel: clientInfo.channel, employee: clientInfo.employee,
+                clientName: clientInfo.clientName, clientId: clientInfo.clientId || "", contact: clientInfo.contact, channel: clientInfo.channel, employee: clientInfo.employee,
                 proposalTitle, itemSummary, totalAmount, totalCbm, items: draftItems,
                 reviewStatus: nextReviewStatus,
               };
@@ -12559,7 +12626,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             const code = `PROP-${todayStr()}-${String(proposalList.length + 1).padStart(3, "0")}`;
             const record = {
               code, status: "견적제출", reviewStatus: nextReviewStatus, createdAt: nowDateTimeStr(), createdBy: actorName,
-              clientName: clientInfo.clientName, contact: clientInfo.contact, channel: clientInfo.channel, employee: clientInfo.employee,
+              clientName: clientInfo.clientName, clientId: clientInfo.clientId || "", contact: clientInfo.contact, channel: clientInfo.channel, employee: clientInfo.employee,
               proposalTitle, itemSummary, totalAmount, totalCbm,
               items: draftItems, validUntil: addDays(30),
             };
@@ -12573,7 +12640,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               setToast("Firestore 저장 중 오류가 발생했습니다. (로컬에는 반영됨)");
             }
             setDraftItems([]);
-            setClientInfo({ clientName: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" });
+            setClientInfo({ clientName: "", clientId: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" });
           }}
           onPrint={() => {
             if (draftItems.length === 0) { setToast("먼저 품목을 추가해주세요."); return; }
@@ -12590,7 +12657,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
 
       {view === "pipeline" && activeStep === 4 && (
-        <SampleStageView samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} onDecrementStock={decrementSampleStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
+        <SampleStageView clients={clientsList} samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} onDecrementStock={decrementSampleStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
           onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onSaveStockEdits={saveSampleStockEdits} onDeleteStock={deleteSampleStock}
           initialProposalId={sampleInitProposalId} onConsumeInitialProposal={() => setSampleInitProposalId(null)} />
