@@ -974,6 +974,20 @@ const DIFFICULTY_BADGE_STYLE = {
   "고난도": "bg-red-100 text-red-700 border border-red-300",          // Red
 };
 
+/* 검품비용 기준 — 개당 위안화 단가 하나로 전 구간을 계산한다.
+   기존엔 5,000개=270 / 10,000개=540만 하드코딩돼 있어 그 외 수량은 자동 산출이 안 됐다.
+   개당 단가 방식이라 어떤 수량이든 일관되게 나온다:
+     5,000 → ¥135  /  10,000 → ¥270  /  20,000 → ¥540  /  30,000 → ¥810
+   단가를 바꿀 일이 생기면 이 상수 한 줄만 고치면 전 구간·전 단계에 반영된다. */
+const INSPECTION_RMB_PER_UNIT = 0.027;
+const INSPECTION_FEE_HINT = `개당 ¥${INSPECTION_RMB_PER_UNIT} (5천개 ¥${(5000 * INSPECTION_RMB_PER_UNIT).toLocaleString()} / 1만개 ¥${(10000 * INSPECTION_RMB_PER_UNIT).toLocaleString()})`;
+// 주문수량으로 검품비용 총액(RMB)을 산출. 수량이 없거나 0이면 빈 값(직접 입력용)
+const getInspectionFee = (qty) => {
+  const n = Number(qty) || 0;
+  if (n <= 0) return "";
+  return Math.round(n * INSPECTION_RMB_PER_UNIT * 100) / 100; // 소수 2자리까지 유지
+};
+
 const CATEGORIES = [
   "PE튜브(2겹)", "PE튜브(5겹)", "라미튜브", "드로퍼튜브", "기능성튜브",
   "유리용기", "아크릴용기", "PS용기", "PP용기", "PET용기", "PETG용기", "PE용기",
@@ -3958,6 +3972,8 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
   const [quantity, setQuantity] = useState("");
   const [totalShippingRmb, setTotalShippingRmb] = useState("");
   const [inspectionRmb, setInspectionRmb] = useState(""); // 검품비용(RMB) 총액 — "기존 데이터에서 선택" 팝업 및 2단계 제안가계산으로 자동 연동됨
+  // 사용자가 검품비용을 직접 고쳤는지 여부. 직접 고친 뒤에는 수량이 바뀌어도 자동 산출로 덮어쓰지 않는다.
+  const [inspectionTouched, setInspectionTouched] = useState(false);
   const [factory, setFactory] = useState("");
   const [factoryContact, setFactoryContact] = useState("");
   const [wechatGroup, setWechatGroup] = useState("");
@@ -4001,7 +4017,7 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
     if (row.qty) setQuantity(row.qty);
     if (row.rmbCost) setRmbCost(row.rmbCost);
     if (row.shippingRmb) setTotalShippingRmb(row.shippingRmb);
-    if (row.inspectionRmb) setInspectionRmb(row.inspectionRmb);
+    if (row.inspectionRmb) { setInspectionRmb(row.inspectionRmb); setInspectionTouched(true); } // 제품DB에 저장된 값이 우선
     if (row.cbm) setSpec((prev) => (prev ? prev + `\n예상 CBM: ${row.cbm}` : `예상 CBM: ${row.cbm}`));
     setShowRmbPicker(false);
   };
@@ -4032,6 +4048,13 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
 
   const unitShippingPreview = Number(quantity) > 0 ? Number(totalShippingRmb || 0) / Number(quantity) : 0;
   const unitInspectionPreview = Number(quantity) > 0 ? Number(inspectionRmb || 0) / Number(quantity) : 0;
+  /* 주문수량을 입력하면 검품비용 총액을 개당 단가로 자동 채운다.
+     단, 사용자가 직접 고친 뒤에는(inspectionTouched) 덮어쓰지 않는다 — 공장별 예외 단가를 지키기 위함. */
+  useEffect(() => {
+    if (inspectionTouched) return;
+    const auto = getInspectionFee(quantity);
+    setInspectionRmb(auto === "" ? "" : String(auto));
+  }, [quantity, inspectionTouched]);
 
   const submit = () => {
     if (!name.trim() || !rmbCost) return;
@@ -4164,8 +4187,10 @@ function SourcingStage({ items, onAdd, onUpdateItem, onDeleteItem, onSend, onSen
             <Field label="중국 내 운송료" hint={`총 RMB · 개당 자동환산 ${unitShippingPreview ? rmb(unitShippingPreview) + "/개" : ""}`}>
               <input type="number" className={inputCls} value={totalShippingRmb} onChange={(e) => setTotalShippingRmb(e.target.value)} placeholder="예: 200 (총액, RMB)" />
             </Field>
-            <Field label="검품비용" hint={`총 RMB · 개당 자동환산 ${unitInspectionPreview ? rmb(unitInspectionPreview) + "/개" : ""}`}>
-              <input type="number" className={inputCls} value={inspectionRmb} onChange={(e) => setInspectionRmb(e.target.value)} placeholder="예: 200 (총액, RMB)" />
+            <Field label="검품비용 총액(RMB)" hint={`${INSPECTION_FEE_HINT}${unitInspectionPreview ? ` · 현재 개당 ${rmb(unitInspectionPreview)}/개` : ""}`}>
+              <input type="number" className={inputCls} value={inspectionRmb}
+                onChange={(e) => { setInspectionRmb(e.target.value); setInspectionTouched(true); }}
+                placeholder={`수량 입력시 자동 (예: ${getInspectionFee(5000)})`} />
             </Field>
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -6241,12 +6266,8 @@ function PriceTierTable({ tiers, onChange }) {
     const next = tiers.map((t, i) => {
       if (i !== idx) return t;
       const patched = { ...t, [field]: value };
-      // 기준수량이 5,000개/10,000개면 검품비용을 정해진 금액(270/540)으로 자동완성 — 그 외 수량은 사용자가 직접 입력하도록 비워둔다.
-      if (field === "qty") {
-        const qtyNum = Number(value);
-        if (qtyNum === 5000) patched.inspectionRmb = 270;
-        else if (qtyNum === 10000) patched.inspectionRmb = 540;
-      }
+      // 기준수량을 입력하면 검품비용을 개당 단가로 자동 산출한다(5천/1만 같은 특정 구간에 한정하지 않음)
+      if (field === "qty") patched.inspectionRmb = getInspectionFee(value);
       return patched;
     });
     onChange(next);
@@ -6259,6 +6280,7 @@ function PriceTierTable({ tiers, onChange }) {
       <div className="grid grid-cols-6 gap-2 text-xs font-medium text-slate-500 mb-1.5 px-1">
         <div>기준수량 (개)</div><div>제품예상부피 CBM</div><div>중국내운송료 RMB</div><div>검품비용 RMB(총액)</div><div>공장단가 RMB</div><div></div>
       </div>
+      <p className="text-[11px] text-slate-400 mb-2 px-1">※ 기준수량을 입력하면 검품비용이 {INSPECTION_FEE_HINT} 기준으로 자동 계산됩니다. 공장별 예외 단가는 직접 수정하세요.</p>
       <div className="space-y-2">
         {tiers.map((t, i) => (
           <div key={i} className="grid grid-cols-6 gap-2 items-center">
@@ -10839,19 +10861,16 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   // 🗜️ 제품 사진 일괄 압축 — Firestore에 사진이 base64로 직접 박혀있는 구조라, 오래되거나 용량이 큰 사진을 다시 압축해서
   // 문서 크기 자체를 줄여준다(별도 Storage 이전 없이도 목록 불러오는 속도를 체감상 개선하는 실용적 방법).
   const [bulkCompressProgress, setBulkCompressProgress] = useState(null); // {done,total} — 진행중일 때만 값이 있음
-  // 🧾 전체 제품 DB 검품비용 일괄 정리 — 수량 5,000개 구간은 270원, 10,000개 구간은 540원으로 통일하고,
-  // 그 외 수량 구간은 임의로 계산해 채우지 않고 비워서(직접 입력 필요) 사용자가 정확한 값을 입력하게 한다.
+  // 🧾 전체 제품 DB 검품비용 일괄 정리 — 모든 수량 구간을 개당 단가(INSPECTION_RMB_PER_UNIT) 기준으로 다시 계산해 통일한다.
+  // 예전엔 5,000/10,000개만 고정값으로 채우고 나머지는 비웠으나, 이제 어떤 수량이든 일관되게 산출된다.
   const bulkMigrateInspectionFees = async () => {
     const targets = productsList.filter((p) => p.priceTiers && p.priceTiers.length > 0);
     if (targets.length === 0) { setToast("수량 구간 데이터가 있는 제품이 없습니다."); return; }
-    if (!window.confirm(`전체 제품 ${targets.length}건의 수량별 검품비용을 아래 기준으로 정리합니다.\n\n· 5,000개 구간 → 270원\n· 10,000개 구간 → 540원\n· 그 외 수량 구간 → 값을 비웁니다(직접 입력 필요)\n\n계속할까요?`)) return;
+    if (!window.confirm(`전체 제품 ${targets.length}건의 수량별 검품비용을 아래 기준으로 다시 계산합니다.\n\n· 기준: ${INSPECTION_FEE_HINT}\n· 5,000개 → ¥${getInspectionFee(5000)}\n· 10,000개 → ¥${getInspectionFee(10000)}\n· 20,000개 → ¥${getInspectionFee(20000)}\n· 그 외 수량도 같은 개당 단가로 자동 계산됩니다\n\n계속할까요?`)) return;
     for (const p of targets) {
       const nextTiers = p.priceTiers.map((t) => {
         const qtyNum = Number(t.qty);
-        let inspectionRmb = "";
-        if (qtyNum === 5000) inspectionRmb = 270;
-        else if (qtyNum === 10000) inspectionRmb = 540;
-        return { ...t, inspectionRmb };
+        return { ...t, inspectionRmb: getInspectionFee(qtyNum) };
       });
       setProductsList((prev) => prev.map((x) => (x.id === p.id ? { ...x, priceTiers: nextTiers } : x)));
       try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsUpdate(COLLECTIONS.products, p.id, { priceTiers: nextTiers }); } catch (e) { console.error(e); }
@@ -11077,11 +11096,13 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
        제안서를 열면 제품명·수량이 세팅되면서 이 effect가 발동해 복원해 둔 검품비를 덮어썼고,
        그 결과 원가가 달라져 제안가가 저장값이 아닌 추천가로 바뀌던 것이 이 버그의 원인이었다. */
     if (editingItemId) return;
-    const matchedProduct = productsList.find((p) => p.name === productName);
-    const tiers = matchedProduct && matchedProduct.priceTiers;
-    if (!tiers || tiers.length === 0) return;
     const qtyNum = Number(quantity) || 0;
     if (qtyNum <= 0) return;
+    const matchedProduct = productsList.find((p) => p.name === productName);
+    const tiers = matchedProduct && matchedProduct.priceTiers;
+    /* 제품DB에 등록된 구간이 없으면 개당 단가로 산출한다 —
+       예전엔 여기서 그냥 return이라 신규 제품은 검품비가 0인 채로 원가가 잡혔다. */
+    if (!tiers || tiers.length === 0) { setRmbInspect(Number(getInspectionFee(qtyNum)) || 0); return; }
     let best = tiers.find((t) => Number(t.qty) === qtyNum);
     if (!best) {
       best = tiers.reduce((closest, t) => {
@@ -11093,6 +11114,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     }
     if (best && best.inspectionRmb !== undefined && best.inspectionRmb !== "") {
       setRmbInspect(Number(best.inspectionRmb) || 0);
+    } else {
+      setRmbInspect(Number(getInspectionFee(qtyNum)) || 0); // 구간에 값이 비어있으면 개당 단가로 계산
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productName, quantity, productsList, editingItemId]);
@@ -11773,7 +11796,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="공장원가" hint="RMB/개 (단가 그대로)"><input type="number" disabled={costLocked} className={inputCls + (costLocked ? " bg-slate-50 text-slate-400 cursor-not-allowed" : "")} value={rmbBase} onChange={(e) => setRmbBase(e.target.value)} /></Field>
                   <Field label="박스비용" hint={`총액(RMB) · 개당 ${rmb(calc.boxPerUnit)}`}><input type="number" className={inputCls} value={rmbBox} onChange={(e) => setRmbBox(e.target.value)} /></Field>
-                  <Field label="검품비용" hint={`총액(RMB) · 개당 ${rmb(calc.inspectPerUnit)}`}><input type="number" className={inputCls} value={rmbInspect} onChange={(e) => setRmbInspect(e.target.value)} /></Field>
+                  <Field label="검품비용 총액(RMB)" hint={`${INSPECTION_FEE_HINT} · 현재 개당 ${rmb(calc.inspectPerUnit)}`}><input type="number" className={inputCls} value={rmbInspect} onChange={(e) => setRmbInspect(e.target.value)} /></Field>
                   <Field label="중국내 운송료" hint={`총액(RMB) · 개당 ${rmb(calc.shipPerUnit)}`}><input type="number" disabled={costLocked} className={inputCls + (costLocked ? " bg-slate-50 text-slate-400 cursor-not-allowed" : "")} value={rmbShip} onChange={(e) => setRmbShip(e.target.value)} /></Field>
                 </div>
                 <div className="mt-3 pt-3 border-t border-dashed border-slate-200 text-xs text-slate-500 flex justify-between"><span>상품대금 합계 (RMB/개)</span><span className="font-semibold text-slate-700">{rmb(calc.unitRmb)}</span></div>
