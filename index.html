@@ -9390,28 +9390,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [rmbBox, setRmbBox] = useState(0);
   const [rmbInspect, setRmbInspect] = useState(0);
   const [rmbShip, setRmbShip] = useState(0);
-  // "③ 위안화 원가 입력" 자동연동 — 제품명·주문수량이 바뀌면 제품DB에 등록된 수량별 스펙(priceTiers)에서
-  // 지금 수량과 가장 가까운(또는 정확히 일치하는) 구간의 검품비용 총액(RMB)을 찾아 자동으로 채워넣는다.
-  useEffect(() => {
-    const matchedProduct = productsList.find((p) => p.name === productName);
-    const tiers = matchedProduct && matchedProduct.priceTiers;
-    if (!tiers || tiers.length === 0) return;
-    const qtyNum = Number(quantity) || 0;
-    if (qtyNum <= 0) return;
-    let best = tiers.find((t) => Number(t.qty) === qtyNum);
-    if (!best) {
-      best = tiers.reduce((closest, t) => {
-        if (!t.qty) return closest;
-        const diff = Math.abs(Number(t.qty) - qtyNum);
-        const closestDiff = closest ? Math.abs(Number(closest.qty) - qtyNum) : Infinity;
-        return diff < closestDiff ? t : closest;
-      }, null);
-    }
-    if (best && best.inspectionRmb !== undefined && best.inspectionRmb !== "") {
-      setRmbInspect(Number(best.inspectionRmb) || 0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productName, quantity, productsList]);
+  /* 사용자가 확정한 제안가(개당). null이면 원가 계산기 추천가를 그대로 쓴다.
+     ⚠️ 값이 들어있으면 마진율·환율·검품비가 바뀌어도 이 단가를 유지한다 —
+        저장해 둔 확정 단가가 재계산으로 날아가던 버그(제안서를 다시 열면 추천가로 되돌아감)를 막기 위함. */
+  const [manualUnitPrice, setManualUnitPrice] = useState(null);
   const [selectedFinishingIds, setSelectedFinishingIds] = useState([]); // "④ 후가공 선택"에서 체크된 항목 id들(가격반영모드)
   const [selectedFinishingQty, setSelectedFinishingQty] = useState({}); // { [후가공id]: 선택된 수량/도수 } — 가변형 항목에서만 의미있음
   const [guideSelectedIds, setGuideSelectedIds] = useState([]); // "미선택/별도안내" 모드에서 체크된 후가공id들
@@ -9660,6 +9642,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setExtraOptions([]);
     setSelectedFinishingIds([]); setSelectedFinishingQty({}); setGuideSelectedIds([]); setGuideTexts({}); setFinishingApplyMode("apply");
     setMarginOverride(null);
+    setManualUnitPrice(null); // 신규 작성은 다시 계산기 추천가를 따른다
   };
 
   // 1→2단계 데이터 연동 (단건)
@@ -9674,6 +9657,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setCategory(sourcingItem.category || CATEGORIES[0]); // 불러온 제품의 카테고리를 그대로 반영 — category state가 바뀌면 관세율/마진율/후가공목록이 전부 자동으로 다시 계산됨
     setQuantity(sourcingItem.quantity || 3000);
     setRmbBase(sourcingItem.rmbCost || 0);
+    setManualUnitPrice(null); // 1단계에서 새로 넘어온 건이므로 추천가 기준
     setRmbBox(0); setRmbInspect(sourcingItem.inspectionRmb || 0);
     setRmbShip(Number((sourcingItem.totalShippingRmb || 0).toFixed(4)));
     setItemFactory(sourcingItem.factory || "");
@@ -11086,12 +11070,42 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   };
 
   const [editingItemId, setEditingItemId] = useState(null);
+  // "③ 위안화 원가 입력" 자동연동 — 제품명·주문수량이 바뀌면 제품DB에 등록된 수량별 스펙(priceTiers)에서
+  // 지금 수량과 가장 가까운(또는 정확히 일치하는) 구간의 검품비용 총액(RMB)을 찾아 자동으로 채워넣는다.
+  useEffect(() => {
+    /* ⚠️ 기존 품목을 불러와 편집 중일 때는 자동 채움을 하지 않는다.
+       제안서를 열면 제품명·수량이 세팅되면서 이 effect가 발동해 복원해 둔 검품비를 덮어썼고,
+       그 결과 원가가 달라져 제안가가 저장값이 아닌 추천가로 바뀌던 것이 이 버그의 원인이었다. */
+    if (editingItemId) return;
+    const matchedProduct = productsList.find((p) => p.name === productName);
+    const tiers = matchedProduct && matchedProduct.priceTiers;
+    if (!tiers || tiers.length === 0) return;
+    const qtyNum = Number(quantity) || 0;
+    if (qtyNum <= 0) return;
+    let best = tiers.find((t) => Number(t.qty) === qtyNum);
+    if (!best) {
+      best = tiers.reduce((closest, t) => {
+        if (!t.qty) return closest;
+        const diff = Math.abs(Number(t.qty) - qtyNum);
+        const closestDiff = closest ? Math.abs(Number(closest.qty) - qtyNum) : Infinity;
+        return diff < closestDiff ? t : closest;
+      }, null);
+    }
+    if (best && best.inspectionRmb !== undefined && best.inspectionRmb !== "") {
+      setRmbInspect(Number(best.inspectionRmb) || 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productName, quantity, productsList, editingItemId]);
   const [proposalReadOnly, setProposalReadOnly] = useState(false);
   const [editingProposalId, setEditingProposalId] = useState(null);
   const [editingProposalHistory, setEditingProposalHistory] = useState(null);
 
   const loadDraftItemForEdit = (item) => {
     setEditingItemId(item.id);
+    /* ⭐ 저장돼 있던 확정 단가를 최우선으로 복원한다 — 원가 계산기로 다시 계산해 덮어쓰지 않는다.
+       isCustomPrice가 없는 옛 저장건도 unitPrice가 있으면 그 값을 확정가로 본다
+       (그래야 마진표·환율이 바뀌어도 당시 제안가가 그대로 유지된다). */
+    setManualUnitPrice(item.unitPrice != null && item.unitPrice !== "" ? Number(item.unitPrice) || 0 : null);
     setProductImage(item.image || "");
     setProductName(item.productName || "");
     setSpecSize(item.specSize || "");
@@ -11150,10 +11164,16 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       totalProfit: calc.totalProfit, totalRmbPayment: calc.totalRmbPayment,
       exRateSnapshot: { ...exRate },
     };
+    /* 확정 단가가 있으면 그 값으로 저장한다(계산기 추천가로 덮어쓰지 않음).
+       isCustomPrice 플래그를 함께 남겨, 다음에 이 품목을 불러올 때도 확정 단가를 그대로 복원한다. */
+    const finalUnitPrice = manualUnitPrice != null ? Number(manualUnitPrice) || 0 : calc.proposedPrice;
     const item = {
       image: productImage, productName, specSize, material, category,
       factory: itemFactory, wechatGroup: itemWechatGroup,
-      quantity: Number(quantity) || 0, unitPrice: calc.proposedPrice, totalPrice: calc.totalProposal,
+      quantity: Number(quantity) || 0,
+      unitPrice: finalUnitPrice,
+      totalPrice: finalUnitPrice * (Number(quantity) || 0),
+      isCustomPrice: manualUnitPrice != null,
       cbm: Number(cbm) || 0, notes, calcSnapshot,
     };
     upsertProductRecord(item);
@@ -11195,10 +11215,16 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       totalProfit: calc.totalProfit, totalRmbPayment: calc.totalRmbPayment,
       exRateSnapshot: { ...exRate },
     };
+    /* ⭐ 확정 단가 우선 — 사용자가 직접 정한 단가가 있으면 계산기 추천가로 덮어쓰지 않는다.
+       이 경로가 [수정 후 저장]이라, 여기서 추천가를 쓰면 애써 고친 금액이 저장 시점에 되돌아간다. */
+    const savedUnitPrice = manualUnitPrice != null ? Number(manualUnitPrice) || 0 : calc.proposedPrice;
     const patchedItem = {
       image: productImage, productName, specSize, material, category,
       factory: itemFactory, wechatGroup: itemWechatGroup,
-      quantity: Number(quantity) || 0, unitPrice: calc.proposedPrice, totalPrice: calc.totalProposal,
+      quantity: Number(quantity) || 0,
+      unitPrice: savedUnitPrice,
+      totalPrice: savedUnitPrice * (Number(quantity) || 0),
+      isCustomPrice: manualUnitPrice != null,
       cbm: Number(cbm) || 0, notes, calcSnapshot,
       // 누를 때마다 덮어쓰지 않고 배열에 계속 추가(push) — 몇 차 수정인지(round)까지 함께 기록해 전체 이력을 나중에 그대로 보여줄 수 있다.
       historyList: [...(prevItem && prevItem.historyList ? prevItem.historyList : []), {
@@ -11970,7 +11996,33 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                       {!isAdmin && <span className="text-slate-300">(마진율 수정은 관리자만 가능)</span>}
                     </div>
                   </div>
-                  <ResultBox label="개당 제안가" value={won(calc.proposedPrice)} sub="10원 단위 올림" accent="text-[#1D4ED8]" />
+                  {/* 개당 제안가 — 계산기 추천가를 그대로 쓰거나, 직접 확정 단가를 넣을 수 있다.
+                      확정 단가가 들어가면 마진율·환율이 바뀌어도 이 값이 유지된다(저장 시에도 그대로 기록). */}
+                  <div className={"rounded-xl border p-4 " + (manualUnitPrice != null ? "border-emerald-300 bg-emerald-50/40" : "border-slate-200 bg-white")}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-slate-500">개당 제안가</span>
+                      {manualUnitPrice != null
+                        ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-bold">확정 단가</span>
+                        : <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">자동 계산</span>}
+                    </div>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-lg font-bold text-[#1D4ED8]">₩</span>
+                      <input
+                        type="number"
+                        className="w-full text-xl font-bold text-[#1D4ED8] bg-transparent border-b border-dashed border-slate-300 focus:border-[#1D4ED8] outline-none"
+                        value={manualUnitPrice != null ? manualUnitPrice : calc.proposedPrice}
+                        onChange={(e) => setManualUnitPrice(e.target.value === "" ? 0 : Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1 leading-relaxed">
+                      {manualUnitPrice != null ? (
+                        <React.Fragment>
+                          직접 입력한 단가입니다 (추천가 {won(calc.proposedPrice)})
+                          <button onClick={() => setManualUnitPrice(null)} className="ml-1.5 text-[#1D4ED8] hover:underline font-medium">원가로 재계산</button>
+                        </React.Fragment>
+                      ) : "10원 단위 올림 · 값을 고치면 확정 단가로 고정됩니다"}
+                    </div>
+                  </div>
                 </div>
               </Card>
               <Card title="③ 총 주문 이익 요약">
