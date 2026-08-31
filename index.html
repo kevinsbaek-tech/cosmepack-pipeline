@@ -12394,14 +12394,21 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                         disabled={!isAdmin}
                         className={"w-16 text-lg font-bold text-[#1D4ED8] bg-transparent border-b border-dashed border-[#1D4ED8]/40 outline-none focus:border-[#1D4ED8]" + (!isAdmin ? " cursor-not-allowed opacity-70" : "")}
                         value={Math.round(calc.marginRate * 1000) / 10}
-                        onChange={(e) => { if (isAdmin) setMarginOverride(Number(e.target.value) / 100); }}
+                        onChange={(e) => {
+                          if (!isAdmin) return;
+                          setMarginOverride(Number(e.target.value) / 100);
+                          /* ⭐ 마진율을 손대면 확정 단가 잠금을 자동으로 푼다.
+                             안 그러면 마진율만 바뀌고 개당 제안가는 옛 확정값에 묶여 있어
+                             "마진을 올렸는데 단가가 그대로"인 상태가 된다. */
+                          setManualUnitPrice(null);
+                        }}
                       />
                       <span className="text-lg font-bold text-[#1D4ED8]">%</span>
                     </div>
                     <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5">
                       {category}
                       {isAdmin && marginOverride != null && (
-                        <button onClick={() => setMarginOverride(null)} className="text-[#1D4ED8] hover:underline">기준값({pct(calc.autoMarginRate * 100)})으로 초기화</button>
+                        <button onClick={() => { setMarginOverride(null); setManualUnitPrice(null); }} className="text-[#1D4ED8] hover:underline">기준값({pct(calc.autoMarginRate * 100)})으로 초기화</button>
                       )}
                       {!isAdmin && <span className="text-slate-300">(마진율 수정은 관리자만 가능)</span>}
                     </div>
@@ -12455,10 +12462,19 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                     const cbmAmount = (Number(cbm) || 0) * logistics.cbmRate;
                     const totalExtraCost = cbmAmount + logistics.blFee + logistics.originFee + logistics.brokerFee + totalCustomsKrw;
 
+                    /* ⭐ 손익 요약은 "실제로 적용될 단가" 기준으로 계산한다.
+                       확정 단가를 넣었는데 요약이 추천가로 계산되면 화면 금액과 실제 청구액이 어긋난다.
+                       확정 단가가 없으면 종전대로 계산기 추천가(calc.proposedPrice)를 쓴다. */
+                    const effUnitPrice = manualUnitPrice != null ? (Number(manualUnitPrice) || 0) : calc.proposedPrice;
+                    const effTotalProposal = effUnitPrice * qty;
+                    const effProfitPerUnit = effUnitPrice - calc.totalCostPerUnit;
+                    const effTotalProfit = effTotalProposal - calc.totalCostPerUnit * qty;
+                    const effProfitRate = effTotalProposal > 0 ? effTotalProfit / effTotalProposal : 0;
+
                     const boxes = [
                       {
-                        label: "총 제안금액", value: won(calc.totalProposal),
-                        calc: `${won(calc.proposedPrice)} × ${qtyLabel}개`,
+                        label: "총 제안금액", value: won(effTotalProposal),
+                        calc: `${won(effUnitPrice)} × ${qtyLabel}개${manualUnitPrice != null ? " (확정 단가)" : ""}`,
                       },
                       {
                         label: "총 상품 중국비용", value: won(totalChinaCostKrw), sub: "공장원가+박스+검품+중국내운송료",
@@ -12488,12 +12504,12 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                         ),
                       },
                       {
-                        label: "개당 예상이익", value: won(calc.profitPerUnit), accent: "text-emerald-600",
-                        calc: `${won(calc.proposedPrice)} - ${won(calc.totalCostPerUnit)} = ${won(calc.profitPerUnit)}`,
+                        label: "개당 예상이익", value: won(effProfitPerUnit), accent: "text-emerald-600",
+                        calc: `${won(effUnitPrice)} - ${won(calc.totalCostPerUnit)} = ${won(effProfitPerUnit)}`,
                       },
                       {
-                        label: "총 예상이익 (이익률)", value: won(calc.totalProfit), sub: pct(calc.profitRate), accent: "text-emerald-600",
-                        calc: `${won(calc.totalProposal)} - ${won(calc.totalCostPerUnit * qty)} = ${won(calc.totalProfit)} (${pct(calc.profitRate)})`,
+                        label: "총 예상이익 (이익률)", value: won(effTotalProfit), sub: pct(effProfitRate), accent: "text-emerald-600",
+                        calc: `${won(effTotalProposal)} - ${won(calc.totalCostPerUnit * qty)} = ${won(effTotalProfit)} (${pct(effProfitRate)})`,
                       },
                     ];
                     return boxes.map((b) => (
