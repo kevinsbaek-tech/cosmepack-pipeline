@@ -9747,7 +9747,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     return {
       unitRmb, boxPerUnit, inspectPerUnit, shipPerUnit, totalRmbPayment, marginRate, autoMarginRate,
       unitCostKrw, pureFactoryCostKrw, overheadPerUnit, logisticsPerUnit, customsPerUnit, totalCostPerUnit,
-      proposedPrice, profitPerUnit, profitRate, totalProfit: profitPerUnit * qty, totalProposal: proposedPrice * qty,
+      proposedPrice, rawPrice, profitPerUnit, profitRate, totalProfit: profitPerUnit * qty, totalProposal: proposedPrice * qty,
       totalFactoryCost: pureFactoryCostKrw * qty, totalOverhead: overheadPerUnit * qty,
       selectedFinishingItems, finishingRmbPerUnit,
     };
@@ -9773,6 +9773,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   // 발송완료된 제안서 하나를 골라 4단계(샘플진행)로 "선택적" 전환 — 자동이관이 아니라 사용자가 명시적으로 누를 때만
   const createSampleFromProposal = (p) => {
     if (!window.confirm(`"${p.clientName}" 제안서를 바탕으로 샘플 진행(4단계)으로 이동하시겠습니까?`)) return;
+    rememberReturn(view, view === "pipeline" ? activeStep : null); // 지금 화면을 기억(제안서 목록에서 왔으면 목록으로 복귀)
     setSampleInitProposalId(p.id);
     setView("pipeline");
     setActiveStep(4);
@@ -9935,6 +9936,25 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const { view: hashView } = parseKoreanHash();
     return HASH_TO_VIEW[hashView] || "pipeline";
   }); // pipeline | proposals | clients | factories | products | excel
+  /* ↩️ 진입 경로 기억 — "어디서 수정하러 들어왔는지"를 담아두고 [← 돌아가기]에서 그 화면으로 되돌린다.
+     예전엔 돌아가기가 전부 setView("pipeline") 하드코딩이라, 제안서 목록에서 수정하러 들어가도
+     파이프라인 화면으로 튕겼다. {view, step} 형태로 저장한다(step은 pipeline일 때만 의미 있음). */
+  const [returnTo, setReturnTo] = useState(null);
+  // 수정 화면에 진입하기 직전에 호출 — 현재 위치를 기억해 둔다
+  const rememberReturn = (v, step) => setReturnTo({ view: v, step: step != null ? step : null });
+  /* 기억해 둔 화면으로 복귀. 없으면 fallback(대개 pipeline)으로 안전하게 이동.
+     한 번 쓰면 비워서 다음 진입에 옛 경로가 남지 않게 한다. */
+  const goBackTo = (fallbackView, fallbackStep) => {
+    const target = returnTo;
+    setReturnTo(null);
+    const v = (target && target.view) || fallbackView || "pipeline";
+    setView(v);
+    if (v === "pipeline") {
+      const st = target && target.step != null ? target.step : fallbackStep;
+      if (st != null) setActiveStep(st);
+    }
+  };
+
   const [pdfData, setPdfData] = useState(null);
   const [invoiceData, setInvoiceData] = useState(null); // 인보이스 미리보기 모달에 띄울 데이터
   const [toast, setToast] = useState("");
@@ -11884,7 +11904,13 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             ].map((m) => (
               <button
                 key={m.key}
-                onClick={() => { setView(m.key); window.location.hash = VIEW_TO_HASH[m.key]; }}
+                onClick={() => {
+                  /* 사용자가 상단 탭을 직접 눌러 이동한 경우엔 기억해 둔 복귀 경로를 비운다.
+                     안 비우면 예전 진입 경로가 남아 [← 돌아가기]가 엉뚱한 화면으로 튄다. */
+                  setReturnTo(null);
+                  setView(m.key);
+                  window.location.hash = VIEW_TO_HASH[m.key];
+                }}
                 className={"text-sm font-semibold px-4 py-2.5 rounded-lg whitespace-nowrap transition-colors " + (view === m.key ? "bg-white text-[#1E3A8A] shadow-sm" : "bg-white/15 hover:bg-white/25")}
               >
                 {m.label}
@@ -11911,7 +11937,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             setEditingProposalId(null);
             setProposalReadOnly(false);
             setEditingProposalHistory(null);
-            setView("pipeline");
+            goBackTo("pipeline"); // 들어온 화면(대개 제안서 목록)으로 복귀
           }}
           onNewProposal={startNewProposal}
           onOpenPdf={(p) => setPdfData({ ...p, readOnly: true })}
@@ -11920,6 +11946,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onView={(p) => {
             setDraftItems((p.items || []).map((it) => ({ ...it, id: it.id && typeof it.id !== "string" ? it.id : Date.now() + Math.random() })));
             setClientInfo({ clientName: p.clientName || "", clientId: p.clientId || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
+            rememberReturn("proposals"); // 목록에서 들어왔으므로 돌아가기는 목록으로
             setEditingItemId(null);
             setProposalReadOnly(true);
             setEditingProposalId(typeof p.id === "string" ? p.id : null);
@@ -11934,6 +11961,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             // 직원도 승인완료/발송완료 제안서를 자유롭게 수정할 수 있도록 잠금 가드를 제거함(요청에 따름)
             setDraftItems((p.items || []).map((it) => ({ ...it, id: it.id && typeof it.id !== "string" ? it.id : Date.now() + Math.random() })));
             setClientInfo({ clientName: p.clientName || "", clientId: p.clientId || "", contact: p.contact || "", channel: p.channel || "카카오채널", employee: p.employee || "", proposalTitle: p.proposalTitle || "" });
+            rememberReturn("proposals"); // 목록에서 들어왔으므로 돌아가기는 목록으로
             setEditingItemId(null);
             setProposalReadOnly(false);
             setEditingProposalId(typeof p.id === "string" ? p.id : null);
@@ -11950,6 +11978,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             setProposalReadOnly(false);
             setEditingProposalId(null);
             setEditingProposalHistory(null);
+            rememberReturn("proposals");
             setView("pipeline");
             setActiveStep(3);
             setToast("기존 제안서를 복사했습니다. 내용을 확인하고 저장해주세요.");
@@ -12008,7 +12037,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
           onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onSaveStockEdits={saveSampleStockEdits} onDeleteStock={deleteSampleStock}
-          onBack={() => setView("pipeline")}
+          onBack={() => goBackTo("pipeline")}
         />
       )}
       {view === "invoices" && (
@@ -12018,35 +12047,35 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onDuplicate={duplicateInvoice}
           onDelete={deleteInvoiceRecord}
           onNewInvoice={() => setShowNewInvoice(true)}
-          onBack={() => setView("pipeline")}
+          onBack={() => goBackTo("pipeline")}
         />
       )}
       {view === "clients" && (
-        <ClientsView clients={clientsList} proposals={proposalList} onBack={() => setView("pipeline")} onAdd={addClientRecord} onUpdate={updateClientRecord} onDelete={deleteClientRecord} onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })} onBulkDelete={bulkDeleteClients} onMergeClients={mergeClients} isAdmin={isAdmin} />
+        <ClientsView clients={clientsList} proposals={proposalList} onBack={() => goBackTo("pipeline")} onAdd={addClientRecord} onUpdate={updateClientRecord} onDelete={deleteClientRecord} onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })} onBulkDelete={bulkDeleteClients} onMergeClients={mergeClients} isAdmin={isAdmin} />
       )}
       {view === "tasks" && (
         <TaskAssignmentView
           clients={clientsList}
           tasks={taskList} accounts={accounts} proposals={proposalList} isAdmin={isAdmin}
           currentUserName={(roleUser && roleUser.displayName) || ""}
-          onBack={() => setView("pipeline")}
+          onBack={() => goBackTo("pipeline")}
           onCreate={addTaskAssignment} onUpdate={updateTask} onAddComment={addTaskComment}
           onLinkProposal={linkTaskProposal} onDelete={deleteTaskAssignment}
         />
       )}
       {view === "excel" && (
-        <ExcelArchiveView archive={excelArchiveList} onBack={() => setView("pipeline")} onUpload={uploadExcelToArchive} onUploadZip={uploadZipToArchive} onApplyAll={applyAllExcelToPipeline} onDelete={deleteExcelArchiveItem} onApply={applyExcelToPipeline} onResetExcelData={resetExcelUploadedData} onDeleteAllUploaded={deleteAllUploadedProductData} onDedupe={dedupeExcelArchive} onBulkDelete={bulkDeleteExcelArchive} />
+        <ExcelArchiveView archive={excelArchiveList} onBack={() => goBackTo("pipeline")} onUpload={uploadExcelToArchive} onUploadZip={uploadZipToArchive} onApplyAll={applyAllExcelToPipeline} onDelete={deleteExcelArchiveItem} onApply={applyExcelToPipeline} onResetExcelData={resetExcelUploadedData} onDeleteAllUploaded={deleteAllUploadedProductData} onDedupe={dedupeExcelArchive} onBulkDelete={bulkDeleteExcelArchive} />
       )}
       {view === "factories" && (
-        <FactoriesView factories={factoriesList} products={productsList} onBack={() => setView("pipeline")} onAdd={addFactoryRecord} onUpdate={updateFactoryRecord} onDelete={deleteFactoryRecord} onImportFromProducts={importFactoriesFromProducts} onBulkDelete={bulkDeleteFactories} onToggleKeyFactory={toggleKeyFactory} onMergeFactories={mergeFactories} isAdmin={isAdmin}
+        <FactoriesView factories={factoriesList} products={productsList} onBack={() => goBackTo("pipeline")} onAdd={addFactoryRecord} onUpdate={updateFactoryRecord} onDelete={deleteFactoryRecord} onImportFromProducts={importFactoriesFromProducts} onBulkDelete={bulkDeleteFactories} onToggleKeyFactory={toggleKeyFactory} onMergeFactories={mergeFactories} isAdmin={isAdmin}
           onOpenProduct={(p) => { setProductToView(p); setView("products"); }} />
       )}
       {view === "products" && (
         <ProductsView
-          products={productsList} factories={factoriesList} proposals={proposalList} onBack={() => setView("pipeline")}
+          products={productsList} factories={factoriesList} proposals={proposalList} onBack={() => goBackTo("pipeline")}
           onDelete={deleteProductRecord} onAdd={addProductRecord} onAddDuplicate={addDuplicatedProductRecord} onBulkUpdateFactoryInfo={bulkUpdateFactoryInfo} onMergeProducts={mergeProducts} onBulkAdd={bulkAddProducts}
           onUpdate={updateProductRecord} onDedupe={dedupeProducts} onAutoAssignCategories={autoAssignCategories} onStripBrandPrefix={stripBrandPrefixFromNames}
-          onUseInSourcing={(p) => { setProductToPick(p); setView("pipeline"); setActiveStep(1); }}
+          onUseInSourcing={(p) => { rememberReturn("products"); setProductToPick(p); setView("pipeline"); setActiveStep(1); }}
           onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })}
           onSyncFactories={syncFactoriesFromBoxHeroRecords}
           onUploadZip={uploadZipToArchive}
@@ -12062,6 +12091,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             if (!cameFromSourcing) return; // 평소 제품관리에서 등록한 경우엔 방해하지 않는다
             setCameFromSourcing(false);
             if (window.confirm("제품이 등록되었습니다. 1단계 가격조사에서 해당 제품을 바로 불러오시겠습니까?")) {
+              rememberReturn("products"); // 가격조사에서 돌아가면 제품관리로
               setProductToPick(created); // 1단계 pickProduct 경로로 자동 바인딩(originProductId도 함께 실린다)
               setView("pipeline");
               setActiveStep(1);
@@ -12437,7 +12467,14 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                           직접 입력한 단가입니다 (추천가 {won(calc.proposedPrice)})
                           <button onClick={() => setManualUnitPrice(null)} className="ml-1.5 text-[#1D4ED8] hover:underline font-medium">원가로 재계산</button>
                         </React.Fragment>
-                      ) : "10원 단위 올림 · 값을 고치면 확정 단가로 고정됩니다"}
+                      ) : (
+                        <React.Fragment>
+                          계산값 ₩{Math.round(calc.rawPrice).toLocaleString("ko-KR")} → 10원 단위 올림 = {won(calc.proposedPrice)}
+                          {/* ⚠️ 원가가 작으면(예: 33원) 마진율을 16%→5%로 낮춰도 올림 결과가 둘 다 ₩40이라
+                              "마진을 바꿨는데 단가가 그대로"로 보인다. 계산값을 함께 보여줘 오해를 없앤다. */}
+                          <br />값을 고치면 확정 단가로 고정됩니다
+                        </React.Fragment>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -12634,7 +12671,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                 setEditingProposalId(null);
                 setProposalReadOnly(false);
                 setEditingProposalHistory(null);
-                setView("proposals");
+                goBackTo("proposals"); // 들어온 화면으로(기억 없으면 제안서 목록)
               }
               return;
             }
