@@ -1944,16 +1944,26 @@ function ResultBox({ label, value, sub, accent, tooltip }) {
   );
 }
 
+/* 클릭하면 원본 비율 그대로 크게 보는 라이트박스.
+   ⚠️ 훅(useState/useEffect)은 반드시 `if (!src) return null` 보다 위에 선언할 것 —
+      조기 return 뒤에 두면 렌더마다 훅 개수가 달라져 화면이 죽는다(과거 사고 이력). */
 function ZoomableImage({ src, alt, className }) {
   const [open, setOpen] = useState(false);
+  // ESC로 닫기 — 열려 있을 때만 리스너를 붙이고, 닫히면 반드시 해제한다
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
   if (!src) return null;
   return (
     <React.Fragment>
       <img src={src} alt={alt || ""} loading="lazy" className={className} onClick={() => setOpen(true)} style={{ cursor: "zoom-in" }} />
       {open && (
-        <div className="fixed inset-0 bg-black/85 z-[100] flex items-center justify-center p-6" onClick={() => setOpen(false)}>
-          <img src={src} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} />
-          <button onClick={() => setOpen(false)} className="absolute top-4 right-4 text-white text-3xl leading-none hover:opacity-70">✕</button>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[100] flex items-center justify-center p-6" onClick={() => setOpen(false)}>
+          <img src={src} alt={alt || ""} className="max-w-[90vw] max-h-[85vh] object-contain rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
+          <button onClick={() => setOpen(false)} title="닫기 (ESC)" className="absolute top-4 right-4 text-white text-3xl leading-none hover:opacity-70">✕</button>
         </div>
       )}
     </React.Fragment>
@@ -7600,9 +7610,12 @@ function TaskCard({ task, isAdmin, currentUserName, accounts, proposals, onUpdat
       </div>
 
       {(task.images || []).length > 0 && (
-        <div className="grid grid-cols-4 gap-1.5 mb-3">
+        /* 원본 비율 유지 — 마스크팩·긴 용기 사진이 정사각형으로 잘리지 않게 object-contain + 자동 폭.
+           grid 고정 칸을 쓰면 다시 납작해지므로 flex-wrap으로 내용에 맞춰 늘어놓는다. */
+        <div className="flex flex-wrap gap-2 mb-3">
           {task.images.map((img, i) => (
-            <ZoomableImage key={i} src={img} alt={`참고이미지 ${i + 1}`} className="w-full h-14 object-cover rounded-lg border border-slate-200" />
+            <ZoomableImage key={i} src={img} alt={`참고이미지 ${i + 1}`}
+              className="max-h-48 w-auto object-contain rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:opacity-90 transition" />
           ))}
         </div>
       )}
@@ -7708,7 +7721,19 @@ function TaskAssignmentView({ tasks, accounts, proposals, isAdmin, currentUserNa
                   <td className="px-3 py-3 font-medium whitespace-nowrap" style={{ color: "#111827" }}>{t.clientName}</td>
                   <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{t.requestedBy || "-"}</td>
                   <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{t.assignee}</td>
-                  <td className="px-3 py-3 text-slate-600 min-w-[240px]" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{t.content}</td>
+                  <td className="px-3 py-3 text-slate-600 min-w-[240px]" style={{ wordBreak: "break-all" }}>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{t.content}</div>
+                    {/* 첨부가 있으면 내용 아래에 미니 썸네일 — 클릭하면 원본 확대(행 클릭으로 새지 않게 stopPropagation) */}
+                    {(t.images || []).length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap items-center" onClick={(e) => e.stopPropagation()}>
+                        {t.images.slice(0, 4).map((img, i) => (
+                          <ZoomableImage key={i} src={img} alt={`첨부 ${i + 1}`}
+                            className="w-10 h-10 object-cover rounded border border-slate-200 cursor-pointer inline-block mr-1" />
+                        ))}
+                        {t.images.length > 4 && <span className="text-[11px] text-slate-400 ml-0.5">+{t.images.length - 4}</span>}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">{t.dueDate || "-"}</td>
                   <td className="px-3 py-3 text-center whitespace-nowrap">
                     <span className={"inline-block text-[10px] px-2 py-1 rounded-full font-semibold border " + (TASK_STATUS_COLORS[t.status] || "bg-slate-50 text-slate-500 border-slate-200")}>{TASK_STATUS_LABELS[t.status] || t.status}</span>
@@ -9583,6 +9608,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     } catch (e) { return null; }
   });
   const [exRateSuggestion, setExRateSuggestion] = useState(null); // API로 받아온 오늘의 추천 환율(안내문구+원클릭적용용, exRate 자체는 건드리지 않음)
+  /* 환율 변경 이력 — 누가 언제 얼마에서 얼마로 바꿨는지. Firestore settings/exchangeRate 문서의 logs 배열에 함께 저장한다.
+     별도 컬렉션 대신 한 문서에 두는 이유: 환율은 변경 빈도가 낮고, 문서 하나만 읽으면 값과 이력을 함께 얻을 수 있어서. */
+  const [exRateLogs, setExRateLogs] = useState([]);
+  const [exRateNote, setExRateNote] = useState(""); // 변경 사유(선택 입력)
 
   // 환율 입력창 하나가 포커스를 벗어날 때(onBlur) 소수점 둘째자리 ".00" 형식으로 강제 정돈
   const formatExRateField = (field) => {
@@ -9590,16 +9619,46 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   };
   // "💾 적용/저장" 버튼 — 3개 환율값을 전부 .toFixed(2)로 정돈하고 localStorage에 저장, 저장일시를 즉시 갱신.
   // exRate state 자체를 갱신하므로 제안가 계산식(useMemo가 exRate를 의존성으로 갖고 있음)에도 즉시 재계산 반영됨.
-  const saveExRate = () => {
+  const saveExRate = async () => {
     const formatted = {
       rmbToKrw: (Number(exRate.rmbToKrw) || 0).toFixed(2),
       rmbToUsd: (Number(exRate.rmbToUsd) || 0).toFixed(2),
       usdToKrw: (Number(exRate.usdToKrw) || 0).toFixed(2),
     };
     const savedAt = nowDateTimeStr(); // "YYYY-MM-DD HH:mm:ss"
+    /* 변경 이력 — 직전 저장값(가장 최근 로그의 newRate, 없으면 현재 화면값)과 비교해
+       실제로 달라진 경우에만 남긴다(같은 값 재저장까지 기록하면 이력이 지저분해짐). */
+    const last = exRateLogs[0];
+    const prevRate = last ? last.newRate : { rmbToKrw: exRate.rmbToKrw, rmbToUsd: exRate.rmbToUsd, usdToKrw: exRate.usdToKrw };
+    const changed = !last || ["rmbToKrw", "rmbToUsd", "usdToKrw"].some((k) => Number(prevRate[k]) !== Number(formatted[k]));
+    const nextLogs = changed
+      ? [{
+          id: `EXR-${Date.now()}`,
+          changedAt: savedAt,
+          previousRate: { ...prevRate },
+          newRate: { ...formatted },
+          changedBy: (roleUser && roleUser.displayName) || "알 수 없음",
+          note: exRateNote.trim(),
+        }, ...exRateLogs].slice(0, 50) // 최근 50건만 보관(문서 크기 관리)
+      : exRateLogs;
+
     setExRate(formatted);
     setExRateSavedAt(savedAt);
+    setExRateLogs(nextLogs);
+    setExRateNote("");
     try { localStorage.setItem(EXRATE_SAVED_KEY, JSON.stringify({ ...formatted, savedAt })); } catch (e) { console.error(e); }
+    /* ⭐ Firestore에도 저장 — 예전엔 localStorage에만 두어 브라우저를 바꾸거나 캐시를 지우면
+       기본값(230원)으로 되돌아갔다. 이제 DB가 원본이고 localStorage는 빠른 표시용 캐시일 뿐. */
+    try {
+      if (FIREBASE_ENABLED && db) {
+        await db.collection(COLLECTIONS.settings).doc("exchangeRate").set({ ...formatted, savedAt, logs: nextLogs });
+      }
+    } catch (e) {
+      console.error("환율 저장 실패:", e);
+      alert("환율이 이 브라우저에는 저장됐지만 서버 저장에 실패했습니다. 통신 상태를 확인한 뒤 다시 저장해주세요.");
+      setExSettingsOpen(false);
+      return;
+    }
     alert("환율 설정이 성공적으로 변경되었습니다."); // 확인 누르면 즉시 아래에서 모달을 닫음
     setExSettingsOpen(false);
   };
@@ -9649,6 +9708,29 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       if (data.shippingFees) setShippingFees(data.shippingFees);
       if (data.shippingFeeNotes) setShippingFeeNotes(data.shippingFeeNotes);
     }).catch((e) => console.error("기준정보 불러오기 실패:", e));
+  }, []);
+
+  /* ⭐ 환율을 Firestore에서 불러온다 — DB 값이 원본, localStorage는 첫 화면을 빨리 그리기 위한 캐시.
+     이게 없으면 다른 기기·브라우저에서 접속하거나 캐시가 지워졌을 때 기본값으로 되돌아간다.
+     DB에 값이 없을 때만(문서 없음) 기존 캐시·기본값을 그대로 둔다. */
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !db) return;
+    db.collection(COLLECTIONS.settings).doc("exchangeRate").get().then((doc) => {
+      if (!doc.exists) return;
+      const data = doc.data() || {};
+      if (data.rmbToKrw) {
+        const fromDb = {
+          rmbToKrw: String(data.rmbToKrw),
+          rmbToUsd: String(data.rmbToUsd != null ? data.rmbToUsd : DEFAULT_EXRATE.rmbToUsd),
+          usdToKrw: String(data.usdToKrw != null ? data.usdToKrw : DEFAULT_EXRATE.usdToKrw),
+        };
+        setExRate(fromDb);
+        if (data.savedAt) setExRateSavedAt(data.savedAt);
+        // 다음 접속에서 첫 화면을 빨리 그리도록 캐시도 함께 갱신
+        try { localStorage.setItem(EXRATE_SAVED_KEY, JSON.stringify({ ...fromDb, savedAt: data.savedAt || null })); } catch (e) { console.error(e); }
+      }
+      if (Array.isArray(data.logs)) setExRateLogs(data.logs);
+    }).catch((e) => console.error("환율 불러오기 실패:", e));
   }, []);
 
   // "저장하고 닫기" 버튼 — 기준정보 7종을 localStorage + Firestore에 함께 저장(다음 접속에도 유지, 다른 기기와도 동기화)
@@ -11831,7 +11913,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               {exSettingsOpen && (
                 <React.Fragment>
                   <div className="fixed inset-0 z-40" onClick={() => setExSettingsOpen(false)} />
-                  <div className="absolute top-full left-0 mt-2 z-50 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-4 w-[440px]">
+                  <div className="absolute top-full left-0 mt-2 z-50 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-4 w-[440px] max-h-[80vh] overflow-y-auto">
                     <div className="text-xs font-semibold text-slate-500 mb-3">1. 사용자 환율 설정 및 저장</div>
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-xs text-slate-500 w-20 shrink-0">위안→원화</span>
@@ -11845,6 +11927,14 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                       <span className="text-xs text-slate-500 w-20 shrink-0">달러→원화</span>
                       <input type="number" step="0.01" disabled={!isAdmin} value={exRate.usdToKrw} onChange={(e) => setExRate({ ...exRate, usdToKrw: e.target.value })} onBlur={() => formatExRateField("usdToKrw")} className={"flex-1 pl-2 pr-3 py-1.5 rounded-md border border-slate-200 text-sm text-right outline-none focus:border-[#1E3A8A]" + (!isAdmin ? " opacity-60 cursor-not-allowed bg-slate-50" : "")} />
                     </div>
+                    {isAdmin && (
+                      <input
+                        value={exRateNote}
+                        onChange={(e) => setExRateNote(e.target.value)}
+                        placeholder="변경 사유 (선택) — 예: 9월 고시환율 반영"
+                        className="w-full mb-2 px-2.5 py-1.5 rounded-md border border-slate-200 text-xs outline-none focus:border-[#1E3A8A]"
+                      />
+                    )}
                     {exRateSavedAt && <div className="text-[11px] text-slate-400 mb-2">최종 저장: {exRateSavedAt}</div>}
                     {isAdmin && (
                       <button onClick={() => { saveExRate(); }} className="w-full mb-4 text-xs px-3 py-2 rounded-lg bg-[#1E3A8A] text-white hover:opacity-90 font-semibold whitespace-nowrap">💾 적용/저장</button>
@@ -11863,6 +11953,54 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
                     )}
                     {isAdmin && exRateSuggestion && (
                       <button onClick={applyTodayExchangeRates} className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 font-medium whitespace-nowrap">🔄 은행 환율 가져오기</button>
+                    )}
+
+                    {/* 3. 환율 변경 이력 — 최신순, 위안→원화 기준으로 변동 폭을 함께 보여준다(가장 자주 쓰는 환율이라) */}
+                    <div className="text-xs font-semibold text-slate-500 mb-2 pt-4 mt-4 border-t border-slate-100">🕒 환율 변경 이력</div>
+                    {exRateLogs.length === 0 ? (
+                      <div className="text-[11px] text-slate-400 pb-1">아직 변경 이력이 없습니다. 환율을 저장하면 이곳에 기록됩니다.</div>
+                    ) : (
+                      <div className="max-h-56 overflow-y-auto -mx-1 px-1">
+                        <table className="w-full text-[11px] border-collapse">
+                          <thead className="sticky top-0 bg-white">
+                            <tr className="text-slate-400 border-b border-slate-200">
+                              <th className="text-left py-1.5 font-medium">변경 일시</th>
+                              <th className="text-right py-1.5 font-medium">변경 전 → 후</th>
+                              <th className="text-right py-1.5 font-medium">변동 폭</th>
+                              <th className="text-right py-1.5 font-medium">작업자</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {exRateLogs.slice(0, 20).map((log) => {
+                              const before = Number((log.previousRate || {}).rmbToKrw) || 0;
+                              const after = Number((log.newRate || {}).rmbToKrw) || 0;
+                              const diff = after - before;
+                              const diffCls = diff > 0 ? "text-rose-600" : (diff < 0 ? "text-blue-600" : "text-slate-400");
+                              const arrow = diff > 0 ? "▲" : (diff < 0 ? "▼" : "—");
+                              return (
+                                <tr key={log.id} className="border-b border-slate-100 last:border-0">
+                                  <td className="py-1.5 text-slate-500 whitespace-nowrap">{String(log.changedAt || "").slice(0, 16)}</td>
+                                  <td className="py-1.5 text-right text-slate-600 whitespace-nowrap">{fmtRate(before)}원 → <b className="text-slate-800">{fmtRate(after)}원</b></td>
+                                  <td className={"py-1.5 text-right font-semibold whitespace-nowrap " + diffCls}>
+                                    {diff === 0 ? "변동 없음" : `${diff > 0 ? "+" : "-"}${fmtRate(Math.abs(diff))}원 ${arrow}`}
+                                  </td>
+                                  <td className="py-1.5 text-right text-slate-500 whitespace-nowrap">{displayStaffName(log.changedBy || "-")}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        {/* 사유가 적힌 건만 표 아래에 따로 노출 — 표에 열을 하나 더 넣으면 좁은 모달에서 잘린다 */}
+                        {exRateLogs.slice(0, 20).some((l) => l.note) && (
+                          <div className="mt-2 pt-2 border-t border-dashed border-slate-200 space-y-1">
+                            {exRateLogs.slice(0, 20).filter((l) => l.note).map((l) => (
+                              <div key={l.id} className="text-[11px] text-slate-400">
+                                <span className="text-slate-500">{String(l.changedAt || "").slice(5, 16)}</span> · {l.note}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 </React.Fragment>
