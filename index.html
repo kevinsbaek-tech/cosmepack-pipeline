@@ -10304,12 +10304,69 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       try { if (FIREBASE_ENABLED && typeof s.id === "string") await fsUpdate(COLLECTIONS.samples, s.id, { productName: primary.name }); } catch (e) { console.error(e); }
     }
 
-    // 5) 연결 이전이 모두 끝난 뒤에만 서브제품 레코드 삭제
+    /* 5) ⭐ 품목에 심어둔 originProductId를 대표 제품 id로 일괄 이관.
+       proposalIds(역방향 링크)만 옮기면 그 문서에는 여전히 삭제된 서브제품 id가 남아,
+       나중에 그 제안서를 열어 저장하면 없는 제품을 가리켜 이력이 다시 끊긴다.
+       ⚠️ 품목명(productName)은 바꾸지 않는다 — 제안서·인보이스는 이미 고객에게 발송된 문서라
+          그 시점의 품목명이 기록으로 남아야 한다(연결은 id로 충분히 유지된다). */
+    const subIdSet = new Set(subs.map((p) => String(p.id)));
+    const remapItems = (items) => {
+      let touched = false;
+      const next = (Array.isArray(items) ? items : []).map((it) => {
+        if (it && it.originProductId != null && subIdSet.has(String(it.originProductId))) {
+          touched = true;
+          return { ...it, originProductId: primaryId };
+        }
+        return it;
+      });
+      return touched ? next : null; // 바뀐 게 없으면 null → 불필요한 쓰기를 하지 않는다
+    };
+
+    let movedDocs = 0;
+    // 5-a) 제안서
+    const proposalPatches = [];
+    proposalList.forEach((p) => {
+      const next = remapItems(p && p.items);
+      if (next) proposalPatches.push({ id: p.id, items: next });
+    });
+    if (proposalPatches.length > 0) {
+      const patchMap = new Map(proposalPatches.map((x) => [String(x.id), x.items]));
+      setProposalList((prev) => prev.map((p) => (patchMap.has(String(p.id)) ? { ...p, items: patchMap.get(String(p.id)) } : p)));
+      for (const x of proposalPatches) {
+        try { if (FIREBASE_ENABLED && typeof x.id === "string") await fsUpdate(COLLECTIONS.proposals, x.id, { items: x.items }); movedDocs++; } catch (e) { console.error("제안서 이관 실패:", x.id, e); }
+      }
+    }
+
+    // 5-b) 인보이스
+    const invoicePatches = [];
+    invoiceList.forEach((iv) => {
+      const next = remapItems(iv && iv.items);
+      if (next) invoicePatches.push({ id: iv.id, items: next });
+    });
+    if (invoicePatches.length > 0) {
+      const patchMap = new Map(invoicePatches.map((x) => [String(x.id), x.items]));
+      setInvoiceList((prev) => prev.map((iv) => (patchMap.has(String(iv.id)) ? { ...iv, items: patchMap.get(String(iv.id)) } : iv)));
+      for (const x of invoicePatches) {
+        try { if (FIREBASE_ENABLED && typeof x.id === "string") await fsUpdate(COLLECTIONS.invoices, x.id, { items: x.items }); movedDocs++; } catch (e) { console.error("인보이스 이관 실패:", x.id, e); }
+      }
+    }
+
+    // 5-c) 가격조사 — 품목 배열이 아니라 레코드 자체에 originProductId가 붙는다
+    const sourcingTargets = sourcingItems.filter((it) => it && it.originProductId != null && subIdSet.has(String(it.originProductId)));
+    if (sourcingTargets.length > 0) {
+      const idSet = new Set(sourcingTargets.map((x) => String(x.id)));
+      setSourcingItems((prev) => prev.map((it) => (idSet.has(String(it.id)) ? { ...it, originProductId: primaryId } : it)));
+      for (const it of sourcingTargets) {
+        try { if (FIREBASE_ENABLED && typeof it.id === "string") await fsUpdate(COLLECTIONS.sourcing, it.id, { originProductId: primaryId }); movedDocs++; } catch (e) { console.error("가격조사 이관 실패:", it.id, e); }
+      }
+    }
+
+    // 6) 연결 이전이 모두 끝난 뒤에만 서브제품 레코드 삭제
     for (const p of subs) {
       try { if (FIREBASE_ENABLED && typeof p.id === "string") await fsDelete(COLLECTIONS.products, p.id); } catch (e) { console.error(e); }
     }
 
-    setToast(`✅ 병합 완료 — 대표 제품에 연결 제안서 ${mergedProposalIds.length}건이 통합되었습니다.`);
+    setToast(`✅ 병합 완료 — 연결 제안서 ${mergedProposalIds.length}건 통합, 참조 이력 ${movedDocs}건을 대표 제품으로 이전했습니다.`);
   };
   // 선택한 업체들을 대표 고객사 1개로 병합.
   //   ① 대표에 보조 업체의 태그(합집합) / 메모(결합) / 첨부(합침) / 비어있는 연락처·주소·대표자·계약정보를 통합
