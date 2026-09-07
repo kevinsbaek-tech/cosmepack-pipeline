@@ -3992,22 +3992,18 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
                   비율을 고치면 금액이 자동 재계산되고, 금액을 직접 치면 그 값이 우선한다. */}
               {resolvedPayments.map((p, idx) => (
                 <tr key={p.key || idx}>
-                  <td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium">
-                    <span className="inline-flex items-baseline gap-1 w-full">
-                      <PvField ro={pvReadOnly} value={p.label} onChange={(v) => updatePayment(idx, "label", v)} className="font-medium flex-1 min-w-0" />
-                      <span className="whitespace-nowrap">(<PvNumber ro={pvReadOnly} value={p.rate} onChange={(v) => updatePayment(idx, "rate", v)} className="w-8 text-right" />%)</span>
-                      {!pvReadOnly && resolvedPayments.length > 1 && (
-                        <button type="button" onClick={() => removePayment(idx)}
-                          className="no-print text-slate-300 hover:text-red-500 text-[11px] leading-none shrink-0" title="이 청구 단계 삭제">✕</button>
-                      )}
-                    </span>
+                  {/* ⚠️ 인쇄 시 열 폭이 좁아지면 flex 컨테이너가 접히면서 "(", 숫자, "%)"가 각각 다른 줄로
+                      떨어졌다. flex를 쓰지 않고 td에 whitespace-nowrap을 걸어 항상 한 줄로 유지한다. */}
+                  <td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium whitespace-nowrap">
+                    <span className="pay-label"><PvField ro={pvReadOnly} value={p.label} onChange={(v) => updatePayment(idx, "label", v)} className="font-medium w-32 align-baseline" /></span>
+                    <span className="pay-rate align-baseline">(<PvNumber ro={pvReadOnly} value={p.rate} onChange={(v) => updatePayment(idx, "rate", v)} className="w-10 text-right align-baseline" />%)</span>
+                    {!pvReadOnly && resolvedPayments.length > 1 && (
+                      <button type="button" onClick={() => removePayment(idx)}
+                        className="no-print ml-1 text-slate-300 hover:text-red-500 text-[11px] leading-none align-baseline" title="이 청구 단계 삭제">✕</button>
+                    )}
                   </td>
-                  <td className="border border-slate-300 py-1.5 px-3 text-right">
-                    {/* 숫자 입력이 w-full이면 '원'이 다음 줄로 밀려 두 줄이 된다 → 한 줄 고정 */}
-                    <span className="inline-flex items-baseline justify-end gap-0.5 w-full whitespace-nowrap">
-                      <PvNumber ro={pvReadOnly} value={p.resolved} onChange={(v) => updatePayment(idx, "amount", v)} className="flex-1 min-w-0 text-right" />
-                      <span className="shrink-0">원</span>
-                    </span>
+                  <td className="border border-slate-300 py-1.5 px-3 text-right whitespace-nowrap">
+                    <span className="pay-amount"><PvNumber ro={pvReadOnly} value={p.resolved} onChange={(v) => updatePayment(idx, "amount", v)} className="w-28 text-right align-baseline" /></span>원
                   </td>
                   <td className="border border-slate-300 py-1.5 px-3 text-[11px] text-slate-600 align-middle">
                     <PvArea ro={pvReadOnly} value={p.note || ""} onChange={(v) => updatePayment(idx, "note", v)} className="text-[11px] text-slate-600 w-full leading-snug" />
@@ -8066,8 +8062,8 @@ function buildSampleInvoiceSheetData(data) {
   set("C12", data.greetingLines[3]);
   set("C13", data.greetingLines[4]);
   set("B15", "No"); set("C15", "제품사진"); set("E15", "제품명"); set("G15", "재원"); set("I15", "주문     수량"); set("K15", "단가(ea)"); set("L15", "금액(\\)"); set("M15", "비고");
-  set("B16", 1); set("C16", data.productImage ? "(사진 별도 첨부)" : ""); set("E16", data.productName || ""); set("G16", data.spec || ""); set("I16", Number(data.qty) || 0); set("K16", Number(data.unitPrice) || 0); set("L16", { f: "I16*K16" }); set("M16", "당사부담");
-  set("B17", 2); set("E17", "중국내 운송료"); set("I17", data.shippingRmbFee ? 1 : 0); set("K17", Number(data.shippingRmbFee) || 0); set("L17", { f: "I17*K17" }); set("M17", "당사부담");
+  set("B16", 1); set("C16", data.productImage ? "(사진 별도 첨부)" : ""); set("E16", data.productName || ""); set("G16", data.spec || ""); set("I16", Number(data.qty) || 0); set("K16", Number(data.unitPrice) || 0); set("L16", { f: "I16*K16" }); set("M16", data.productRemark != null ? data.productRemark : "당사부담");
+  set("B17", 2); set("E17", "중국내 운송료"); set("I17", data.shippingRmbFee ? 1 : 0); set("K17", Number(data.shippingRmbFee) || 0); set("L17", { f: "I17*K17" }); set("M17", data.shippingRemark != null ? data.shippingRemark : "당사부담");
   const feesForXlsx = data.shippingFees || DEFAULT_SAMPLE_SHIPPING_FEES;
   set("B18", 3); set("E18", "택배비"); set("G18", " "); set("I18", data.domesticMethod === "일반" ? 1 : 0); set("K18", feesForXlsx["일반"]); set("L18", { f: "I18*K18" }); set("M18", data.domesticMethod === "일반" ? (data.domesticRemark || "") : "");
   set("B19", 3); set("E19", "항공택배비"); set("G19", "1KG 미만"); set("I19", data.domesticMethod === "항공" ? 1 : 0); set("K19", feesForXlsx["항공"]); set("L19", { f: "I19*K19" }); set("M19", data.domesticMethod === "항공" ? (data.domesticRemark || "") : "");
@@ -8682,6 +8678,10 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
   // No.3 배송비 항목의 "비고" — 배송방식(일반/항공)에 설정된 안내문구가 기본값으로 자동 채워지고, 직접 수정도 가능
   const [domesticRemark, setDomesticRemark] = useState(draft.domesticRemark != null ? draft.domesticRemark : (feeNotes[draft.domesticMethod || sample.shippingMethod || "일반"] || ""));
   const changeDomesticMethod = (m) => { setDomesticMethod(m); setDomesticRemark(feeNotes[m] || ""); };
+  /* No.1(샘플 제품) · No.2(중국내 운송료) 비고 — 예전엔 "당사부담"이 마크업에 직접 박혀 있어 고칠 수 없었다.
+     샘플 1개까지는 당사부담이지만 2개 이상이면 고객 부담이라 건별로 문구를 바꿔야 해서 편집 가능하게 뺐다. */
+  const [productRemark, setProductRemark] = useState(draft.productRemark != null ? draft.productRemark : "당사부담");
+  const [shippingRemark, setShippingRemark] = useState(draft.shippingRemark != null ? draft.shippingRemark : "당사부담");
   // 발송 출처(한국재고 / 중국공장) — 한국재고 발송이면 중국 내 운송료가 발생하지 않으므로 0원 처리하고, 안내 문구도 국내 택배 수령 조건으로 바꿔준다.
   const [shipSource, setShipSource] = useState(draft.shipSource || sample.stockLocation || "china");
   const SHIP_SOURCE_NOTICE = {
@@ -8717,13 +8717,13 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
   const vat = Math.round(supplyTotal * 0.1);
   const grandTotal = supplyTotal + vat;
 
-  const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, domesticRemark, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines, shippingFees: fees };
+  const data = { clientName, writeDate, productImage, productName, spec, qty, unitPrice, shippingRmbFee, domesticMethod, domesticRemark, productRemark, shippingRemark, receiveAddress, dispatchDateText, receiveDateText, greetingLines, footerExtraLines, shippingFees: fees };
 
   // 좌측 입력값 + 미리보기에서 직접 고친 문구(인사말/하단안내)까지 전부 샘플 레코드에 저장 — 인쇄/PDF 저장이나 엑셀 다운로드를 누를 때 자동으로 함께 저장되며,
   // 다음에 다시 열거나 엑셀/PDF로 출력할 때도 이 수정본이 그대로 반영된다. 청구금액/수령주소/수량은 목록 리스트 컬럼에도 바로 쓰인다.
   const persistToSample = () => {
     if (!onUpdate || readOnly) return; // 조회 전용 모드에서는 어떤 저장도 발생하지 않는다
-    const invoiceDraft = { clientName, writeDate, productImage, productName, spec, qty: Number(qty) || 0, unitPrice: Number(unitPrice) || 0, shippingRmbFee: Number(shippingRmbFee) || 0, domesticMethod, domesticRemark, receiveAddress, dispatchDate, receiveDate, greetingLines, footerExtraLines, shipSource };
+    const invoiceDraft = { clientName, writeDate, productImage, productName, spec, qty: Number(qty) || 0, unitPrice: Number(unitPrice) || 0, shippingRmbFee: Number(shippingRmbFee) || 0, domesticMethod, domesticRemark, productRemark, shippingRemark, receiveAddress, dispatchDate, receiveDate, greetingLines, footerExtraLines, shipSource };
     onUpdate(sample, { invoiceAmount: grandTotal, receiveAddress, invoiceQty: Number(qty) || 0, invoiceDraft, stockLocation: shipSource });
   };
   const [savedFlash, setSavedFlash] = useState(false);
@@ -8905,7 +8905,9 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
                     <td className="border border-slate-400 text-center">{qty}</td>
                     <td className="border border-slate-400 text-right px-2">{won(unitPrice)}</td>
                     <td className="border border-slate-400 text-right px-2">{won(productAmt)}</td>
-                    <td className="border border-slate-400 text-center">당사부담</td>
+                    <td className="border border-slate-400 p-1">
+                      <input value={productRemark} onChange={(e) => setProductRemark(e.target.value)} readOnly={readOnly} className="w-full text-[10px] px-1 py-0.5 outline-none text-center bg-transparent" placeholder="비고 (예: 고객부담)" />
+                    </td>
                   </tr>
                   <tr style={{ height: "42px" }}>
                     <td className="border border-slate-400 text-center">2</td>
@@ -8915,7 +8917,9 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
                     <td className="border border-slate-400 text-center">{shippingAmt ? 1 : 0}</td>
                     <td className="border border-slate-400 text-right px-2">{won(shippingAmt)}</td>
                     <td className="border border-slate-400 text-right px-2">{won(shippingAmt)}</td>
-                    <td className="border border-slate-400 text-center">당사부담</td>
+                    <td className="border border-slate-400 p-1">
+                      <input value={shippingRemark} onChange={(e) => setShippingRemark(e.target.value)} readOnly={readOnly} className="w-full text-[10px] px-1 py-0.5 outline-none text-center bg-transparent" placeholder="비고 (예: 고객부담)" />
+                    </td>
                   </tr>
                   <tr style={{ height: "42px" }}>
                     <td className="border border-slate-400 text-center">3</td>
@@ -8926,7 +8930,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
                     <td className="border border-slate-400 text-right px-2">{won(domesticFee)}</td>
                     <td className="border border-slate-400 text-right px-2">{won(domesticFee)}</td>
                     <td className="border border-slate-400 p-1">
-                      <input value={domesticRemark} onChange={(e) => setDomesticRemark(e.target.value)} className="w-full text-[10px] px-1 py-0.5 outline-none text-center" placeholder="비고 안내문구" />
+                      <input value={domesticRemark} onChange={(e) => setDomesticRemark(e.target.value)} readOnly={readOnly} className="w-full text-[10px] px-1 py-0.5 outline-none text-center" placeholder="비고 안내문구" />
                     </td>
                   </tr>
                   <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>합　계</td><td className="border border-slate-400 text-right px-2 font-semibold">{won(supplyTotal)}</td><td className="border border-slate-400"></td></tr>
@@ -12131,6 +12135,16 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           border: none !important; background: transparent !important; padding: 0 !important;
           width: 100% !important; box-sizing: border-box !important; display: block !important;
         }
+        /* ⚠️ 위 규칙의 display:block 때문에 분할 청구 행에서 입력칸이 각각 한 줄씩 차지해
+           "계약금 청구금액 / ( / 30 / %)" 처럼 여러 줄로 쪼개졌다.
+           이 세 칸만 인라인으로 되돌리고 폭을 직접 지정해 인쇄에서도 한 줄로 나오게 한다. */
+        #pdf-page .pay-label input, #pdf-page .pay-rate input, #pdf-page .pay-amount input {
+          display: inline-block !important; vertical-align: baseline !important;
+        }
+        #pdf-page .pay-label input { width: 8.5rem !important; }
+        #pdf-page .pay-rate input { width: 2.4rem !important; text-align: right !important; }
+        #pdf-page .pay-amount input { width: 6.5rem !important; text-align: right !important; }
+        #pdf-page .pay-label, #pdf-page .pay-rate, #pdf-page .pay-amount { white-space: nowrap !important; }
         #pdf-page .print-terms { font-size: 12.5px !important; line-height: 1.65 !important; }
         #pdf-page .print-terms > div:first-child { font-size: 14px !important; font-weight: bold !important; }
         #pdf-page .print-terms li { font-size: 12.5px !important; line-height: 1.65 !important; margin-bottom: 7px !important; padding-bottom: 1px !important; }
