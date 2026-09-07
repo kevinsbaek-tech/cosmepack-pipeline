@@ -3232,13 +3232,19 @@ function OrderStageListView({ orders, proposalList, invoiceList, onOpenProposal,
 
 /* ===================== PDF 제안서 미리보기 ===================== */
 
+/* 미리보기 문서 안에서 클릭 즉시 수정되는 인라인 편집기 3종의 공통 스타일.
+   · 평소엔 완전히 투명해 인쇄물과 똑같이 보이고
+   · 마우스를 올리면 옅은 밑줄/배경으로 "여기 고칠 수 있다"를 알리며
+   · 포커스되면 인디고 아웃라인 + 옅은 인디고 배경으로 지금 수정 중임을 표시한다. */
+const INLINE_EDIT_BASE = "bg-transparent rounded px-1 outline-none transition-colors hover:bg-indigo-50/40 focus:outline focus:outline-2 focus:outline-indigo-400 focus:bg-indigo-50/60 ";
+
 function EditField({ value, onChange, className, placeholder }) {
   return (
     <input
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={"outline-none bg-transparent border-b border-transparent hover:border-slate-300 focus:border-[#1D4ED8] focus:bg-amber-50/50 transition-colors " + (className || "")}
+      className={INLINE_EDIT_BASE + "border-b border-transparent hover:border-indigo-200 focus:border-transparent " + (className || "")}
     />
   );
 }
@@ -3255,7 +3261,7 @@ function EditArea({ value, onChange, className, placeholder }) {
       placeholder={placeholder}
       rows={1}
       style={{ overflow: "hidden", resize: "none" }}
-      className={"outline-none bg-transparent border border-transparent hover:border-slate-300 focus:border-[#1D4ED8] focus:bg-amber-50/50 transition-colors w-full " + (className || "")}
+      className={INLINE_EDIT_BASE + "border border-transparent hover:border-indigo-200 focus:border-transparent w-full " + (className || "")}
     />
   );
 }
@@ -3298,7 +3304,7 @@ function EditNumberField({ value, onChange, className, placeholder, readOnly }) 
       placeholder={placeholder}
       inputMode="numeric"
       readOnly={readOnly}
-      className={"outline-none bg-transparent border-b border-transparent hover:border-slate-300 focus:border-[#1D4ED8] focus:bg-amber-50/50 transition-colors " + (readOnly ? "bg-slate-50 text-slate-500 cursor-default " : "") + (className || "")}
+      className={INLINE_EDIT_BASE + "border-b border-transparent hover:border-indigo-200 focus:border-transparent " + (readOnly ? "bg-slate-50 text-slate-500 cursor-default " : "") + (className || "")}
     />
   );
 }
@@ -3491,11 +3497,16 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setAdjustAmountInput(readAdjustment(data));
     setValidUntil(data.validUntil || "");
     setItems((data.items || []).map((it) => ({ ...it }))); // 각 품목의 고유 제품명(it.productName)을 그대로 쓴다 — 예전엔 제안서 제목으로 모든 행을 덮어써서 전 품목이 같은 이름으로 통일되어 보이는 버그가 있었음
+    savedSigRef.current = null; // 다음 렌더에서 이 내용을 "저장된 상태"의 기준으로 다시 잡는다
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
   const [showApprovalSend, setShowApprovalSend] = useState(false); // 🔗 고객 승인링크 발송 모달
   const [showProposalSend, setShowProposalSend] = useState(false); // 📲 제안서 링크 발송 모달
   const [savedFlash, setSavedFlash] = useState(false); // 훅은 반드시 조기 return(아래) 이전에 선언해야 한다 — 이전엔 이 줄이 return 뒤에 있어서 모달을 열 때(open/data가 바뀌는 순간) 훅 개수가 달라져 화면이 하얗게 깨지는 크래시가 있었음
+  /* 미리보기에서 직접 고친 내용이 아직 저장되지 않았는지 추적한다.
+     null이면 "아직 기준값을 못 잡은 상태"로, 데이터가 로드된 직후 첫 렌더에서 현재 내용을 기준으로 잡는다.
+     고객 승인링크는 DB를 읽어가므로, 저장하지 않은 수정이 있으면 링크에 옛 내용이 나가는 사고가 난다. */
+  const savedSigRef = useRef(null);
 
   if (!open || !data) return null;
   const DARK = "#111827";
@@ -3561,15 +3572,30 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(contractDate || "");
     return m ? `${m[1]} 년   ${m[2]} 월   ${m[3]} 일` : (contractDate || "");
   })();
+  /* 지금 화면의 편집 내용을 한 줄 문자열로 요약한 값(사진 base64는 제외해 가볍게 유지).
+     저장 시점의 값과 비교해 "저장되지 않은 수정"이 있는지 판단한다. */
+  const editSignature = JSON.stringify({
+    cn: clientName, vu: validUntil, cd: contractDate, cc: clientCeo, ca: clientAddress,
+    ar: adjustReasonInput, aa: adjustAmountInput, g: greeting, t: terms,
+    it: items.map((x) => [x.id, x.productName, x.specSize, x.material, x.quantity, x.unitPrice, x.totalPrice, x.notes]),
+  });
+  if (savedSigRef.current === null) savedSigRef.current = editSignature; // 로드 직후 기준값 확정
+  const dirty = savedSigRef.current !== editSignature;
+
   const handleSave = () => {
     if (!onSave || !data.id) return;
-    // 인보이스는 여기서 품목·차감을 고칠 수 있으므로 재계산된 금액과 차감 정보도 함께 저장한다.
+    /* 인보이스는 여기서 품목·차감을 고칠 수 있으므로 재계산된 금액을 전부 함께 저장한다.
+       부가세·합계금액·계약금/중도금/잔금까지 저장해두면 목록·발송문구·고객 승인화면이
+       매번 다시 계산하지 않고 인쇄물과 100% 같은 숫자를 쓰게 된다. */
     onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress, subtotal, totalAmount,
+      vat, grandTotal, depositAmount, interimAmount, balanceAmount,
+      totalQuantity: items.reduce((s, it) => s + (Number(it.quantity) || 0), 0),
       adjustmentReason: adjustAmount !== 0 ? (adjustReasonInput || (adjustAmount > 0 ? "추가 비용" : "샘플비/할인 차감")) : "",
       adjustmentAmount: adjustAmount,
       /* 레거시 동기화 — 아직 discountAmount를 읽는 경로가 남아 있어 함께 기록(차감일 때만 양수) */
       discountReason: adjustAmount < 0 ? (adjustReasonInput || "샘플비/할인 차감") : "",
       discountAmount: adjustAmount < 0 ? -adjustAmount : 0 } : {}) }, isInvoice ? "invoice" : "proposal");
+    savedSigRef.current = editSignature; // 저장 완료 — 지금 내용을 새 기준값으로
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
@@ -3624,8 +3650,10 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
         {/* 3) 우측: 액션 버튼 그룹 */}
         <div className="flex flex-row items-center gap-2 whitespace-nowrap shrink-0">
           {!data.readOnly && onSave && data.id && (
-            <button onClick={handleSave} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">
-              {savedFlash ? "✅ 저장되었습니다" : "💾 저장"}
+            <button onClick={handleSave}
+              title={dirty ? "미리보기에서 수정한 내용이 아직 저장되지 않았습니다" : "저장된 상태입니다"}
+              className={"text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm " + (dirty ? "bg-amber-500 hover:bg-amber-600 ring-2 ring-amber-300" : "bg-indigo-600 hover:bg-indigo-700")}>
+              {savedFlash ? "✅ 저장되었습니다" : (dirty ? "💾 저장 (수정됨)" : "💾 저장")}
             </button>
           )}
           {/* 대표님 부재·출장 시 직원이 직접 승인 처리 — 확인창을 거쳐야 하고, 승인자·일시가 반드시 함께 기록된다 */}
@@ -3646,7 +3674,12 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
             <button onClick={handlePrint} className="bg-blue-800 hover:bg-blue-900 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">🖨 인쇄 / PDF</button>
           )}
           {isInvoice && data.id && (
-            <button onClick={() => setShowApprovalSend(true)}
+            <button onClick={() => {
+              /* 고객 승인화면은 DB에서 인보이스를 다시 읽어 그린다.
+                 여기서 방금 고친 수량·단가·문구가 저장 전이면 고객에겐 옛 금액이 보이므로 먼저 저장한다. */
+              if (dirty && !data.readOnly && onSave) handleSave();
+              setShowApprovalSend(true);
+            }}
               className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">
               🚀 고객 승인링크 발송
             </button>
@@ -3657,7 +3690,11 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           {!data.minimalHeader && onSendComplete && data.id && (
             <button onClick={() => setShowSendModal(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm">🚀 발송완료</button>
           )}
-          <button onClick={onClose} className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3 py-2 rounded-lg border border-slate-600">✕ 닫기</button>
+          <button onClick={() => {
+            // 미리보기에서 고친 내용을 저장하지 않고 닫으면 그대로 사라지므로 한 번 확인한다
+            if (dirty && !data.readOnly && !window.confirm("저장하지 않은 수정 내용이 있습니다.\n저장하지 않고 닫을까요?")) return;
+            onClose();
+          }} className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3 py-2 rounded-lg border border-slate-600">✕ 닫기</button>
         </div>
       </div>
 
@@ -3850,7 +3887,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
                 </td>
                 <td className="border border-slate-300 px-2 py-2 align-top text-center"><PvNumber ro={pvReadOnly} value={it.quantity} onChange={(v) => updateItem(it.id, "quantity", v)} className="w-full text-center" /></td>
                 <td className="border border-slate-300 px-2 py-2 align-top text-right"><PvNumber ro={pvReadOnly} value={it.unitPrice} onChange={(v) => updateItem(it.id, "unitPrice", v)} className="w-full text-right" /></td>
-                <td className="border border-slate-300 px-2 py-2 align-top text-right font-medium">{Math.round(it.totalPrice).toLocaleString("ko-KR")}</td>
+                <td className="border border-slate-300 px-2 py-2 align-top text-right font-medium">{Math.round(Number(it.totalPrice) || 0).toLocaleString("ko-KR")}</td>
                 <td className="border border-slate-300 px-2 py-2 align-top whitespace-pre-wrap break-words leading-relaxed text-xs text-slate-700"><PvArea ro={pvReadOnly} value={it.notes} onChange={(v) => updateItem(it.id, "notes", v)} className="whitespace-pre-wrap break-words leading-relaxed text-xs text-slate-700" /></td>
               </tr>
             ))}
