@@ -1605,6 +1605,26 @@ function searchFactories(factories, query) {
   );
 }
 
+/* 인보이스 문서 표 안에서 금액을 직접 고칠 수 있는 입력칸.
+   포커스 중에는 숫자 원문("15000")을 보여줘 커서가 튀지 않게 하고,
+   칸을 벗어나면 다시 ₩ 콤마 서식으로 돌려놓아 인쇄물이 깔끔하게 나온다.
+   ⚠️ 반드시 최상위 함수로 둘 것 — 렌더 함수 안에서 선언하면 매 렌더 remount돼 타이핑 중 포커스가 날아간다. */
+function DocMoneyInput({ value, onChange, readOnly, className, placeholder }) {
+  const [focused, setFocused] = useState(false);
+  const [text, setText] = useState("");
+  return (
+    <input
+      value={focused ? text : won(value)}
+      placeholder={placeholder}
+      readOnly={readOnly}
+      onFocus={() => { setText(String(Number(value) || 0)); setFocused(true); }}
+      onBlur={() => setFocused(false)}
+      onChange={(e) => { setText(e.target.value); onChange(Number(String(e.target.value).replace(/[^0-9-]/g, "")) || 0); }}
+      className={"bg-transparent outline-none focus:bg-indigo-50/60 rounded " + (className || "")}
+    />
+  );
+}
+
 // ===== 엑셀 유입 제품(SKU/바코드 누락) ↔ 박스히어로 제품 병합 매칭 =====
 const normalizeMatchKey = (s) => String(s || "").replace(/\s+/g, "").toLowerCase();
 // 우선순위: 1) SKU/바코드 일치 → 2) 제품명+규격 완전일치(공백정제) → 없으면 null(수동매칭 대상)
@@ -9021,6 +9041,10 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
   // CT는 수량에 비례하는 단가 개념이 아니라 "건당 맞춤 제작 실비(고정 총액)"로 청구된다 → 곱셈 없이 입력값을 그대로 금액으로 사용
   const [customNote, setCustomNote] = useState(draft.customNote != null ? draft.customNote : ""); // 좌측 폼의 자유 메모 — 비고 셀 윗줄에 노출
   const expectedText = completionDate ? `예상완료: ${completionDate}` : "예상완료: 입금 후 약 15일";
+  /* 비고 아랫줄(예상완료 안내) — 기본값은 완료일자에서 자동 생성되지만 직접 고칠 수도 있다.
+     null이면 "아직 손대지 않음"이라 완료일자를 바꾸면 자동으로 따라가고, 한 번 고치면 그 문구가 유지된다. */
+  const [expectedRemark, setExpectedRemark] = useState(draft.expectedRemark != null ? draft.expectedRemark : null);
+  const expectedShown = expectedRemark != null ? expectedRemark : expectedText;
   const [expressRemark, setExpressRemark] = useState(draft.expressRemark != null ? draft.expressRemark : "항공 특송");
   const [greetingLines, setGreetingLines] = useState(draft.greetingLines || CT_GREETING_LINES);
   const [footerLines, setFooterLines] = useState(draft.footerLines || CT_FOOTER_LINES);
@@ -9051,7 +9075,7 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
       ctInvoiceDraft: {
         clientName, writeDate, productImage, productName, spec,
         qty: Number(qty) || 1, unitPrice: Number(unitPrice) || 0, expressFee: Number(expressFee) || 0,
-        completionDate, customNote, expressRemark, greetingLines, footerLines,
+        completionDate, customNote, expectedRemark, expressRemark, greetingLines, footerLines,
       },
     });
   };
@@ -9217,8 +9241,12 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
                     <td className="border border-slate-400 text-right align-top py-2 px-2">{unitConverted != null ? won(unitConverted) : "-"}</td>
                     <td className="border border-slate-400 text-right align-top py-2 px-2">{won(productAmt)}</td>
                     <td className="border border-slate-400 py-2 px-2 text-center align-top whitespace-pre-wrap text-xs leading-relaxed">
-                      {customNote ? <div className="mb-1 break-words">{customNote}</div> : null}
-                      <div className="font-medium text-slate-700 whitespace-nowrap">{expectedText}</div>
+                      {/* 비고 — 문서에서 바로 고칠 수 있다(좌측 폼의 "비고 (추가 메모)"와 같은 값). */}
+                      <textarea value={customNote} onChange={(e) => setCustomNote(e.target.value)} readOnly={readOnly}
+                        rows={Math.max(1, String(customNote || "").split("\n").length)} placeholder="비고 입력"
+                        className="w-full text-center text-xs bg-transparent outline-none resize-none break-words focus:bg-indigo-50/60 rounded mb-1" />
+                      <input value={expectedShown} onChange={(e) => setExpectedRemark(e.target.value)} readOnly={readOnly}
+                        className="w-full text-center font-medium text-slate-700 text-xs bg-transparent outline-none focus:bg-indigo-50/60 rounded" />
                     </td>
                   </tr>
                   <tr style={{ height: "42px" }}>
@@ -9227,9 +9255,16 @@ function CtSampleInvoiceModal({ sample, products, proposals, supplierLogo, onUpd
                     <td className="border border-slate-400 px-2">특송비</td>
                     <td className="border border-slate-400 px-2 text-[10px]">1KG 미만</td>
                     <td className="border border-slate-400 text-center">{expressFee ? 1 : 0}</td>
+                    {/* 특송비는 당사 부담으로 0원 처리하는 경우가 있어 문서에서 직접 금액을 고칠 수 있게 둔다 */}
+                    <td className="border border-slate-400 text-right px-2">
+                      <DocMoneyInput value={expressFee} onChange={setExpressFee} readOnly={readOnly} className="w-full text-right" />
+                    </td>
                     <td className="border border-slate-400 text-right px-2">{won(expressFee)}</td>
-                    <td className="border border-slate-400 text-right px-2">{won(expressFee)}</td>
-                    <td className="border border-slate-400 text-center text-[10px]">{expressRemark}</td>
+                    <td className="border border-slate-400 text-center text-[10px] p-1">
+                      <input value={expressRemark} onChange={(e) => setExpressRemark(e.target.value)} readOnly={readOnly}
+                        placeholder="비고 (예: 당사부담)"
+                        className="w-full text-center text-[10px] bg-transparent outline-none focus:bg-indigo-50/60 rounded" />
+                    </td>
                   </tr>
                   <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>합　계</td><td className="border border-slate-400 text-right px-2 font-semibold">{won(supplyTotal)}</td><td className="border border-slate-400"></td></tr>
                   <tr style={{ height: "36px" }}><td className="border border-slate-400 text-center font-semibold" colSpan={6}>부가가치세</td><td className="border border-slate-400 text-right px-2">{won(vat)}</td><td className="border border-slate-400"></td></tr>
