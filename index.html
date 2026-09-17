@@ -7319,7 +7319,7 @@ function BatchFactoryUpdateModal({ products, onRun, onClose }) {
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onUpdateWithLinks, onLinkProposalItem, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection, openNewProductForm, onConsumeOpenNew, onProductRegistered }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onUpdateWithLinks, onLinkProposalItem, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection, onBackfillFromProposals, backfillProgress, openNewProductForm, onConsumeOpenNew, onProductRegistered }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -7661,6 +7661,16 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
               className="text-xs px-3 py-1.5 rounded-lg border border-amber-200 text-amber-700 font-medium hover:bg-amber-50 whitespace-nowrap"
             >
               🧾 검품비용 일괄 정리
+            </button>
+          )}
+          {isAdmin && onBackfillFromProposals && (
+            <button
+              onClick={onBackfillFromProposals}
+              disabled={!!backfillProgress}
+              title="제안서에 남아 있는 카테고리·관세율·위안화 원가·수량별 단가표를 끌어와 제품의 빈칸만 채웁니다. 이미 값이 있는 칸은 덮어쓰지 않습니다."
+              className="text-xs px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-700 font-medium hover:bg-indigo-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+            >
+              {backfillProgress ? `🧩 채우는 중... (${backfillProgress.done}/${backfillProgress.total})` : "🧩 제안서로 빈칸 채우기"}
             </button>
           )}
           <button
@@ -11749,6 +11759,75 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
      해결: 이름을 바꾸기 "전" 기준으로 연결된 제안서를 먼저 확정한 뒤,
            그 품목들에 originProductId를 심고(영구 외래키) 제품엔 proposalIds를 적재한다.
            한 번 심어두면 이후 이름을 몇 번 바꿔도 연결이 유지된다. */
+  /* 🧩 제안서 정보로 기존 제품의 빈칸 채우기.
+     배경: 자동 등록이 필드 7개만 옮기던 시절에 만들어진 제품들은 카테고리·관세율·원가·단가표가 비어 있다.
+           그 정보는 제안서 품목(calcSnapshot)에 그대로 남아 있으므로 거꾸로 끌어와 채운다.
+     ⚠️ 안전장치: **비어 있는 칸만** 채운다. 이미 값이 있으면 절대 덮어쓰지 않는다(사람이 확인해 넣은 값이 우선).
+        단가표도 같은 수량 구간이 있으면 빈 칸만 보강하고, 없으면 행을 추가한다. */
+  const [backfillProgress, setBackfillProgress] = useState(null); // {done,total} — 진행중일 때만 값이 있음
+  const isBlankValue = (v) => v === undefined || v === null || String(v).trim() === "";
+
+  const backfillProductsFromProposals = async () => {
+    // 1) 최신 제안서가 이기도록 정렬한 뒤, 품목을 제품별로 모은다
+    const sorted = [...proposalList].sort((a, b) => compareCreatedDesc(a.createdAt, b.createdAt));
+    const itemByProductId = new Map(); // productId -> 가장 최신 품목
+    sorted.forEach((p) => {
+      (p.items || []).forEach((it) => {
+        if (!it) return;
+        let target = null;
+        if (it.originProductId != null) target = productsList.find((x) => String(x.id) === String(it.originProductId));
+        if (!target) target = productsList.find((x) => x.name === it.productName);
+        if (!target) return;
+        const key = String(target.id);
+        if (!itemByProductId.has(key)) itemByProductId.set(key, it); // 정렬했으므로 먼저 들어온 것이 최신
+      });
+    });
+
+    // 2) 실제로 바뀔 내용만 추려낸다
+    const plans = [];
+    const counts = { category: 0, customsRate: 0, rmbCost: 0, specSize: 0, material: 0, factory: 0, wechatGroup: 0, image: 0, tiers: 0 };
+    productsList.forEach((prod) => {
+      const item = itemByProductId.get(String(prod.id));
+      if (!item) return;
+      const { base, tier } = buildProductFieldsFromItem(item);
+      const patch = {};
+      ["category", "customsRate", "rmbCost", "specSize", "material", "factory", "wechatGroup", "image"].forEach((k) => {
+        if (isBlankValue(prod[k]) && !isBlankValue(base[k])) { patch[k] = base[k]; counts[k]++; }
+      });
+      if (tier) {
+        const merged = mergePriceTier(prod.priceTiers, tier);
+        if (JSON.stringify(merged) !== JSON.stringify(prod.priceTiers || [])) { patch.priceTiers = merged; counts.tiers++; }
+      }
+      if (Object.keys(patch).length > 0) plans.push({ prod, patch });
+    });
+
+    if (plans.length === 0) { alert("제안서에서 가져올 빈칸이 없습니다.\n(이미 값이 있는 칸은 덮어쓰지 않습니다)"); return; }
+
+    const sample = plans.slice(0, 5).map((x) => `· ${x.prod.name} → ${Object.keys(x.patch).join(", ")}`).join("\n");
+    const ok = window.confirm(
+      `제안서 정보로 제품 ${plans.length}건의 빈칸을 채웁니다.\n\n` +
+      `[채워질 항목]\n` +
+      `카테고리 ${counts.category} · 관세율 ${counts.customsRate} · 위안화 원가 ${counts.rmbCost} · 수량별 단가표 ${counts.tiers}\n` +
+      `규격 ${counts.specSize} · 재질 ${counts.material} · 공장 ${counts.factory} · 위챗방 ${counts.wechatGroup} · 사진 ${counts.image}\n\n` +
+      `[예시]\n${sample}${plans.length > 5 ? `\n… 외 ${plans.length - 5}건` : ""}\n\n` +
+      `⚠️ 이미 값이 들어 있는 칸은 건드리지 않습니다. 진행할까요?`
+    );
+    if (!ok) return;
+
+    setBackfillProgress({ done: 0, total: plans.length });
+    let failed = 0;
+    for (let i = 0; i < plans.length; i++) {
+      const { prod, patch } = plans[i];
+      setProductsList((prev) => prev.map((p) => (p.id === prod.id ? { ...p, ...patch } : p)));
+      try {
+        if (FIREBASE_ENABLED && typeof prod.id === "string") await fsUpdate(COLLECTIONS.products, prod.id, patch);
+      } catch (e) { console.error("빈칸 보강 실패:", prod.name, e); failed++; }
+      setBackfillProgress({ done: i + 1, total: plans.length });
+    }
+    setBackfillProgress(null);
+    setToast(`✅ 제품 ${plans.length - failed}건의 빈칸을 제안서 정보로 채웠습니다.${failed ? ` (실패 ${failed}건 — 콘솔 확인)` : ""}`);
+  };
+
   const updateProductWithLinkSync = async (id, patch) => {
     const prev = productsList.find((p) => String(p.id) === String(id));
     const oldName = String((prev && prev.name) || "").trim();
@@ -12909,6 +12988,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           }}
           onBulkCompressImages={bulkCompressProductImages} bulkCompressProgress={bulkCompressProgress}
           onBulkMigrateInspection={openInspectionMigratePreview}
+          onBackfillFromProposals={backfillProductsFromProposals} backfillProgress={backfillProgress}
         />
       )}
 
