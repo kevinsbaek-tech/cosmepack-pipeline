@@ -12074,11 +12074,58 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         **제품관리에 똑같은 제품이 하나 더 생기는 중복 생성 버그**가 있었다.
      ⚠️ 원본에서 온 품목(originProductId 있음)은 이름이 달라져도 **절대 새로 만들지 않는다**.
         바뀐 제품명은 제안서 문서(proposals) 안에만 남고 제품DB 이름은 건드리지 않는다. */
+  /* 제안서 2단계에서 입력한 제품 정보를 제품DB로 자동 등록/보강한다.
+     ⚠️ 예전엔 name/specSize/material/image/lastUnitPrice/factory/wechatGroup **7개만** 옮겨서,
+        2단계에서 분명히 입력한 카테고리·관세율·수량·CBM·위안화 원가(공장가/박스/검품/운송)가
+        제품관리에 전혀 반영되지 않았다("내용을 전부 끌고 오지 못한다"의 원인).
+        게다가 SKU·createdAt도 없어 신규 건이 최신순 맨 뒤로 밀려 안 보이기까지 했다.
+     이제 2단계 입력값 전체를 옮기고, 원가 4종은 제품의 수량별 단가표(priceTiers) 1행으로 만든다. */
+  const buildProductFieldsFromItem = (item) => {
+    const snap = item.calcSnapshot || {};
+    const qty = Number(item.quantity) || 0;
+    const tier = {
+      qty: qty || "",
+      cbm: item.cbm || "",
+      shippingRmb: snap.rmbShip || "",     // 중국 내 운송료(총 RMB)
+      inspectionRmb: snap.rmbInspect || "", // 검품비용(총 RMB)
+      factoryPriceRmb: snap.rmbBase || "",  // 공장 단가(RMB/개)
+      boxRmb: snap.rmbBox || "",            // 박스비용(총 RMB)
+    };
+    const hasTierData = tier.qty || tier.cbm || tier.shippingRmb || tier.inspectionRmb || tier.factoryPriceRmb;
+    return {
+      base: {
+        name: item.productName, specSize: item.specSize, material: item.material, image: item.image,
+        lastUnitPrice: item.unitPrice, factory: item.factory || "", wechatGroup: item.wechatGroup || "",
+        category: item.category || "",
+        customsRate: snap.customsRate != null ? snap.customsRate : "",
+        rmbCost: snap.rmbBase || "",
+        proposalNotesK: item.notes || "",
+      },
+      tier: hasTierData ? tier : null,
+    };
+  };
+
+  /* 기존 단가표에 같은 수량 구간이 있으면 그 행을 갱신하고, 없으면 새 행으로 추가한다.
+     제안서를 쓸 때마다 같은 수량이 중복으로 쌓이는 것을 막기 위함. */
+  const mergePriceTier = (existingTiers, tier) => {
+    const tiers = Array.isArray(existingTiers) ? existingTiers.map((t) => ({ ...t })) : [];
+    const idx = tiers.findIndex((t) => String(t.qty || "") === String(tier.qty || ""));
+    if (idx >= 0) {
+      // 기존 행의 빈 칸만 채운다(이미 확인해서 넣어둔 값을 제안서 값으로 덮어쓰지 않음)
+      Object.keys(tier).forEach((k) => {
+        if (tier[k] !== "" && tier[k] != null && (tiers[idx][k] === "" || tiers[idx][k] == null)) tiers[idx][k] = tier[k];
+      });
+      return tiers;
+    }
+    return [...tiers, tier];
+  };
+
   const upsertProductRecord = async (item) => {
     const byOrigin = item.originProductId != null
       ? productsList.find((p) => String(p.id) === String(item.originProductId))
       : null;
     const match = byOrigin || productsList.find((p) => p.name === item.productName && p.specSize === item.specSize);
+    const { base, tier } = buildProductFieldsFromItem(item);
 
     if (byOrigin) {
       /* 원본 제품이 확인된 경우 — 이름은 그대로 두고 부가 정보만 보강한다.
@@ -12090,24 +12137,40 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         ...(byOrigin.material ? {} : { material: item.material }),
         ...(byOrigin.factory ? {} : { factory: item.factory || "" }),
         ...(byOrigin.wechatGroup ? {} : { wechatGroup: item.wechatGroup || "" }),
+        ...(byOrigin.category ? {} : { category: base.category }),
+        ...(byOrigin.customsRate ? {} : { customsRate: base.customsRate }),
+        ...(byOrigin.rmbCost ? {} : { rmbCost: base.rmbCost }),
+        ...(tier ? { priceTiers: mergePriceTier(byOrigin.priceTiers, tier) } : {}),
       };
       setProductsList((prev) => prev.map((p) => (p.id === byOrigin.id ? { ...p, ...patch } : p)));
       try { if (FIREBASE_ENABLED && typeof byOrigin.id === "string") await fsUpdate(COLLECTIONS.products, byOrigin.id, patch); } catch (e) { console.error(e); }
       return;
     }
 
-    const record = {
-      name: item.productName, specSize: item.specSize, material: item.material, image: item.image,
-      lastUnitPrice: item.unitPrice, factory: item.factory || "", wechatGroup: item.wechatGroup || "",
-    };
     if (match) {
+      const record = { ...base, ...(tier ? { priceTiers: mergePriceTier(match.priceTiers, tier) } : {}) };
       setProductsList((prev) => prev.map((p) => (p.id === match.id ? { ...p, ...record } : p)));
       try { if (FIREBASE_ENABLED && typeof match.id === "string") await fsUpdate(COLLECTIONS.products, match.id, record); } catch (e) { console.error(e); }
     } else {
-      // 원본 연결이 없고 이름도 처음 보는 경우에만 신규 등록(직접 입력한 새 품목)
+      /* 원본 연결이 없고 이름도 처음 보는 경우에만 신규 등록(직접 입력한 새 품목).
+         ⚠️ SKU와 createdAt을 반드시 채운다 — 없으면 최신 등록순 정렬에서 맨 뒤로 밀려
+            "자동 등록됐다는데 제품관리에 안 보인다"가 된다. */
+      const record = {
+        ...base,
+        ...(tier ? { priceTiers: [tier] } : {}),
+        sku: makeProductSku(),
+        createdAt: new Date().toISOString(),
+      };
       const newRec = { id: Date.now() + Math.random(), ...record };
       setProductsList((prev) => [newRec, ...prev]);
-      try { await fsAdd(COLLECTIONS.products, record); } catch (e) { console.error(e); }
+      try {
+        const res = await fsAdd(COLLECTIONS.products, record);
+        if (res && res.id && !res.local) setProductsList((prev) => prev.map((p) => (p.id === newRec.id ? { ...p, id: res.id } : p)));
+      } catch (e) {
+        console.error("제안서 자동 제품등록 실패:", e);
+        setProductsList((prev) => prev.filter((p) => p.id !== newRec.id)); // 구독 스냅샷에 덮여 조용히 사라지지 않게 정리
+        setToast("제품 자동 등록에 실패했습니다: " + ((e && e.message) || e));
+      }
     }
   };
 
