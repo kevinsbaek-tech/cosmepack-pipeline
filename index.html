@@ -7126,29 +7126,146 @@ function ProductEditModal({ product, factories, onClose, onSave }) {
   );
 }
 
-function ProductProposalsModal({ product, proposals, onClose, onOpenProposal }) {
+/* 제안서 품목과 제품의 이름이 얼마나 겹치는지 점수화한다.
+   제품명을 표준형("[코스메팩] PET용기 / … / 집게일체형 / 250g")으로 바꿔버린 뒤에는
+   옛 품목명("250g 집게 토너패드 PET 용기")과 완전 일치가 안 되므로,
+   공통 토큰 개수로 "이 제안서가 그 제품 같다"를 추천 순위로 제시한다. */
+function nameMatchScore(productText, itemText) {
+  /* ⚠️ 토큰 완전일치로 세면 변별이 안 된다 — "집게"는 "집게일체형"과, "토너패드"는 "토너패드용기"와
+     글자는 겹치지만 토큰으로는 다르기 때문. 그래서 품목 토큰이 제품명 안에 "포함"되는지로 센다. */
+  const hay = searchNorm(productText);
+  const tokens = Array.from(new Set(
+    String(itemText || "").replace(/[\[\]\(\)\/,·]/g, " ").split(/\s+/).map((x) => searchNorm(x)).filter((x) => x.length >= 2)
+  ));
+  if (!hay || tokens.length === 0) return 0;
+  let hit = 0;
+  tokens.forEach((t) => { if (hay.includes(t)) hit++; });
+  return hit;
+}
+
+function ProductProposalsModal({ product, proposals, onClose, onOpenProposal, onLinkProposalItem }) {
+  const [tab, setTab] = useState("list"); // list = 연결된 제안서 보기 / link = 연결 관리
+  const [search, setSearch] = useState("");
   const matched = getLinkedProposals(product, proposals);
+  const matchedIds = new Set(matched.map((p) => String(p.id)));
+
+  /* 연결 후보 — 검색어가 있으면 그 결과를, 없으면 이름이 비슷한 순으로 추천한다.
+     이미 연결된 제안서는 위쪽 "연결됨" 목록에서 관리하므로 후보에서 제외한다. */
+  const candidates = useMemo(() => {
+    const productText = `${product.name || ""} ${product.specSize || ""} ${product.category || ""}`;
+    const q = searchNorm(search);
+    return (proposals || [])
+      .filter((p) => !matchedIds.has(String(p.id)))
+      .map((p) => {
+        const itemText = (p.items || []).map((it) => (it && it.productName) || "").join(" ");
+        const hay = searchNorm(`${p.code || ""} ${p.clientName || ""} ${itemText}`);
+        return { p, score: nameMatchScore(productText, itemText), hit: q ? hay.includes(q) : true };
+      })
+      .filter((x) => x.hit && (q ? true : x.score > 0)) // 검색어가 없으면 이름이 조금이라도 겹치는 건만 추천
+      .sort((a, b) => b.score - a.score || String(b.p.createdAt || "").localeCompare(String(a.p.createdAt || "")))
+      .slice(0, 30);
+  }, [proposals, product, search, matched.length]);
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-2xl overflow-hidden flex flex-col" style={{ maxHeight: "80vh" }}>
+      <div className="bg-white rounded-xl w-full max-w-3xl overflow-hidden flex flex-col" style={{ maxHeight: "85vh" }}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
-          <h2 className="text-base font-bold text-slate-800">📦 {product.name} — 포함된 제안서 ({matched.length}건)</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+          <h2 className="text-base font-bold text-slate-800 truncate pr-3">📦 {product.name} — 연결된 제안서 ({matched.length}건)</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none shrink-0">✕</button>
         </div>
+        <div className="px-6 pt-3 flex gap-2 shrink-0">
+          {[["list", "📄 연결된 제안서"], ["link", "🔗 연결 관리"]].map(([k, label]) => (
+            <button key={k} onClick={() => setTab(k)}
+              className={"px-3 py-1.5 rounded-lg text-xs font-semibold " + (tab === k ? "bg-[#1E3A8A] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}>{label}</button>
+          ))}
+        </div>
+
         <div className="p-4 overflow-y-auto flex-1">
-          {matched.length === 0 ? (
-            <p className="text-xs text-slate-400 text-center py-10">이 제품이 포함된 제안서가 없습니다.</p>
+          {tab === "list" ? (
+            matched.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-10">
+                이 제품이 포함된 제안서가 없습니다.<br />
+                <span className="text-slate-500">제품명을 바꾼 뒤 연결이 끊어진 경우라면 [🔗 연결 관리]에서 다시 이어줄 수 있습니다.</span>
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {matched.map((p) => (
+                  <button key={p.id} onClick={() => onOpenProposal(p)} className="w-full flex items-center justify-between gap-3 p-2.5 rounded-lg hover:bg-slate-50 text-left">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-slate-800 truncate">{p.proposalTitle || p.itemSummary}</div>
+                      <div className="text-xs text-slate-500 truncate">{p.clientName} · {p.code} · {formatCreatedAt(p.createdAt)}</div>
+                    </div>
+                    <span className="text-xs text-[#1D4ED8] shrink-0">PDF 보기 →</span>
+                  </button>
+                ))}
+              </div>
+            )
           ) : (
-            <div className="space-y-2">
-              {matched.map((p) => (
-                <button key={p.id} onClick={() => onOpenProposal(p)} className="w-full flex items-center justify-between gap-3 p-2.5 rounded-lg hover:bg-slate-50 text-left">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-slate-800 truncate">{p.proposalTitle || p.itemSummary}</div>
-                    <div className="text-xs text-slate-500 truncate">{p.clientName} · {p.code} · {formatCreatedAt(p.createdAt)}</div>
+            <div className="space-y-4">
+              <p className="text-[11px] text-slate-500 bg-blue-50/70 border border-blue-100 rounded-lg px-3 py-2 leading-relaxed">
+                제품명을 표준 형식으로 바꾸면 옛 제안서는 이름이 달라 연결이 끊어집니다.
+                아래에서 해당 품목을 직접 이어주면 <b>고유 ID로 연결</b>되어, 이후 이름을 몇 번 바꿔도 유지됩니다.
+              </p>
+
+              {matched.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-slate-600 mb-1.5">현재 연결됨 ({matched.length}건)</div>
+                  <div className="space-y-1.5">
+                    {matched.map((p) => (
+                      <div key={p.id} className="border border-emerald-200 bg-emerald-50/50 rounded-lg p-2.5">
+                        <div className="text-xs font-medium text-slate-700 truncate">{p.code} · {p.clientName}</div>
+                        <div className="mt-1 space-y-1">
+                          {(p.items || []).map((it, i) => (
+                            <div key={i} className="flex items-center justify-between gap-2 text-[11px]">
+                              <span className="truncate text-slate-600">{it && it.productName}</span>
+                              {it && String(it.originProductId) === String(product.id) ? (
+                                <button onClick={() => onLinkProposalItem(p.id, i, product.id, true)}
+                                  className="shrink-0 px-2 py-0.5 rounded border border-red-200 text-red-500 hover:bg-red-50">🔓 연결 해제</button>
+                              ) : (
+                                <span className="shrink-0 text-slate-400">이름 매칭</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <span className="text-xs text-[#1D4ED8] shrink-0">PDF 보기 →</span>
-                </button>
-              ))}
+                </div>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5 gap-2">
+                  <div className="text-xs font-semibold text-slate-600">연결할 제안서 찾기</div>
+                  <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="제안번호 · 고객사 · 품목명 검색"
+                    className="text-xs px-2.5 py-1.5 border border-slate-200 rounded-lg w-64 outline-none focus:border-[#1E3A8A]" />
+                </div>
+                {candidates.length === 0 ? (
+                  <p className="text-xs text-slate-400 text-center py-8">
+                    {search ? "검색 결과가 없습니다." : "이름이 비슷한 제안서가 없습니다. 검색으로 찾아보세요."}
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {candidates.map(({ p, score }) => (
+                      <div key={p.id} className="border border-slate-200 rounded-lg p-2.5">
+                        <div className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                          <span className="truncate">{p.code} · {p.clientName}</span>
+                          {score > 0 && <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">유사도 {score}</span>}
+                          <span className="shrink-0 text-[10px] text-slate-400 ml-auto">{formatCreatedAt(p.createdAt)}</span>
+                        </div>
+                        <div className="mt-1.5 space-y-1">
+                          {(p.items || []).map((it, i) => (
+                            <div key={i} className="flex items-center justify-between gap-2 text-[11px]">
+                              <span className="truncate text-slate-600">{(it && it.productName) || "(품목명 없음)"}</span>
+                              <button onClick={() => onLinkProposalItem(p.id, i, product.id, false)}
+                                className="shrink-0 px-2 py-0.5 rounded border border-[#1E3A8A] text-[#1E3A8A] hover:bg-blue-50 font-medium">＋ 이 품목 연결</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -7202,7 +7319,7 @@ function BatchFactoryUpdateModal({ products, onRun, onClose }) {
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection, openNewProductForm, onConsumeOpenNew, onProductRegistered }) {
+function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onUpdateWithLinks, onLinkProposalItem, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection, openNewProductForm, onConsumeOpenNew, onProductRegistered }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -7274,7 +7391,9 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
       return; // 모달을 닫지 않고 그대로 두어 사용자가 이어서 입력할 수 있게 한다
     }
     if (id) {
-      onUpdate(id, patch);
+      /* ⭐ 수정 저장은 연결 동기화 경로를 탄다 — 제품명이 바뀌면 연결된 제안서·인보이스 품목에
+         originProductId를 심어 "N개 제안서" 연결이 끊어지지 않게 한다. */
+      (onUpdateWithLinks || onUpdate)(id, patch);
     } else if (isDuplicateFlow && onAddDuplicate) {
       // 복사플로우는 전용 토스트("복사되어 등록되었습니다")를 띄우는 별도 저장함수로
       onAddDuplicate({
@@ -7441,7 +7560,8 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
       {viewingSimilarProduct && <SimilarProductsModal product={viewingSimilarProduct} allProducts={products} onClose={() => setViewingSimilarProduct(null)} />}
       {viewingProductProposals && (
         <ProductProposalsModal product={viewingProductProposals} proposals={proposals} onClose={() => setViewingProductProposals(null)}
-          onOpenProposal={(p) => { setViewingProductProposals(null); onOpenProposal(p); }} />
+          onOpenProposal={(p) => { setViewingProductProposals(null); onOpenProposal(p); }}
+          onLinkProposalItem={onLinkProposalItem} />
       )}
       {editingProduct !== null && (
         <ProductEditModal
@@ -11622,6 +11742,102 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setToast(`✅ 총 ${targets.length}개 제품의 공장명 및 위챗 정보가 변경되었습니다.`);
   };
 
+  /* ⭐ 제품명을 바꿔도 "N개 제안서" 연결이 끊기지 않게 하는 저장 경로.
+     배경: getLinkedProposals는 ①품목의 originProductId ②제품의 proposalIds[] ③제품명 텍스트 순으로 매칭한다.
+           originProductId가 도입되기 전(또는 제안서에서 품목을 직접 입력한 경우) 품목엔 그 필드가 없어
+           ③ 이름 폴백에만 의지하게 되는데, 제품명을 바꾸는 순간 그 고리가 끊어져 배지가 0개로 떨어졌다.
+     해결: 이름을 바꾸기 "전" 기준으로 연결된 제안서를 먼저 확정한 뒤,
+           그 품목들에 originProductId를 심고(영구 외래키) 제품엔 proposalIds를 적재한다.
+           한 번 심어두면 이후 이름을 몇 번 바꿔도 연결이 유지된다. */
+  const updateProductWithLinkSync = async (id, patch) => {
+    const prev = productsList.find((p) => String(p.id) === String(id));
+    const oldName = String((prev && prev.name) || "").trim();
+    const newName = String(patch.name || "").trim();
+    if (!prev || oldName === newName) { updateProductRecord(id, patch); return; }
+
+    // 이름이 바뀌기 전 기준으로 "지금 연결돼 있는" 제안서를 확정한다
+    const linkedProposals = getLinkedProposals(prev, proposalList);
+    const linkedInvoices = getLinkedProposals(prev, invoiceList);
+    const totalLinked = linkedProposals.length + linkedInvoices.length;
+
+    /* 제안서·인보이스는 이미 고객에게 발송된 문서라, 품목명을 덮어쓰면 고객이 받은 PDF와 기록이 달라진다.
+       연결 유지에는 id만 있으면 충분하므로 이름 변경은 기본값이 아니라 선택으로 물어본다. */
+    let renameItems = false;
+    if (totalLinked > 0) {
+      renameItems = window.confirm(
+        `이 제품과 연결된 문서 ${totalLinked}건(제안서 ${linkedProposals.length} · 인보이스 ${linkedInvoices.length})을 찾았습니다.\n` +
+        `연결은 자동으로 유지됩니다.\n\n` +
+        `문서에 적힌 품목명도 새 이름으로 바꿀까요?\n` +
+        `· 확인 = 품목명을 "${newName}"으로 변경\n` +
+        `· 취소 = 연결만 유지하고 기존 품목명은 그대로 보존(권장 — 발송된 문서 원형 유지)`
+      );
+    }
+
+    // 품목에 originProductId를 심는다(+ 선택 시 품목명·사진도 갱신)
+    const stampItems = (items) => {
+      let changed = false;
+      const next = (items || []).map((it) => {
+        if (!it) return it;
+        const isTarget = (it.originProductId != null && String(it.originProductId) === String(id))
+          || (it.originProductId == null && String(it.productName || "").trim() === oldName);
+        if (!isTarget) return it;
+        const patched = { ...it };
+        if (String(patched.originProductId == null ? "" : patched.originProductId) !== String(id)) { patched.originProductId = id; changed = true; }
+        if (renameItems) {
+          if (patched.productName !== newName) { patched.productName = newName; changed = true; }
+          if (patch.image && patched.image !== patch.image) { patched.image = patch.image; changed = true; }
+        }
+        return patched;
+      });
+      return changed ? next : null; // 바뀐 게 없으면 null — 불필요한 Firestore 쓰기를 건너뛴다
+    };
+
+    let syncedDocs = 0;
+    const applyTo = async (docs, collection, setList) => {
+      for (const doc of docs) {
+        const nextItems = stampItems(doc.items);
+        if (!nextItems) continue;
+        setList((prevList) => prevList.map((d) => (d.id === doc.id ? { ...d, items: nextItems } : d)));
+        try {
+          if (FIREBASE_ENABLED && typeof doc.id === "string") await fsUpdate(collection, doc.id, { items: nextItems });
+          syncedDocs++;
+        } catch (e) { console.error("연결 동기화 실패:", doc.id, e); }
+      }
+    };
+    await applyTo(linkedProposals, COLLECTIONS.proposals, setProposalList);
+    await applyTo(linkedInvoices, COLLECTIONS.invoices, setInvoiceList);
+
+    // 역방향 링크(proposalIds)도 함께 보강 — originProductId를 못 심은 옛 문서까지 커버한다
+    const mergedIds = Array.from(new Set([...(prev.proposalIds || []), ...linkedProposals.map((p) => p.id)].filter(Boolean)));
+    updateProductRecord(id, { ...patch, proposalIds: mergedIds });
+    if (totalLinked > 0) {
+      setToast(`✅ 제품명을 변경하고 연결된 문서 ${totalLinked}건의 연결을 유지했습니다.${renameItems ? ` (품목명 ${syncedDocs}건 갱신)` : ""}`);
+    }
+  };
+
+  /* 🔗 제품 ↔ 제안서 수동 연결 — 이미 끊어진 옛 건을 되살리는 복구 경로.
+     이름이 이미 바뀌어 버린 뒤에는 텍스트 매칭으로 자동 복구가 불가능하므로 사람이 지목해서 이어준다. */
+  const linkProposalItemToProduct = async (proposalId, itemIndex, productId, unlink) => {
+    const doc = proposalList.find((p) => p.id === proposalId);
+    if (!doc) return;
+    const nextItems = (doc.items || []).map((it, i) => (i === itemIndex ? { ...it, originProductId: unlink ? null : productId } : it));
+    setProposalList((prev) => prev.map((d) => (d.id === proposalId ? { ...d, items: nextItems } : d)));
+    try {
+      if (FIREBASE_ENABLED && typeof proposalId === "string") await fsUpdate(COLLECTIONS.proposals, proposalId, { items: nextItems });
+    } catch (e) { console.error("제안서 연결 저장 실패:", e); setToast("연결 저장 중 오류가 발생했습니다."); return; }
+
+    // 제품의 역방향 링크도 함께 정리한다(해제 시엔 다른 품목이 남아있는지 확인 후 제거)
+    const product = productsList.find((p) => String(p.id) === String(productId));
+    if (product) {
+      const ids = new Set(product.proposalIds || []);
+      const stillLinked = nextItems.some((it) => it && String(it.originProductId) === String(productId));
+      if (unlink && !stillLinked) ids.delete(proposalId);
+      if (!unlink) ids.add(proposalId);
+      updateProductRecord(productId, { proposalIds: Array.from(ids) });
+    }
+    setToast(unlink ? "🔓 연결을 해제했습니다." : "🔗 제안서를 이 제품에 연결했습니다.");
+  };
+
   const updateProductRecord = async (id, patch) => {
     setProductsList((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
     try {
@@ -12605,7 +12821,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <ProductsView
           products={productsList} factories={factoriesList} proposals={proposalList} onBack={() => goBackTo("pipeline")}
           onDelete={deleteProductRecord} onAdd={addProductRecord} onAddDuplicate={addDuplicatedProductRecord} onBulkUpdateFactoryInfo={bulkUpdateFactoryInfo} onMergeProducts={mergeProducts} onBulkAdd={bulkAddProducts}
-          onUpdate={updateProductRecord} onDedupe={dedupeProducts} onAutoAssignCategories={autoAssignCategories} onStripBrandPrefix={stripBrandPrefixFromNames}
+          onUpdate={updateProductRecord} onUpdateWithLinks={updateProductWithLinkSync} onLinkProposalItem={linkProposalItemToProduct} onDedupe={dedupeProducts} onAutoAssignCategories={autoAssignCategories} onStripBrandPrefix={stripBrandPrefixFromNames}
           onUseInSourcing={(p) => { rememberReturn("products"); setProductToPick(p); setView("pipeline"); setActiveStep(1); }}
           onOpenProposal={(p) => setPdfData({ ...p, readOnly: true })}
           onSyncFactories={syncFactoriesFromBoxHeroRecords}
