@@ -254,48 +254,23 @@ async function fsDelete(collectionName, id) {
 }
 // 실시간 구독: onSnapshot으로 목록을 항상 최신 상태로 유지 (연결 안 됐으면 아무 것도 안 함 → 로컬 state만 사용)
 // orderBy를 서버 쿼리에 걸지 않음(createdAt 필드가 없는 기존 문서가 결과에서 통째로 제외되는 것을 방지) — 대신 받은 뒤 클라이언트에서 정렬
-/* ⚡ 빠른 모드 — 무거운 컬렉션은 최근 N건만 구독한다.
-   배경: 이 시스템은 사진을 Storage가 아니라 문서 안에 base64로 넣는 구조라,
-        컬렉션 전체를 구독하면 접속할 때마다 수십 MB를 내려받는다(실측 18.6MB / 36초).
-        앱은 8초 무응답이면 경고 배너를 띄우므로, 회선이 조금만 느려도 "데이터가 안 보인다"가 된다.
-   ⚠️ orderBy("createdAt")은 **그 필드가 없는 옛 문서를 결과에서 아예 빼버린다**.
-      그래서 제한 쿼리가 실패하거나 0건이면 즉시 무제한 구독으로 되돌린다(데이터가 조용히 사라지지 않게).
-      화면에서도 "최근 N건만 불러옴" 배너와 [전체 불러오기] 버튼으로 항상 빠져나갈 수 있다. */
-const FAST_MODE_LIMIT = 300;
-const FAST_MODE_COLLECTIONS = ["products", "proposals", "invoices", "samples"]; // 사진이 들어 있어 무거운 4종
-
-function fsSubscribe(collectionName, onData, onError, limitCount) {
+function fsSubscribe(collectionName, onData, onError) {
   if (!db) return () => {};
-  const base = db.collection(collectionName);
-  const subscribe = (query, isLimited) => query.onSnapshot(
+  return db.collection(collectionName).onSnapshot(
     (snap) => {
-      /* 제한 쿼리인데 0건이면 createdAt이 없는 옛 문서들일 가능성이 크다 → 무제한으로 다시 구독 */
-      if (isLimited && snap.empty) { fallback(); return; }
       const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       list.sort((a, b) => {
         const da = parseCreatedAt(a.createdAt) || new Date(0);
         const db_ = parseCreatedAt(b.createdAt) || new Date(0);
         return db_ - da;
       });
-      // 더 있을 수 있음을 두 번째 인자로 알린다(배열에 속성을 붙이면 map/spread 과정에서 사라진다)
-      onData(list, isLimited && snap.size >= limitCount);
+      onData(list);
     },
     (err) => {
-      if (isLimited) { console.warn(`${collectionName} 제한 구독 실패 — 전체 구독으로 전환합니다.`, err); fallback(); return; }
       console.error(`${collectionName} 구독 오류:`, err);
       if (onError) onError(collectionName, err);
     }
   );
-
-  let current = null;
-  let stopped = false;
-  const fallback = () => {
-    if (stopped) return;
-    if (current) current();
-    current = subscribe(base, false);
-  };
-  current = limitCount ? subscribe(base.orderBy("createdAt", "desc").limit(limitCount), true) : subscribe(base, false);
-  return () => { stopped = true; if (current) current(); };
 }
 
 /* ===================== 구글 드라이브 썸네일 변환 ===================== */
@@ -10427,20 +10402,6 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   // Firestore 연결 시 실시간 구독 — 미연결이면 로컬 state만 사용
   const [fsErrors, setFsErrors] = useState([]); // [{collection, message}] — 사라지는 토스트 대신 계속 화면에 남는 배너로 보여줄 오류 목록
   const [fsSlowWarning, setFsSlowWarning] = useState(false); // 일정 시간이 지나도 응답이 전혀 없을 때(네트워크/방화벽 차단 등 의심) 표시
-  /* ⚡ 빠른 모드 — 무거운 4종(제품·제안서·인보이스·샘플)을 최근 300건만 불러온다.
-     기본값 ON. 선택은 브라우저에 기억되므로 PC마다 따로 설정할 수 있다(느린 회선에서만 켜두는 식). */
-  const [fastMode, setFastMode] = useState(() => {
-    try { return localStorage.getItem("cosmepack_fast_mode") !== "off"; } catch (e) { return true; }
-  });
-  const [limitedCollections, setLimitedCollections] = useState([]); // 제한에 걸려 "더 있을 수 있는" 컬렉션들
-  const toggleFastMode = () => {
-    setFastMode((prev) => {
-      const next = !prev;
-      try { localStorage.setItem("cosmepack_fast_mode", next ? "on" : "off"); } catch (e) {}
-      if (!next) setLimitedCollections([]); // 전체 모드로 가면 배너를 즉시 내린다
-      return next;
-    });
-  };
   useEffect(() => {
     // 구독 오류(특히 권한거부)를 콘솔뿐 아니라 화면에도 "계속 남는 배너"로 노출 — "데이터가 0개로 보인다"는 문의가 실은
     // 필터링이 아니라 이 계정/네트워크에서 Firestore를 아예 못 읽어서 생기는 문제일 수 있어, 원인을 바로 확인할 수 있게 한다.
@@ -10452,28 +10413,22 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       setFsErrors((prev) => (prev.some((e) => e.collection === collectionName) ? prev : [...prev, { collection: collectionName, message }]));
     };
     let gotAnyResponse = false;
-    const markResponded = (setter, key) => (list, limitedMore) => {
-      gotAnyResponse = true;
-      setter(list);
-      if (key) setLimitedCollections((prev) => (limitedMore ? (prev.includes(key) ? prev : [...prev, key]) : prev.filter((k) => k !== key)));
-    };
-    // 빠른 모드일 때만 무거운 4종에 건수 제한을 건다(나머지는 원래대로 전체 구독)
-    const lim = (key) => (fastMode && FAST_MODE_COLLECTIONS.includes(key) ? FAST_MODE_LIMIT : 0);
+    const markResponded = (setter) => (list) => { gotAnyResponse = true; setter(list); };
     const unsub1 = fsSubscribe(COLLECTIONS.sourcing, markResponded((list) => setSourcingItems(list)), handleFsError);
-    const unsub2 = fsSubscribe(COLLECTIONS.proposals, markResponded((list) => setProposalList(list), "proposals"), handleFsError, lim("proposals"));
+    const unsub2 = fsSubscribe(COLLECTIONS.proposals, markResponded((list) => setProposalList(list)), handleFsError);
     const unsub3 = fsSubscribe(COLLECTIONS.clients, markResponded((list) => setClientsList(list)), handleFsError);
     const unsub4 = fsSubscribe(COLLECTIONS.factories, markResponded((list) => setFactoriesList(list)), handleFsError);
-    const unsub5 = fsSubscribe(COLLECTIONS.products, markResponded((list) => setProductsList(list), "products"), handleFsError, lim("products"));
+    const unsub5 = fsSubscribe(COLLECTIONS.products, markResponded((list) => setProductsList(list)), handleFsError);
     const unsub6 = fsSubscribe(COLLECTIONS.excelArchive, markResponded((list) => setExcelArchiveList(list)), handleFsError);
     const unsub7 = fsSubscribe(COLLECTIONS.tasks, markResponded((list) => setTaskList(list)), handleFsError);
-    const unsub8 = fsSubscribe(COLLECTIONS.samples, markResponded((list) => setSampleList(list), "samples"), handleFsError, lim("samples"));
+    const unsub8 = fsSubscribe(COLLECTIONS.samples, markResponded((list) => setSampleList(list)), handleFsError);
     const unsub9 = fsSubscribe(COLLECTIONS.sampleStock, markResponded((list) => setSampleStockList(list)), handleFsError);
-    const unsub10 = fsSubscribe(COLLECTIONS.invoices, markResponded((list) => setInvoiceList(list), "invoices"), handleFsError, lim("invoices"));
+    const unsub10 = fsSubscribe(COLLECTIONS.invoices, markResponded((list) => setInvoiceList(list)), handleFsError);
     // 8초가 지나도 9개 컬렉션 중 단 하나도 응답(성공/실패 무관)이 없으면 — 권한거부 에러조차 안 뜬 것이므로
     // 네트워크/방화벽이 Firestore 접속 자체를 막고 있을 가능성이 높다고 보고 별도로 경고한다.
     const slowTimer = setTimeout(() => { if (FIREBASE_ENABLED && !gotAnyResponse) setFsSlowWarning(true); }, 8000);
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); clearTimeout(slowTimer); };
-  }, [fastMode]); // 모드를 바꾸면 전체 재구독
+  }, []);
   const [clientModal, setClientModal] = useState({ open: false, mode: "save" });
 
   // 브라우저 뒤로가기/앞으로가기(hashchange)를 누르면 그 한글 해시에 맞는 탭/모달로 전환한다.
@@ -12606,25 +12561,6 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
               <button onClick={() => { setFsErrors([]); setFsSlowWarning(false); }} className="text-white/80 hover:text-white text-sm">✕</button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* ⚡ 빠른 모드 안내 — 제한에 걸린 컬렉션이 있을 때만 뜬다.
-          검색·목록에서 "예전 건이 안 보인다"는 오해를 막기 위해 항상 빠져나갈 버튼을 함께 둔다. */}
-      {limitedCollections.length > 0 && fastMode && (
-        <div className="fixed bottom-4 left-4 z-[65] bg-amber-50 border border-amber-300 text-amber-900 text-xs px-4 py-2.5 rounded-xl shadow-lg no-print max-w-md">
-          <div className="font-semibold mb-0.5">⚡ 빠른 모드 — 최근 {FAST_MODE_LIMIT}건만 불러왔습니다</div>
-          <div className="text-[11px] leading-relaxed text-amber-800">
-            사진 용량이 커서 전체를 받으면 느려집니다. 오래된 건을 찾으시려면 전체를 불러오세요.
-            <span className="text-amber-700"> (대상: {limitedCollections.map((k) => ({ products: "제품", proposals: "제안서", invoices: "인보이스", samples: "샘플" }[k] || k)).join(", ")})</span>
-          </div>
-          <button onClick={toggleFastMode} className="mt-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white font-semibold hover:bg-amber-700">📚 전체 불러오기</button>
-        </div>
-      )}
-      {!fastMode && (
-        <div className="fixed bottom-4 left-4 z-[65] bg-slate-800 text-white text-[11px] px-3 py-2 rounded-xl shadow-lg no-print flex items-center gap-2">
-          <span>📚 전체 데이터 모드 (느릴 수 있음)</span>
-          <button onClick={toggleFastMode} className="px-2 py-1 rounded-lg bg-white/20 hover:bg-white/30 font-semibold whitespace-nowrap">⚡ 빠른 모드로</button>
         </div>
       )}
 
