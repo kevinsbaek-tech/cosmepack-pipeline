@@ -14522,15 +14522,39 @@ const CUSTOMER_PAGE_TITLES = {
   ct: `CT 맞춤샘플 인보이스 | ${BRAND_TITLE}`,
 };
 
-function RoleLoginScreen({ accounts, onLogin }) {
+/* 로그인 비교용 정규화 — 한글 아이디는 입력 환경에 따라 같은 글자라도 내부 코드가 달라질 수 있다
+   (맥·일부 입력기는 "이수정"을 자모 분리형(NFD)으로 넘김). 앞뒤 공백도 눈에 안 보이는 불일치 원인이다.
+   → 양쪽 모두 NFC 정규화 + 앞뒤 공백 제거 후 비교한다. */
+const normLogin = (s) => String(s == null ? "" : s).normalize("NFC").trim();
+
+function RoleLoginScreen({ accounts, accountsState, onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const loaded = !accountsState || accountsState.loaded; // prop이 없으면(로컬 모드) 로드 완료로 간주
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const match = accounts.find((acc) => acc.username === username && acc.password === password);
-    if (!match) { setError("아이디 또는 비밀번호가 올바르지 않습니다."); return; }
+    const u = normLogin(username);
+    const p = normLogin(password);
+    const byId = accounts.find((acc) => normLogin(acc.username) === u);
+    const match = byId && normLogin(byId.password) === p ? byId : null;
+    if (!match) {
+      /* 실패 원인을 구분해서 알려준다 — 예전엔 모든 실패가 "아이디 또는 비밀번호가 올바르지 않습니다" 한 가지라,
+         서버 계정 목록을 아직 못 받은 상황(네트워크 지연)과 비밀번호 오타가 구분되지 않았다. */
+      if (!byId && !loaded) {
+        setError(
+          accountsState && accountsState.error
+            ? `서버에서 계정 정보를 불러오지 못했습니다 (${accountsState.error}). 네트워크를 확인한 뒤 새로고침해 주세요.`
+            : "아직 서버에서 계정 정보를 받아오는 중입니다. 잠시 후 다시 시도해 주세요. 계속되면 이 PC의 네트워크(방화벽·보안 프로그램)를 확인해 주세요."
+        );
+      } else if (!byId) {
+        setError("등록되지 않은 아이디입니다. 관리자에게 계정 관리에 등록된 아이디를 확인해 주세요.");
+      } else {
+        setError("비밀번호가 올바르지 않습니다.");
+      }
+      return;
+    }
     setError("");
     onLogin({ username: match.username, role: match.role, displayName: match.name });
   };
@@ -14552,9 +14576,20 @@ function RoleLoginScreen({ accounts, onLogin }) {
         <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A] mb-4" placeholder="••••••••" />
 
-        {error && <div className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-4">{error}</div>}
+        {error && <div className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-4 leading-relaxed">{error}</div>}
 
         <button type="submit" className="w-full py-2.5 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90">로그인</button>
+
+        {/* 서버 계정 목록 수신 상태 — 로그인이 안 될 때 원인이 "네트워크"인지 한눈에 보이게 한다 */}
+        {accountsState && (
+          <div className={"mt-3 text-[11px] text-center " + (accountsState.loaded ? "text-emerald-600" : accountsState.error ? "text-red-500" : "text-amber-600")}>
+            {accountsState.loaded
+              ? `● 서버 연결됨 · 등록 계정 ${accounts.length}개`
+              : accountsState.error
+                ? "● 서버 연결 실패 — 네트워크를 확인해 주세요"
+                : "● 서버에서 계정 정보를 받아오는 중…"}
+          </div>
+        )}
       </form>
     </div>
   );
@@ -14727,6 +14762,10 @@ function Root() {
     try { return JSON.parse(localStorage.getItem(ROLE_STORAGE_KEY)); } catch (e) { return null; }
   });
   const [accounts, setAccounts] = useState(loadAccounts);
+  /* 서버(Firestore) 계정 목록이 실제로 도착했는지 — 로그인 실패 원인을 정확히 알려주기 위해 추적한다.
+     도착 전의 accounts는 이 브라우저의 캐시 또는 기본 계정 2개(admin/staff)뿐이라,
+     네트워크가 느린 PC에서는 직원 계정이 목록에 아예 없어 "비밀번호가 틀렸다"로 잘못 안내됐다. */
+  const [accountsState, setAccountsState] = useState({ loaded: false, error: "" });
 
   useEffect(() => {
     // 계정 목록(아이디/비번)을 이 브라우저의 localStorage에만 두면 다른 컴퓨터에서 로그인할 때 안 보이는 문제가 있어
@@ -14740,10 +14779,18 @@ function Root() {
           seed.forEach((acc) => { db.collection(COLLECTIONS.accounts).doc(acc.id).set(acc).catch((e) => console.error(e)); });
           setAccounts(seed);
         } else {
-          setAccounts(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+          const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+          setAccounts(list);
+          /* 받아온 계정 목록을 이 브라우저에 캐시해 둔다 — 다음 접속 때 네트워크가 느려
+             서버 응답이 늦어도, 한 번이라도 받아본 PC라면 직원 계정으로 바로 로그인할 수 있다. */
+          saveAccounts(list);
         }
+        setAccountsState({ loaded: true, error: "" });
       },
-      (err) => console.error("accounts 구독 오류:", err)
+      (err) => {
+        console.error("accounts 구독 오류:", err);
+        setAccountsState({ loaded: false, error: (err && err.message) || "계정 목록을 불러오지 못했습니다." });
+      }
     );
     return () => unsub();
   }, []);
@@ -14819,7 +14866,7 @@ function Root() {
     return <div className="min-h-screen flex items-center justify-center bg-[#F5F7FA] p-6"><div className="bg-white border border-red-200 rounded-xl p-6 max-w-md text-sm text-red-600">{authError}</div></div>;
   }
   if (!roleUser) {
-    return <RoleLoginScreen accounts={accounts} onLogin={handleRoleLogin} />;
+    return <RoleLoginScreen accounts={accounts} accountsState={accountsState} onLogin={handleRoleLogin} />;
   }
   return <App currentUser={user} onLogout={handleFullLogout} roleUser={roleUser} accounts={accounts} onSaveAccount={saveAccount} onDeleteAccount={deleteAccount} />;
 }
