@@ -3628,6 +3628,85 @@ function PvNumber({ ro, value, onChange, className }) {
 }
 
 /* 인보이스 고객 승인요청 발송 모달 — 업체관리의 계약서 발송 모달과 동일한 형식(고품격 비즈니스 안내문 + 복사/문자) */
+/* 💬 결제 단계별 고객 안내 문구 생성.
+   계약금 → 중도금 → 잔금은 보내는 시점의 맥락이 완전히 달라(착수금 / 생산완료·선적 전 / 통관·납품 후),
+   같은 문구를 쓰면 고객이 어느 대금을 요청받는지 알 수 없다. 단계별로 제목·본문·청구 라인을 분기한다.
+   ⚠️ 비율(%)은 하드코딩하지 않고 그 인보이스에 저장된 스케줄의 rate를 쓴다 — 30/60/10을 고친 건이 있다.
+   ⚠️ 본문의 정식 URL(https://~)은 "열람 링크 1개"만 유지할 것(2개 이상이면 카카오톡 미리보기 카드가 사라진다). */
+function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTotal, grandTotal, amounts }) {
+  const client = (invoice && invoice.clientName) || "고객사";
+  const code = (invoice && invoice.code) || "INV-발행건";
+  const rows = (amounts && amounts.rows) || [];
+  const rateOf = (i, fallback) => {
+    const r = Number((rows[i] || {}).rate);
+    return Number.isFinite(r) && r > 0 ? r : fallback;
+  };
+  const rDep = rateOf(0, 30), rInt = rateOf(1, 60), rBal = rateOf(2, 10);
+  const money = (n) => `₩${Math.round(Number(n) || 0).toLocaleString()}`;
+  const head = `안녕하세요, ${client} 담당자님.\n화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n`;
+  const common =
+    `─── 인보이스 요약 ───\n` +
+    `• 문서 번호 : ${code}\n` +
+    `• 공급 품목 : ${shortenForMessage(productLabel)}\n` +
+    `• 총 공급가 : ${money(supplyTotal)} (부가세 별도)\n` +
+    `• 총 청구금액 : ${money(grandTotal)} (부가세 포함)\n`;
+  const tail = `\n🔗 인보이스 열람 및 확인하기:\n${link}\n\n`;
+  const sign = `(주)비케이브로 코스메팩 드림`;
+  // 이전 단계 입금 완료 내역 — 입금일자가 있을 때만 줄을 만든다(없으면 아예 표기하지 않음)
+  const paidLine = (label, rate, dateStr) =>
+    dateStr ? `• ${label}(${rate}%) : ${formatKoreanDate(dateStr)} 입금완료\n` : "";
+
+  if (stage === "interim") {
+    const history = paidLine("계약금", rDep, invoice && invoice.depositPaidDate);
+    return (
+      `[코스메팩] 제품 생산 완료 및 중도금(${rInt}%) 청구 안내\n\n` + head +
+      `주문하신 제품의 현지 생산이 완료되었습니다.\n` +
+      `현지 검품 완료 후 선적(출고) 전 중도금(${rInt}%)을 아래와 같이 청구드립니다.\n\n` +
+      common + `──────────────────\n` +
+      (history ? `▶ 결제 진행 내역\n${history}` : "") +
+      `▶ 이번 청구 : 중도금(${rInt}%) ${money(amounts && amounts.interim)}\n` +
+      `──────────────────\n` + tail +
+      `※ 중도금 입금이 확인되면 즉시 선적이 진행됩니다.\n\n` + sign
+    );
+  }
+  if (stage === "balance") {
+    const history = paidLine("계약금", rDep, invoice && invoice.depositPaidDate)
+      + paidLine("중도금", rInt, invoice && invoice.interimPaidDate);
+    return (
+      `[코스메팩] 통관 완료 · 납품 및 최종 잔금(${rBal}%) 정산 안내\n\n` + head +
+      `주문하신 제품의 통관 및 국내 입고가 완료되었습니다.\n` +
+      `납품 건에 대한 최종 잔금(${rBal}%)을 아래와 같이 정산 청구드립니다.\n\n` +
+      common + `──────────────────\n` +
+      (history ? `▶ 결제 진행 내역\n${history}` : "") +
+      `▶ 이번 청구 : 잔금(${rBal}%) ${money(amounts && amounts.balance)}\n` +
+      `──────────────────\n` + tail +
+      `※ 최종 정산은 실제 입고 수량(실수량) 기준으로 처리됩니다.\n\n` + sign
+    );
+  }
+  if (stage === "completed") {
+    const history = paidLine("계약금", rDep, invoice && invoice.depositPaidDate)
+      + paidLine("중도금", rInt, invoice && invoice.interimPaidDate)
+      + paidLine("잔금", rBal, invoice && invoice.balancePaidDate);
+    return (
+      `[코스메팩] 대금 정산 완료 안내\n\n` + head +
+      `해당 건의 대금 정산이 모두 완료되었습니다. 거래에 감사드립니다.\n\n` +
+      common + `──────────────────\n` +
+      (history ? `▶ 결제 완료 내역\n${history}` : "") +
+      `──────────────────\n` + tail + sign
+    );
+  }
+  // 기본값 = 계약금(발행 직후)
+  return (
+    `[코스메팩] 제품 공급 인보이스(계약금 청구) 안내\n\n` + head +
+    `협의하신 제품의 공급 인보이스가 발행되었습니다.\n` +
+    `생산 착수를 위한 계약금(${rDep}%)을 아래와 같이 청구드립니다.\n\n` +
+    common + `• 열람 기한 : 발행일로부터 30일\n──────────────────\n` +
+    `▶ 이번 청구 : 계약금(${rDep}%) ${money(amounts && amounts.deposit)}\n` +
+    `──────────────────\n` + tail +
+    `※ 링크 화면에서 바로 승인하실 수 있으며, 계약금 입금 확인 시 즉시 생산이 착수됩니다.\n\n` + sign
+  );
+}
+
 function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
   const link = `${window.location.origin}/agree?type=invoice&id=${invoice.id}`;
   const items = invoice.items || [];
@@ -3642,28 +3721,24 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
   const supplyTotal = invoice.totalAmount != null ? Number(invoice.totalAmount) : (itemsTotal + invAdjust);
   const grandTotal = supplyTotal + Math.floor(supplyTotal * 0.1); // 부가세 포함 총 청구금액
 
-  /* 고객사에 그대로 나가는 표준 문구(대기업 B2B 서식) — 임의로 줄이거나 표현을 바꾸지 말 것.
-     ⚠️ 본문의 정식 URL(https://~)은 반드시 "열람 링크 1개"만 유지할 것.
-        2개 이상이면 카카오톡이 미리보기 카드(OG 박스)를 만들지 않는다.
-        그래서 공식 홈페이지 줄(OFFICIAL_SITE_BLOCK)은 이 템플릿에 넣지 않는다.
-     ※ 청구 금액은 "부가세 별도" 표기에 맞춰 공급가액(supplyTotal)을 쓴다 —
-        부가세 포함액(grandTotal)을 넣으면 표기와 금액이 어긋나 고객이 오해한다. */
-  const message = fitMessageForKakao(
-    `[코스메팩] 제품 공급 인보이스(발주서) 도착 안내\n\n` +
-    `안녕하세요, ${invoice.clientName || "고객사"} 담당자님.\n` +
-    `화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n` +
-    `협의하신 제품의 공급 인보이스가 발행되었습니다.\n` +
-    `아래 전용 링크에서 공급 사양과 결제 조건을 확인하실 수 있습니다.\n\n` +
-    `─── 인보이스 요약 ───\n` +
-    `• 문서 번호 : ${invoice.code || "INV-발행건"}\n` +
-    `• 공급 품목 : ${shortenForMessage(productLabel)}\n` +
-    `• 청구 금액 : ₩${supplyTotal.toLocaleString()} (부가세 별도)\n` +
-    `• 열람 기한 : 발행일로부터 30일\n` +
-    `──────────────────\n\n` +
-    `🔗 인보이스 열람 및 확인하기:\n${link}\n\n` +
-    `※ 확인 후 링크 화면에서 바로 승인하실 수 있습니다.\n\n` +
-    `(주)비케이브로 코스메팩 드림`
+  /* 현재 수금 단계에 맞춰 안내 문구를 자동 생성한다(계약금/중도금/잔금/정산완료).
+     ⚠️ 비율·금액은 그 인보이스에 저장된 분할 스케줄을 따르므로, 30/60/10을 고친 건도 그대로 반영된다. */
+  const stage = getPaymentStage(invoice);
+  const stageInfo = PAYMENT_STAGE_MAP[stage] || PAYMENT_STAGE_MAP.deposit;
+  const amounts = getStageAmounts(invoice);
+  const stageRate = (() => {
+    const idx = { deposit: 0, interim: 1, balance: 2 }[stage];
+    if (idx == null) return 0;
+    return Number((amounts.rows[idx] || {}).rate) || [30, 60, 10][idx];
+  })();
+  const stageAmount = stage === "completed" ? amounts.grand : (amounts[stage] || 0);
+
+  const autoMessage = fitMessageForKakao(
+    buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTotal, grandTotal, amounts })
   );
+  /* 담당자가 자유롭게 손볼 수 있도록 state로 관리한다 — 복사·발송은 "지금 화면의 내용" 그대로 나간다 */
+  const [message, setMessage] = useState(autoMessage);
+  const edited = message !== autoMessage;
 
   const [copied, setCopied] = useState("");
   const copy = (text, label) => {
@@ -3686,7 +3761,39 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
             <div className="flex justify-between"><span className="text-slate-500">수신 고객사</span><span className="font-semibold text-slate-800">{invoice.clientName || "-"}</span></div>
             <div className="flex justify-between"><span className="text-slate-500">발주 품목</span><span className="text-right">{productLabel}</span></div>
             <div className="flex justify-between"><span className="text-slate-500">총 수량</span><span>{totalQty.toLocaleString()}개</span></div>
-            <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="font-semibold text-slate-700">총 청구금액</span><span className="font-bold text-[#1E3A8A]">{won(grandTotal)} <span className="font-normal text-slate-400">(부가세 포함)</span></span></div>
+            {/* 지금 어느 대금을 요청하는 발송인지 금액과 함께 명확히 보여준다 */}
+            {stage === "completed" ? (
+              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1">
+                <span className="font-semibold text-emerald-700">🟢 정산 완료</span>
+                <span className="font-bold text-emerald-700">{won(amounts.grand)} <span className="font-normal text-slate-400">(전액 수납)</span></span>
+              </div>
+            ) : (
+              <React.Fragment>
+                <div className="flex justify-between border-t border-slate-200 pt-1 mt-1">
+                  <span className="font-bold text-slate-800">{stageInfo.emoji} 이번 청구금액 ({stageInfo.label} {stageRate}%)</span>
+                  <span className="font-bold text-[#1E3A8A] text-sm">{won(stageAmount)}</span>
+                </div>
+                <div className="flex justify-between text-[11px] text-slate-400">
+                  <span>총 공급가 / 총 청구금액(VAT 포함)</span>
+                  <span>{won(supplyTotal)} / {won(grandTotal)}</span>
+                </div>
+              </React.Fragment>
+            )}
+            {/* 이전 단계 입금 내역 — 중도금·잔금 발송 때 "어디까지 받았는지"가 바로 보이게 한다 */}
+            {(invoice.depositPaidDate || invoice.interimPaidDate) && (
+              <div className="border-t border-slate-200 pt-1 mt-1 space-y-0.5">
+                {[["deposit", "계약금"], ["interim", "중도금"], ["balance", "잔금"]].map(([k, label], i) => {
+                  const d = invoice[`${k}PaidDate`];
+                  if (!d) return null;
+                  return (
+                    <div key={k} className="flex justify-between text-[11px]">
+                      <span className="text-slate-500">✓ {label}({Number((amounts.rows[i] || {}).rate) || 0}%)</span>
+                      <span className="text-emerald-700 font-medium">{formatKoreanDate(d)} 입금완료</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <Field label="승인 링크">
@@ -3697,7 +3804,17 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
           </Field>
 
           <Field label="안내 문구 (카톡·문자 붙여넣기용)">
-            <textarea readOnly rows={16} value={message} className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y bg-slate-50" onFocus={(e) => e.target.select()} />
+            <div className="flex items-center justify-between mb-1 gap-2">
+              <span className={"text-[11px] font-semibold px-2 py-0.5 rounded whitespace-nowrap " + stageInfo.cls}>
+                {stageInfo.emoji} {stageInfo.label} 단계 문구 자동 생성됨
+              </span>
+              {edited && (
+                <button type="button" onClick={() => setMessage(autoMessage)} className="text-[11px] text-slate-400 hover:text-slate-600 underline whitespace-nowrap">↺ 자동 문구로 되돌리기</button>
+              )}
+            </div>
+            {/* 읽기전용이 아니라 직접 고칠 수 있다 — 복사·발송은 지금 화면의 내용 그대로 나간다 */}
+            <textarea rows={16} value={message} onChange={(e) => setMessage(e.target.value)}
+              className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y outline-none focus:border-[#1E3A8A] leading-relaxed" />
           </Field>
 
           {/* 복사 = 발송 처리 — 이 버튼을 눌러야 상태가 [발송완료]로 넘어가고 발송자(로그인 사용자)가 기록된다.
