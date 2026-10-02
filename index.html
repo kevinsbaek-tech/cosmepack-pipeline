@@ -2589,6 +2589,26 @@ function getCurrentStageAmount(iv) {
   return a[stage] || 0;
 }
 
+/* 인보이스 문서의 분할 청구 행에 표시할 라벨.
+   입금이 확인된 단계는 "2026년 7월 23일 입금(30%)"처럼 실제 입금일자로 바꿔 표기한다.
+   ⚠️ 담당자가 미리보기에서 문구를 직접 고친 행(labelEdited)은 그 값을 그대로 둔다 —
+      자동 생성이 수기 수정본을 덮어쓰면 고쳐 놓은 문구가 저장할 때마다 사라진다. */
+function paymentRowLabel(row, idx, invoice) {
+  if (!row) return "";
+  if (row.labelEdited) return row.label || "";
+  const stage = PAYMENT_STAGES[idx];
+  const date = stage && invoice ? invoice[`${stage.key}PaidDate`] : "";
+  if (!date) return row.label || "";
+  const rate = Number(row.rate) || 0;
+  return `${formatKoreanDate(date)} 입금(${rate}%)`;
+}
+// 그 행이 "입금 완료"로 표기되는 상태인지 — 라벨에 비율이 이미 들어가므로 (N%) 칸을 숨기는 데 쓴다
+function isPaymentRowPaid(row, idx, invoice) {
+  if (!row || row.labelEdited) return false;
+  const stage = PAYMENT_STAGES[idx];
+  return !!(stage && invoice && invoice[`${stage.key}PaidDate`]);
+}
+
 function getSampleApproval(s) {
   if (!s) return { approved: false, at: "" };
   const at = s.approvedAt || s.consentAt || "";
@@ -3032,6 +3052,57 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
 }
 
 /* ===================== 📑 인보이스 목록 (본품계약/발주 데이터를 제안서목록과 같은 스타일로) ===================== */
+/* 💰 입금 확인 모달 — 단계를 넘기기 전에 "실제 입금일자"를 받는다.
+   확인 처리 시각(자동 기록)과 실제 입금일은 다른 정보라, 인보이스 문서에 찍히는 날짜는 여기서 고른 값을 쓴다. */
+function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
+  const info = PAYMENT_STAGE_MAP[stageKey] || {};
+  const nextKey = stageKey === "deposit" ? "interim" : stageKey === "interim" ? "balance" : "completed";
+  const nextInfo = PAYMENT_STAGE_MAP[nextKey] || {};
+  const amount = getCurrentStageAmount(invoice);
+  const [paidDate, setPaidDate] = useState(todayDisplay()); // 기본값 = 오늘
+  const submit = () => {
+    if (!paidDate) { alert("입금 확인 일자를 선택해주세요."); return; }
+    onConfirm(paidDate);
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-md overflow-hidden shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-800">💰 {info.label} 입금 확인 및 다음 단계 이동</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs space-y-1">
+            <div className="flex justify-between"><span className="text-slate-500">고객사</span><span className="font-semibold text-slate-800">{(invoice && invoice.clientName) || "-"}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">인보이스번호</span><span className="font-medium text-slate-700">{(invoice && invoice.code) || "-"}</span></div>
+            <div className="flex justify-between border-t border-slate-200 pt-1 mt-1">
+              <span className="text-slate-500">{info.emoji} {info.label} 청구금액</span>
+              <span className="font-bold text-[#1E3A8A] text-sm">{won(amount)}</span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">입금 확인 일자</label>
+            <input type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} autoFocus
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]" />
+            <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+              이 날짜가 인보이스 문서의 정산표에 <b className="text-slate-700">"{formatKoreanDate(paidDate) || "YYYY년 M월 D일"} 입금"</b>으로 표기됩니다.
+            </p>
+          </div>
+          <p className="text-[11px] text-slate-500 leading-relaxed bg-blue-50/70 border border-blue-100 rounded-lg px-3 py-2">
+            확인하면 단계가 <b className="text-slate-700">{nextInfo.label}</b>(으)로 넘어가고, 처리 일시와 담당자가 함께 기록됩니다.
+          </p>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
+          <button onClick={submit} className={"px-5 py-2 rounded-lg text-white text-sm font-bold shadow-sm " + (info.btn || "bg-[#1E3A8A]")}>
+            {info.emoji} 입금 확인 처리
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin, onNewInvoice, onConfirmPayment }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -3724,6 +3795,8 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     if (i !== idx) return p;
     const next = { ...p, [field]: value };
     if (field === "rate") delete next.amount; // 비율을 고치면 직접입력 금액을 해제해 비율 기준으로 다시 계산되게
+    /* 문구를 손으로 고치면 그 행은 입금일자 자동 라벨의 대상에서 빠진다(수기 수정본 보존) */
+    if (field === "label") next.labelEdited = true;
     return next;
   }));
   const addPayment = () => setPayments((prev) => [...prev, { key: "stage" + Date.now(), label: "추가 청구금액", rate: 0, note: "" }]);
@@ -3783,7 +3856,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   const editSignature = JSON.stringify({
     cn: clientName, vu: validUntil, cd: contractDate, cc: clientCeo, ca: clientAddress,
     ar: adjustReasonInput, aa: adjustAmountInput, g: greeting, t: terms,
-    py: payments.map((p) => [p.label, p.rate, p.amount, p.note]),
+    py: payments.map((p) => [p.label, p.rate, p.amount, p.note, p.labelEdited]),
     it: items.map((x) => [x.id, x.productName, x.specSize, x.material, x.quantity, x.unitPrice, x.totalPrice, x.notes]),
   });
   if (savedSigRef.current === null) savedSigRef.current = editSignature; // 로드 직후 기준값 확정
@@ -3800,6 +3873,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
          단, 직접 입력하지 않은 단계는 amount를 비워두어 총액이 바뀌면 비율대로 다시 계산되게 한다. */
       paymentSchedule: resolvedPayments.map((p) => ({
         key: p.key, label: p.label, rate: Number(p.rate) || 0, note: p.note || "",
+        labelEdited: !!p.labelEdited, // 수기로 고친 문구는 입금일자 자동 라벨이 덮지 않도록 표시를 남긴다
         amount: (p.amount !== undefined && p.amount !== null && p.amount !== "") ? Number(p.amount) : null,
         resolved: Number(p.resolved) || 0,
       })),
@@ -4136,9 +4210,23 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
                 <tr key={p.key || idx}>
                   {/* ⚠️ 인쇄 시 열 폭이 좁아지면 flex 컨테이너가 접히면서 "(", 숫자, "%)"가 각각 다른 줄로
                       떨어졌다. flex를 쓰지 않고 td에 whitespace-nowrap을 걸어 항상 한 줄로 유지한다. */}
+                  {/* 입금이 확인된 단계는 "2026년 7월 23일 입금(30%)"으로 라벨이 바뀌고,
+                      라벨 안에 비율이 들어가므로 옆의 (N%) 칸은 숨긴다. 문구는 여전히 클릭해서 고칠 수 있다. */}
                   <td className="border border-slate-300 py-1.5 px-3 bg-slate-50 font-medium whitespace-nowrap">
-                    <span className="pay-label"><PvField ro={pvReadOnly} value={p.label} onChange={(v) => updatePayment(idx, "label", v)} className="font-medium w-32 align-baseline" /></span>
-                    <span className="pay-rate align-baseline">(<PvNumber ro={pvReadOnly} value={p.rate} onChange={(v) => updatePayment(idx, "rate", v)} className="w-10 text-right align-baseline" />%)</span>
+                    {(() => {
+                      const paid = isPaymentRowPaid(p, idx, data);
+                      return (
+                        <React.Fragment>
+                          <span className={paid ? "pay-label pay-label-wide" : "pay-label"}>
+                            <PvField ro={pvReadOnly} value={paymentRowLabel(p, idx, data)} onChange={(v) => updatePayment(idx, "label", v)}
+                              className={"font-medium align-baseline " + (paid ? "w-56" : "w-32")} />
+                          </span>
+                          {!paid && (
+                            <span className="pay-rate align-baseline">(<PvNumber ro={pvReadOnly} value={p.rate} onChange={(v) => updatePayment(idx, "rate", v)} className="w-10 text-right align-baseline" />%)</span>
+                          )}
+                        </React.Fragment>
+                      );
+                    })()}
                     {!pvReadOnly && resolvedPayments.length > 1 && (
                       <button type="button" onClick={() => removePayment(idx)}
                         className="no-print ml-1 text-slate-300 hover:text-red-500 text-[11px] leading-none align-baseline" title="이 청구 단계 삭제">✕</button>
@@ -10514,23 +10602,24 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   /* 💰 인보이스 대금 입금확인 — 그 단계를 입금 처리하고 다음 단계로 자동 승격한다.
      확인 일시와 작업자 계정을 함께 기록해 나중에 "누가 언제 확인했는지" 추적할 수 있게 한다.
      ⚠️ 되돌릴 수 없는 처리라 금액을 보여주는 확인창을 반드시 거친다. */
-  const confirmInvoicePayment = async (iv, stageKey) => {
+  const [paymentConfirm, setPaymentConfirm] = useState(null); // {iv, stageKey} — 입금일자 선택 모달
+  const openPaymentConfirm = (iv, stageKey) => {
+    if (!iv || !PAYMENT_STAGE_MAP[stageKey]) return;
+    if (getPaymentStage(iv) !== stageKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
+    setPaymentConfirm({ iv, stageKey });
+  };
+
+  const confirmInvoicePayment = async (iv, stageKey, paidDate) => {
     const info = PAYMENT_STAGE_MAP[stageKey];
     if (!iv || !info || !info.paidField) return;
     if (getPaymentStage(iv) !== stageKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
     const amount = getCurrentStageAmount(iv);
     const nextKey = stageKey === "deposit" ? "interim" : stageKey === "interim" ? "balance" : "completed";
-    const ok = window.confirm(
-      `[${iv.clientName || "고객사"}] ${iv.code || ""}\n\n` +
-      `${info.emoji} ${info.label} ${won(amount)} 입금을 확인 처리할까요?\n\n` +
-      `· 처리 후 단계가 "${PAYMENT_STAGE_MAP[nextKey].label}"(으)로 넘어갑니다.\n` +
-      `· 확인 일시와 담당자(${(roleUser && roleUser.displayName) || "알 수 없음"})가 함께 기록됩니다.`
-    );
-    if (!ok) return;
     const actor = (roleUser && roleUser.displayName) || "알 수 없음";
     const patch = {
       [info.paidField]: true,
-      [info.atField]: nowDateTimeStr(),
+      [`${stageKey}PaidDate`]: paidDate,   // 실제 입금일자 — 인보이스 문서 정산표에 "YYYY년 M월 D일 입금(N%)"으로 찍힌다
+      [info.atField]: nowDateTimeStr(),    // 확인 처리 시각(감사 추적용) — 입금일자와는 별개
       [info.byField]: actor,
       paymentStage: nextKey,
       [`${stageKey}PaidAmount`]: amount, // 그 시점의 청구액을 함께 남겨, 나중에 비율을 바꿔도 받은 금액이 보존된다
@@ -10539,9 +10628,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
     try {
       if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
+      /* 지금 열려 있는 인보이스 미리보기도 즉시 갱신 — 닫았다 다시 열지 않아도 정산표 라벨이 바로 바뀐다 */
+      setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
       setToast(nextKey === "completed"
         ? `🟢 ${iv.clientName || ""} 전액 수납이 완료되었습니다. (정산완료)`
-        : `${info.emoji} ${info.label} 입금이 확인되었습니다. 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label}`);
+        : `${info.emoji} ${info.label} ${formatKoreanDate(paidDate)} 입금 확인 완료 → 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label}`);
     } catch (e) {
       console.error("입금확인 저장 실패:", e);
       setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x))); // 실패하면 화면도 되돌린다
@@ -12699,6 +12790,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           display: inline-block !important; vertical-align: baseline !important;
         }
         #pdf-page .pay-label input { width: 8.5rem !important; }
+        /* 입금일자가 들어간 행은 "2026년 7월 23일 입금(30%)"이라 기본 폭에 안 들어간다 */
+        #pdf-page .pay-label-wide input { width: 14rem !important; }
         #pdf-page .pay-rate input { width: 2.4rem !important; text-align: right !important; }
         #pdf-page .pay-amount input { width: 6.5rem !important; text-align: right !important; }
         #pdf-page .pay-label, #pdf-page .pay-rate, #pdf-page .pay-amount { white-space: nowrap !important; }
@@ -12726,6 +12819,19 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             </div>
           </div>
         </div>
+      )}
+
+      {/* 💰 입금 확인 모달 — 실제 입금일자를 받아 단계를 승격시킨다 */}
+      {paymentConfirm && (
+        <PaymentConfirmModal
+          invoice={paymentConfirm.iv} stageKey={paymentConfirm.stageKey}
+          onClose={() => setPaymentConfirm(null)}
+          onConfirm={async (paidDate) => {
+            const { iv, stageKey } = paymentConfirm;
+            setPaymentConfirm(null);
+            await confirmInvoicePayment(iv, stageKey, paidDate);
+          }}
+        />
       )}
 
       <ClientInfoModal clients={clientsList} open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
@@ -13099,7 +13205,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onOpenInvoice={(iv, mode) => setInvoiceData({ ...iv, readOnly: mode === "view" })} // 👁️=조회전용 / ✏️=편집
           onDuplicate={duplicateInvoice}
           onDelete={deleteInvoiceRecord}
-          onConfirmPayment={confirmInvoicePayment}
+          onConfirmPayment={openPaymentConfirm}
           onNewInvoice={() => setShowNewInvoice(true)}
           onBack={() => goBackTo("pipeline")}
         />
