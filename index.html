@@ -1853,6 +1853,9 @@ const DEFAULT_PAYMENT_SCHEDULE = [
    · amount에 직접 입력한 값이 있으면 그 값을 그대로 쓴다(수동 우선)
    · 없으면 비율로 계산하되, **마지막 단계는 총액에서 앞 단계를 뺀 나머지**로 잡아
      반올림 때문에 합이 1원 어긋나는 것을 막는다(기존 잔금 계산 방식과 동일). */
+/* ⚠️ 구버전 — 실입금액을 모르던 시절의 "비율만으로 나누는" 계산기.
+   지금은 resolvePaymentRows(실입금 반영판)가 이 역할을 대신하므로 호출처가 없다.
+   계산 규칙을 바꿀 일이 생기면 resolvePaymentRows 쪽을 고칠 것. */
 function resolvePaymentSchedule(schedule, grandTotal) {
   /* ⚠️ resolved는 매번 새로 계산한다 — 저장된 스케줄에 옛 resolved가 실려 들어오면
      "마지막 행 나머지 계산" 분기를 건너뛰어 총액이 바뀌어도 금액이 안 따라온다. */
@@ -2566,18 +2569,63 @@ function getInvoiceGrandTotal(iv) {
   const supply = Number(iv.totalAmount) || 0;
   return supply + Math.floor(supply * 0.1); // 부가세 10% 포함
 }
+/* ⭐ 실입금액을 반영한 정산표 행 계산.
+   규칙:
+     ① 입금이 확인된 행 → 실제 입금된 금액({stage}PaidAmount)을 그대로 쓴다(예정액이 아니라 받은 돈).
+     ② 금액을 직접 입력해 둔 행 → 그 값을 쓴다(수동 우선).
+     ③ 나머지 미입금 행 → **남은 금액(합계 − 위에서 확정된 금액)**을 각자의 비율로 안분한다.
+   ③이 핵심 — 계약금을 예정보다 많이/적게 받으면 그 차액이 중도금·잔금에 자동 반영되어
+   "합계금액 − 실입금 합계"가 언제나 남은 청구액과 일치한다(실수량·차액 정산 대응).
+   마지막 미입금 행은 나머지로 채워 1원 오차도 남기지 않는다. */
+function resolvePaymentRows(schedule, grandTotal, iv) {
+  const base = (schedule && schedule.length ? schedule : DEFAULT_PAYMENT_SCHEDULE);
+  const rows = base.map((r, i) => {
+    const c = { ...r };
+    delete c.resolved;
+    const st = PAYMENT_STAGES[i];
+    c.stageKey = st ? st.key : null;
+    c.paidDate = (st && iv) ? (iv[`${st.key}PaidDate`] || "") : "";
+    const amt = (st && iv) ? Number(iv[`${st.key}PaidAmount`]) : NaN;
+    c.paidAmount = Number.isFinite(amt) && amt > 0 ? amt : null;
+    const rt = (st && iv) ? Number(iv[`${st.key}PaidRate`]) : NaN;
+    c.paidRate = Number.isFinite(rt) && rt > 0 ? rt : null;
+    // 입금일자와 금액이 모두 있어야 "확정된 실입금"으로 본다(옛 데이터는 아래 비율 계산으로 넘어간다)
+    c.isPaid = !!(c.paidDate && c.paidAmount != null);
+    return c;
+  });
+
+  let assigned = 0;
+  rows.forEach((r) => { if (r.isPaid) { r.resolved = r.paidAmount; assigned += r.resolved; } });
+  rows.forEach((r) => {
+    if (r.resolved !== undefined) return;
+    const manual = r.amount !== undefined && r.amount !== null && r.amount !== "";
+    if (manual) { r.resolved = Number(r.amount) || 0; assigned += r.resolved; }
+  });
+
+  const rest = rows.filter((r) => r.resolved === undefined);
+  const remaining = grandTotal - assigned;
+  const rateSum = rest.reduce((s, r) => s + (Number(r.rate) || 0), 0);
+  let used = 0;
+  rest.forEach((r, i) => {
+    if (i === rest.length - 1) { r.resolved = remaining - used; return; } // 마지막은 나머지(반올림 오차 흡수)
+    r.resolved = rateSum > 0 ? Math.round(remaining * (Number(r.rate) || 0) / rateSum) : 0;
+    used += r.resolved;
+  });
+  return rows;
+}
+
 function getStageAmounts(iv) {
   const grand = getInvoiceGrandTotal(iv);
-  const rows = resolvePaymentSchedule(iv && iv.paymentSchedule, grand);
-  const pick = (i, savedKey) => {
-    if (iv && iv[savedKey] != null) return Number(iv[savedKey]) || 0; // 발행 시 확정 저장된 값 우선
-    return Number((rows[i] || {}).resolved) || 0;
-  };
+  const rows = resolvePaymentRows(iv && iv.paymentSchedule, grand, iv);
+  const pick = (i) => Number((rows[i] || {}).resolved) || 0;
+  const paidTotal = rows.reduce((s, r) => s + (r.isPaid ? Number(r.resolved) || 0 : 0), 0);
   return {
     grand,
-    deposit: pick(0, "depositAmount"),
-    interim: pick(1, "interimAmount"),
-    balance: pick(2, "balanceAmount"),
+    deposit: pick(0),
+    interim: pick(1),
+    balance: pick(2),
+    paidTotal,                  // 지금까지 실제로 받은 총액
+    outstanding: grand - paidTotal, // 남은 청구액
     rows,
   };
 }
@@ -2599,8 +2647,12 @@ function paymentRowLabel(row, idx, invoice) {
   const stage = PAYMENT_STAGES[idx];
   const date = stage && invoice ? invoice[`${stage.key}PaidDate`] : "";
   if (!date) return row.label || "";
-  const rate = Number(row.rate) || 0;
-  return `${formatKoreanDate(date)} 입금(${rate}%)`;
+  /* 비율은 "실제 입금 비율"이 있으면 그것을 쓴다 — 예정 30%인데 39%를 받았으면 39%로 찍혀야
+     금액(실입금액)과 비율이 서로 맞는다. 옛 데이터(비율 미기록)는 예정 비율로 폴백. */
+  const savedRate = Number(invoice[`${stage.key}PaidRate`]);
+  const rate = Number.isFinite(savedRate) && savedRate > 0 ? savedRate : (Number(row.rate) || 0);
+  const rateText = Number.isInteger(rate) ? rate : rate.toFixed(1);
+  return `${formatKoreanDate(date)} 입금(${rateText}%)`;
 }
 // 그 행이 "입금 완료"로 표기되는 상태인지 — 라벨에 비율이 이미 들어가므로 (N%) 칸을 숨기는 데 쓴다
 function isPaymentRowPaid(row, idx, invoice) {
@@ -3058,11 +3110,21 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
   const info = PAYMENT_STAGE_MAP[stageKey] || {};
   const nextKey = stageKey === "deposit" ? "interim" : stageKey === "interim" ? "balance" : "completed";
   const nextInfo = PAYMENT_STAGE_MAP[nextKey] || {};
-  const amount = getCurrentStageAmount(invoice);
+  const amounts = getStageAmounts(invoice);
+  const amount = getCurrentStageAmount(invoice); // 이 단계의 청구(예정) 금액
   const [paidDate, setPaidDate] = useState(todayDisplay()); // 기본값 = 오늘
+  /* 실제 입금 금액 — 기본값은 청구액이지만, 과·소 입금이나 실수량 정산으로 달라질 수 있어 직접 고친다.
+     문자열로 들고 숫자만 추려 쓴다(천 단위 콤마를 화면에 그대로 보여주기 위함). */
+  const [paidAmountRaw, setPaidAmountRaw] = useState(String(amount || ""));
+  const paidAmount = Number(String(paidAmountRaw).replace(/[^0-9]/g, "")) || 0;
+  const grand = amounts.grand || 0;
+  const paidRate = grand > 0 ? (paidAmount / grand) * 100 : 0;
+  const rateText = Number.isInteger(Number(paidRate.toFixed(1))) ? String(Math.round(paidRate)) : paidRate.toFixed(1);
+  const diff = paidAmount - amount; // 청구액과의 차액(+면 더 받음)
   const submit = () => {
     if (!paidDate) { alert("입금 확인 일자를 선택해주세요."); return; }
-    onConfirm(paidDate);
+    if (paidAmount <= 0) { alert("실제 입금 금액을 입력해주세요."); return; }
+    onConfirm(paidDate, paidAmount, Number(paidRate.toFixed(1)));
   };
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[80] p-4" onClick={onClose}>
@@ -3079,15 +3141,43 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
               <span className="text-slate-500">{info.emoji} {info.label} 청구금액</span>
               <span className="font-bold text-[#1E3A8A] text-sm">{won(amount)}</span>
             </div>
+            <div className="flex justify-between text-[11px] text-slate-400">
+              <span>총 합계금액 (VAT 포함)</span><span>{won(grand)}</span>
+            </div>
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">입금 확인 일자</label>
             <input type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} autoFocus
               className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#1E3A8A]" />
-            <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
-              이 날짜가 인보이스 문서의 정산표에 <b className="text-slate-700">"{formatKoreanDate(paidDate) || "YYYY년 M월 D일"} 입금"</b>으로 표기됩니다.
-            </p>
           </div>
+          {/* 실제 입금 금액 — 청구액과 다를 수 있으므로(과·소 입금, 실수량 정산) 받은 금액을 그대로 기록한다 */}
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">실제 입금 금액 (원)</label>
+            <div className="relative">
+              <input value={paidAmount ? paidAmount.toLocaleString("ko-KR") : ""} inputMode="numeric"
+                onChange={(e) => setPaidAmountRaw(e.target.value)} placeholder="0"
+                className="w-full px-3 py-2 pr-8 rounded-lg border border-slate-200 text-sm text-right font-semibold outline-none focus:border-[#1E3A8A]" />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">원</span>
+            </div>
+            <div className="mt-1.5 flex items-start justify-between gap-2">
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                총 합계금액 <b className="text-slate-700">{won(grand)}</b>의 <b className="text-[#1E3A8A]">{rateText}%</b> 입금
+              </p>
+              {diff !== 0 && paidAmount > 0 && (
+                <span className={"text-[11px] font-semibold whitespace-nowrap " + (diff > 0 ? "text-blue-600" : "text-amber-600")}>
+                  청구액 대비 {diff > 0 ? "+" : "−"}{won(Math.abs(diff)).replace("₩", "₩")}
+                </span>
+              )}
+            </div>
+            {diff !== 0 && paidAmount > 0 && (
+              <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                차액은 남은 단계({stageKey === "deposit" ? "중도금·잔금" : stageKey === "interim" ? "잔금" : "없음"})에 자동 반영되어, 총 청구액은 {won(grand)}으로 유지됩니다.
+              </p>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            인보이스 정산표에 <b className="text-slate-700">"{formatKoreanDate(paidDate) || "YYYY년 M월 D일"} 입금({rateText}%)"</b> / <b className="text-slate-700">{won(paidAmount)}</b>으로 표기됩니다.
+          </p>
           <p className="text-[11px] text-slate-500 leading-relaxed bg-blue-50/70 border border-blue-100 rounded-lg px-3 py-2">
             확인하면 단계가 <b className="text-slate-700">{nextInfo.label}</b>(으)로 넘어가고, 처리 일시와 담당자가 함께 기록됩니다.
           </p>
@@ -3652,12 +3742,21 @@ function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTo
     `• 총 청구금액 : ${money(grandTotal)} (부가세 포함)\n`;
   const tail = `\n🔗 인보이스 열람 및 확인하기:\n${link}\n\n`;
   const sign = `(주)비케이브로 코스메팩 드림`;
-  // 이전 단계 입금 완료 내역 — 입금일자가 있을 때만 줄을 만든다(없으면 아예 표기하지 않음)
-  const paidLine = (label, rate, dateStr) =>
-    dateStr ? `• ${label}(${rate}%) : ${formatKoreanDate(dateStr)} 입금완료\n` : "";
+  /* 이전 단계 입금 완료 내역 — 입금일자가 있을 때만 줄을 만든다(없으면 아예 표기하지 않음).
+     실제 입금액·비율이 기록돼 있으면 "(₩1,500,000 / 39%)"를 덧붙여, 고객이 받은 금액을 바로 대조할 수 있게 한다. */
+  const paidLine = (label, planRate, stageKey) => {
+    const dateStr = invoice && invoice[`${stageKey}PaidDate`];
+    if (!dateStr) return "";
+    const amt = Number(invoice[`${stageKey}PaidAmount`]);
+    const rt = Number(invoice[`${stageKey}PaidRate`]);
+    const shownRate = Number.isFinite(rt) && rt > 0 ? rt : planRate;
+    const rateText = Number.isInteger(shownRate) ? shownRate : Number(shownRate).toFixed(1);
+    const detail = Number.isFinite(amt) && amt > 0 ? ` (${money(amt)} / ${rateText}%)` : "";
+    return `• ${label}(${rateText}%) : ${formatKoreanDate(dateStr)} 입금완료${detail}\n`;
+  };
 
   if (stage === "interim") {
-    const history = paidLine("계약금", rDep, invoice && invoice.depositPaidDate);
+    const history = paidLine("계약금", rDep, "deposit");
     return (
       `[코스메팩] 제품 생산 완료 및 중도금(${rInt}%) 청구 안내\n\n` + head +
       `주문하신 제품의 현지 생산이 완료되었습니다.\n` +
@@ -3670,8 +3769,8 @@ function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTo
     );
   }
   if (stage === "balance") {
-    const history = paidLine("계약금", rDep, invoice && invoice.depositPaidDate)
-      + paidLine("중도금", rInt, invoice && invoice.interimPaidDate);
+    const history = paidLine("계약금", rDep, "deposit")
+      + paidLine("중도금", rInt, "interim");
     return (
       `[코스메팩] 통관 완료 · 납품 및 최종 잔금(${rBal}%) 정산 안내\n\n` + head +
       `주문하신 제품의 통관 및 국내 입고가 완료되었습니다.\n` +
@@ -3684,9 +3783,9 @@ function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTo
     );
   }
   if (stage === "completed") {
-    const history = paidLine("계약금", rDep, invoice && invoice.depositPaidDate)
-      + paidLine("중도금", rInt, invoice && invoice.interimPaidDate)
-      + paidLine("잔금", rBal, invoice && invoice.balancePaidDate);
+    const history = paidLine("계약금", rDep, "deposit")
+      + paidLine("중도금", rInt, "interim")
+      + paidLine("잔금", rBal, "balance");
     return (
       `[코스메팩] 대금 정산 완료 안내\n\n` + head +
       `해당 건의 대금 정산이 모두 완료되었습니다. 거래에 감사드립니다.\n\n` +
@@ -3900,7 +3999,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   /* 분할 청구 — 화면에서 편집한 스케줄(비율 또는 직접입력 금액)로 실제 청구액을 확정한다.
      depositAmount/interimAmount/balanceAmount는 기존 코드·저장 필드 호환을 위해
      앞에서부터 3단계를 그대로 뽑아 유지한다(스케줄을 손대지 않으면 예전과 완전히 같은 값). */
-  const resolvedPayments = resolvePaymentSchedule(payments, grandTotal);
+  /* 실입금액이 기록된 단계는 그 금액을 그대로 쓰고, 남은 금액을 미입금 단계가 나눠 갖는다
+     (계약금을 예정보다 더/덜 받았을 때 중도금·잔금이 자동으로 차액을 흡수한다) */
+  const resolvedPayments = resolvePaymentRows(payments, grandTotal, data);
   const paymentsTotal = resolvedPayments.reduce((s, r) => s + (Number(r.resolved) || 0), 0);
   const paymentsMismatch = paymentsTotal !== grandTotal; // 금액을 직접 입력해 합이 안 맞으면 경고
   const depositAmount = Number((resolvedPayments[0] || {}).resolved) || 0;
@@ -10726,20 +10827,27 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     setPaymentConfirm({ iv, stageKey });
   };
 
-  const confirmInvoicePayment = async (iv, stageKey, paidDate) => {
+  const confirmInvoicePayment = async (iv, stageKey, paidDate, paidAmount, paidRate) => {
     const info = PAYMENT_STAGE_MAP[stageKey];
     if (!iv || !info || !info.paidField) return;
     if (getPaymentStage(iv) !== stageKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
-    const amount = getCurrentStageAmount(iv);
+    const billed = getCurrentStageAmount(iv);                      // 이 단계의 청구(예정) 금액
+    const amount = Number(paidAmount) > 0 ? Number(paidAmount) : billed; // 실제 입금액(미지정이면 청구액)
+    const grand = getInvoiceGrandTotal(iv);
+    const rate = Number.isFinite(Number(paidRate)) && Number(paidRate) > 0
+      ? Number(paidRate)
+      : (grand > 0 ? Number(((amount / grand) * 100).toFixed(1)) : 0);
     const nextKey = stageKey === "deposit" ? "interim" : stageKey === "interim" ? "balance" : "completed";
     const actor = (roleUser && roleUser.displayName) || "알 수 없음";
     const patch = {
       [info.paidField]: true,
       [`${stageKey}PaidDate`]: paidDate,   // 실제 입금일자 — 인보이스 문서 정산표에 "YYYY년 M월 D일 입금(N%)"으로 찍힌다
+      [`${stageKey}PaidAmount`]: amount,   // 실제 받은 금액 — 정산표 금액란에 그대로 찍히고, 차액은 남은 단계가 흡수한다
+      [`${stageKey}PaidRate`]: rate,       // 총 합계금액 대비 실제 입금 비율(%)
+      [`${stageKey}BilledAmount`]: billed, // 그때 청구했던 금액(사후 대조용)
       [info.atField]: nowDateTimeStr(),    // 확인 처리 시각(감사 추적용) — 입금일자와는 별개
       [info.byField]: actor,
       paymentStage: nextKey,
-      [`${stageKey}PaidAmount`]: amount, // 그 시점의 청구액을 함께 남겨, 나중에 비율을 바꿔도 받은 금액이 보존된다
       updatedAt: nowDateTimeStr(), updatedBy: actor,
     };
     setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
@@ -10749,7 +10857,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
       setToast(nextKey === "completed"
         ? `🟢 ${iv.clientName || ""} 전액 수납이 완료되었습니다. (정산완료)`
-        : `${info.emoji} ${info.label} ${formatKoreanDate(paidDate)} 입금 확인 완료 → 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label}`);
+        : `${info.emoji} ${info.label} ${won(amount)} (${rate}%) 입금 확인 → 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label}`);
     } catch (e) {
       console.error("입금확인 저장 실패:", e);
       setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x))); // 실패하면 화면도 되돌린다
@@ -12943,10 +13051,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <PaymentConfirmModal
           invoice={paymentConfirm.iv} stageKey={paymentConfirm.stageKey}
           onClose={() => setPaymentConfirm(null)}
-          onConfirm={async (paidDate) => {
+          onConfirm={async (paidDate, paidAmount, paidRate) => {
             const { iv, stageKey } = paymentConfirm;
             setPaymentConfirm(null);
-            await confirmInvoicePayment(iv, stageKey, paidDate);
+            await confirmInvoicePayment(iv, stageKey, paidDate, paidAmount, paidRate);
           }}
         />
       )}
