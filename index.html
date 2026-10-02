@@ -2535,6 +2535,60 @@ function getInvoiceBadge(iv) {
   return { label: "검토대기", cls: "bg-slate-100 text-slate-600" };
 }
 
+/* ===================== 💰 인보이스 대금 수금 단계(paymentStage) =====================
+   계약금(30%) → 중도금(60%) → 잔금(10%) → 정산완료 4단계로 수금을 추적한다.
+   ⚠️ 저장된 paymentStage를 그대로 믿지 않고 **입금 플래그에서 역산**한다 —
+      예전 인보이스에는 이 필드가 아예 없고, 플래그와 단계가 어긋나면 탭에서 건이 사라지기 때문.
+      (잔금까지 입금 → completed / 중도금까지 → balance / 계약금만 → interim / 없으면 deposit) */
+const PAYMENT_STAGES = [
+  { key: "deposit",   label: "계약금",  emoji: "🟡", rateHint: "30%", cls: "bg-amber-100 text-amber-800",     tabOn: "bg-amber-500 text-white",   btn: "bg-amber-500 hover:bg-amber-600",   paidField: "depositPaid", atField: "depositPaidAt", byField: "depositPaidBy", desc: "인보이스 발행 후 계약금 입금 대기 및 확인" },
+  { key: "interim",   label: "중도금",  emoji: "🔵", rateHint: "60%", cls: "bg-blue-100 text-blue-800",       tabOn: "bg-blue-600 text-white",    btn: "bg-blue-600 hover:bg-blue-700",     paidField: "interimPaid", atField: "interimPaidAt", byField: "interimPaidBy", desc: "공장 생산 중 및 출고(선적) 전 중도금 입금 관리" },
+  { key: "balance",   label: "잔금",    emoji: "🟣", rateHint: "10%", cls: "bg-purple-100 text-purple-800",   tabOn: "bg-purple-600 text-white",  btn: "bg-purple-600 hover:bg-purple-700", paidField: "balancePaid", atField: "balancePaidAt", byField: "balancePaidBy", desc: "통관 및 국내 입고 후 최종 잔금 정산" },
+  { key: "completed", label: "정산완료", emoji: "🟢", rateHint: "",    cls: "bg-emerald-100 text-emerald-800", tabOn: "bg-emerald-600 text-white", btn: "",                                   paidField: "",            atField: "",              byField: "",              desc: "100% 대금 수납이 끝난 종결 건" },
+];
+const PAYMENT_STAGE_MAP = Object.fromEntries(PAYMENT_STAGES.map((s) => [s.key, s]));
+
+function getPaymentStage(iv) {
+  if (!iv) return "deposit";
+  if (iv.balancePaid) return "completed";
+  if (iv.interimPaid) return "balance";
+  if (iv.depositPaid) return "interim";
+  // 입금 플래그가 하나도 없을 때만 저장값을 존중한다(수동으로 단계를 되돌려 둔 경우 대비)
+  const saved = iv.paymentStage;
+  return PAYMENT_STAGE_MAP[saved] ? saved : "deposit";
+}
+
+/* 각 단계의 청구금액 — 인보이스에 저장된 분할 스케줄(비율을 고쳤을 수 있음)을 그대로 따른다.
+   저장된 스케줄이 없는 옛 인보이스는 기본 30/60/10으로 계산한다. */
+function getInvoiceGrandTotal(iv) {
+  if (!iv) return 0;
+  if (iv.grandTotal != null) return Number(iv.grandTotal) || 0;
+  const supply = Number(iv.totalAmount) || 0;
+  return supply + Math.floor(supply * 0.1); // 부가세 10% 포함
+}
+function getStageAmounts(iv) {
+  const grand = getInvoiceGrandTotal(iv);
+  const rows = resolvePaymentSchedule(iv && iv.paymentSchedule, grand);
+  const pick = (i, savedKey) => {
+    if (iv && iv[savedKey] != null) return Number(iv[savedKey]) || 0; // 발행 시 확정 저장된 값 우선
+    return Number((rows[i] || {}).resolved) || 0;
+  };
+  return {
+    grand,
+    deposit: pick(0, "depositAmount"),
+    interim: pick(1, "interimAmount"),
+    balance: pick(2, "balanceAmount"),
+    rows,
+  };
+}
+// 지금 단계에서 받아야 할 금액(정산완료면 총액을 돌려줘 "모두 수납"을 표시)
+function getCurrentStageAmount(iv) {
+  const a = getStageAmounts(iv);
+  const stage = getPaymentStage(iv);
+  if (stage === "completed") return a.grand;
+  return a[stage] || 0;
+}
+
 function getSampleApproval(s) {
   if (!s) return { approved: false, at: "" };
   const at = s.approvedAt || s.consentAt || "";
@@ -2978,9 +3032,10 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
 }
 
 /* ===================== 📑 인보이스 목록 (본품계약/발주 데이터를 제안서목록과 같은 스타일로) ===================== */
-function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin, onNewInvoice }) {
+function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin, onNewInvoice, onConfirmPayment }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [stageTab, setStageTab] = useState("all"); // all | deposit | interim | balance | completed
   const PAGE_SIZE = 20;
 
   /* 🏢 업체별 모아보기 state.
@@ -2989,12 +3044,20 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
   const [isGroupByCompany, setIsGroupByCompany] = useState(false);
   const [openClient, setOpenClient] = useState(null);
 
+  const safeList = useMemo(() => (Array.isArray(invoices) ? invoices.filter(Boolean) : []), [invoices]);
+  // 탭 배지 건수 — 검색어와 무관하게 전체 기준으로 세어, 검색 중에도 각 단계의 실제 잔량이 보이게 한다
+  const stageCounts = useMemo(() => {
+    const c = { all: safeList.length, deposit: 0, interim: 0, balance: 0, completed: 0 };
+    safeList.forEach((iv) => { c[getPaymentStage(iv)] = (c[getPaymentStage(iv)] || 0) + 1; });
+    return c;
+  }, [safeList]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const list = Array.isArray(invoices) ? invoices.filter(Boolean) : []; // null/비배열 방어
-    const base = !q ? list : list.filter((iv) => ((iv && iv.clientName) || "").toLowerCase().includes(q) || ((iv && iv.code) || "").toLowerCase().includes(q));
+    const scoped = stageTab === "all" ? safeList : safeList.filter((iv) => getPaymentStage(iv) === stageTab);
+    const base = !q ? scoped : scoped.filter((iv) => ((iv && iv.clientName) || "").toLowerCase().includes(q) || ((iv && iv.code) || "").toLowerCase().includes(q));
     return [...base].sort((a, b) => (parseCreatedAt(b && b.createdAt) || 0) - (parseCreatedAt(a && a.createdAt) || 0));
-  }, [invoices, search]);
+  }, [safeList, search, stageTab]);
   const grouped = useMemo(() => {
     const g = {};
     filtered.forEach((iv) => {
@@ -3006,7 +3069,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
   }, [filtered]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pagedList = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { setPage(1); }, [search, isGroupByCompany]);
+  useEffect(() => { setPage(1); }, [search, isGroupByCompany, stageTab]);
 
   const renderInvoiceTable = (list) => (
         <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
@@ -3039,7 +3102,16 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                     <td className="px-3 py-3 text-xs text-slate-600 text-center" style={{ wordBreak: "keep-all" }}>
                       {(Array.isArray(iv.items) ? iv.items : []).map((it) => (it && it.productName) || "").filter(Boolean).join(", ") || <span className="text-slate-300">-</span>}
                     </td>
-                    <td className="px-3 py-3 text-sm text-right font-semibold text-[#1E3A8A] whitespace-nowrap">{won(iv.totalAmount)}</td>
+                    {/* 총 금액 아래에 "지금 받아야 할 금액"을 함께 보여줘, 목록만 보고도 청구 액수를 알 수 있게 한다 */}
+                    <td className="px-3 py-3 text-right whitespace-nowrap">
+                      <div className="text-sm font-semibold text-[#1E3A8A]">{won(getInvoiceGrandTotal(iv))}</div>
+                      {(() => {
+                        const st = getPaymentStage(iv);
+                        const info = PAYMENT_STAGE_MAP[st];
+                        if (st === "completed") return <div className="text-[11px] text-emerald-600 font-semibold mt-0.5">🟢 전액 수납 완료</div>;
+                        return <div className="text-[11px] text-slate-500 mt-0.5">{info.emoji} {info.label} {won(getCurrentStageAmount(iv))}</div>;
+                      })()}
+                    </td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(iv.createdBy) || "-"}</td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{iv.sentBy ? displayStaffName(iv.sentBy) : <span className="text-slate-300">미발송</span>}</td>
                     <td className="px-3 py-3 text-center">
@@ -3050,6 +3122,31 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                       })()}
                     </td>
                     <td className="px-3 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                      {/* 💰 단계별 입금확인 — 누르면 그 단계가 입금 처리되고 다음 단계로 자동 승격된다.
+                          단계 탭을 보고 있을 때만 노출해, "전체" 탭에서 실수로 눌리는 것을 막는다. */}
+                      {onConfirmPayment && stageTab !== "all" && stageTab !== "completed" && getPaymentStage(iv) === stageTab && (() => {
+                        const info = PAYMENT_STAGE_MAP[stageTab];
+                        return (
+                          <button onClick={() => onConfirmPayment(iv, stageTab)}
+                            title={`${info.label} ${won(getCurrentStageAmount(iv))} 입금을 확인 처리합니다`}
+                            className={"w-full mb-1.5 px-2 py-1.5 rounded-lg text-white text-[11px] font-bold whitespace-nowrap shadow-sm " + info.btn}>
+                            {info.emoji} {info.label} 입금확인
+                          </button>
+                        );
+                      })()}
+                      {/* 이미 받은 단계는 확인 일시·담당자를 그대로 보여준다(추적 가능해야 하므로 지우지 않음) */}
+                      {(() => {
+                        const done = PAYMENT_STAGES.filter((s) => s.paidField && iv[s.paidField]);
+                        if (done.length === 0) return null;
+                        return (
+                          <div className="mb-1.5 flex flex-wrap justify-center gap-1">
+                            {done.map((s) => (
+                              <span key={s.key} title={`${s.label} 입금확인 ${iv[s.atField] || ""}${iv[s.byField] ? ` (${iv[s.byField]})` : ""}`}
+                                className={"px-1.5 py-0.5 rounded text-[10px] font-bold " + s.cls}>✓{s.label}</span>
+                            ))}
+                          </div>
+                        );
+                      })()}
                       <div className="flex justify-center gap-1">
                         <button onClick={() => onOpenInvoice(iv, "view")} title="상세 조회 및 PDF 인쇄" className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">👁️</button>
                         <button onClick={() => onOpenInvoice(iv, "edit")} title="인보이스 수정" className="w-8 h-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-[#1E3A8A]/5 hover:text-[#1E3A8A] text-sm">✏️</button>
@@ -3079,6 +3176,27 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
           <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
         </div>
       </div>
+      {/* 💰 대금 수금 단계 탭 — 계약금 → 중도금 → 잔금 → 정산완료 파이프라인 */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        {[{ key: "all", emoji: "", label: "전체", rateHint: "", tabOn: "bg-slate-800 text-white", desc: "전체 인보이스 목록" }, ...PAYMENT_STAGES].map((s) => {
+          const on = stageTab === s.key;
+          const n = stageCounts[s.key] || 0;
+          return (
+            <button key={s.key} onClick={() => setStageTab(s.key)} title={s.desc}
+              className={"flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap border transition-colors " +
+                (on ? s.tabOn + " border-transparent shadow-sm" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50")}>
+              <span>{s.emoji} {s.label}{s.rateHint ? ` (${s.rateHint})` : ""}</span>
+              <span className={"px-1.5 py-0.5 rounded-full text-[10px] font-bold " + (on ? "bg-white/25 text-white" : "bg-slate-100 text-slate-600")}>{n}</span>
+            </button>
+          );
+        })}
+      </div>
+      {stageTab !== "all" && (
+        <p className="text-[11px] text-slate-500 mb-3 -mt-1">
+          {PAYMENT_STAGE_MAP[stageTab].desc} 단계의 건입니다.
+          {stageTab !== "completed" && " 입금이 확인되면 [입금확인] 버튼을 눌러 다음 단계로 넘겨주세요."}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <input
           value={search} onChange={(e) => setSearch(e.target.value)}
@@ -3093,7 +3211,11 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
       </div>
       {/* 테이블 본문 — 단일 목록과 업체별 그룹 아코디언이 같은 마크업을 공유한다(한쪽만 고쳐 어긋나는 일 방지) */}
       {pagedList.length === 0 ? (
-        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">발행된 인보이스가 없습니다. 제안서 미리보기에서 "📄 인보이스 발행"을 눌러 만들 수 있습니다.</div>
+        <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">
+          {stageTab === "all"
+            ? '발행된 인보이스가 없습니다. 제안서 미리보기에서 "📄 인보이스 발행"을 눌러 만들 수 있습니다.'
+            : `${PAYMENT_STAGE_MAP[stageTab].label} 단계에 해당하는 인보이스가 없습니다.`}
+        </div>
       ) : isGroupByCompany ? (
         <div className="space-y-3">
           {Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0], "ko")).map(([client, list]) => {
@@ -10349,6 +10471,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       clientAddress: (matchedClient && matchedClient.address) || "",
       proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", subtotal, adjustmentReason, adjustmentAmount, discountReason, discountAmount, totalAmount, totalCbm: p.totalCbm || 0,
       items: cleanItems, validUntil: addDays(30),
+      /* 💰 수금 추적 시작점 — 신규 발행 건은 항상 계약금 단계부터 출발한다 */
+      paymentStage: "deposit", depositPaid: false, interimPaid: false, balancePaid: false,
       createdAt: nowDateTimeStr(), createdBy: actorName,
     };
     const local = { id: Date.now() + Math.random(), ...record };
@@ -10376,6 +10500,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       totalAmount: Number(iv.totalAmount) || 0, totalCbm: iv.totalCbm || 0,
       items: (iv.items || []).map((it) => ({ ...it })), // 원본 배열을 공유하지 않도록 각 품목을 복제
       validUntil: addDays(30),
+      /* 복제본은 "새 발주"이므로 입금 이력을 승계하지 않고 계약금 단계부터 다시 시작한다 */
+      paymentStage: "deposit", depositPaid: false, interimPaid: false, balancePaid: false,
       createdAt: nowDateTimeStr(), createdBy: actorName,
       duplicatedFromCode: iv.code || "",
     };
@@ -10385,6 +10511,44 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     try { await fsAdd(COLLECTIONS.invoices, record); setToast(`📑 인보이스가 복제되었습니다. (${code})`); }
     catch (e) { console.error(e); setToast("복제 저장 중 오류가 발생했습니다. (화면에는 반영됨)"); }
   };
+  /* 💰 인보이스 대금 입금확인 — 그 단계를 입금 처리하고 다음 단계로 자동 승격한다.
+     확인 일시와 작업자 계정을 함께 기록해 나중에 "누가 언제 확인했는지" 추적할 수 있게 한다.
+     ⚠️ 되돌릴 수 없는 처리라 금액을 보여주는 확인창을 반드시 거친다. */
+  const confirmInvoicePayment = async (iv, stageKey) => {
+    const info = PAYMENT_STAGE_MAP[stageKey];
+    if (!iv || !info || !info.paidField) return;
+    if (getPaymentStage(iv) !== stageKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
+    const amount = getCurrentStageAmount(iv);
+    const nextKey = stageKey === "deposit" ? "interim" : stageKey === "interim" ? "balance" : "completed";
+    const ok = window.confirm(
+      `[${iv.clientName || "고객사"}] ${iv.code || ""}\n\n` +
+      `${info.emoji} ${info.label} ${won(amount)} 입금을 확인 처리할까요?\n\n` +
+      `· 처리 후 단계가 "${PAYMENT_STAGE_MAP[nextKey].label}"(으)로 넘어갑니다.\n` +
+      `· 확인 일시와 담당자(${(roleUser && roleUser.displayName) || "알 수 없음"})가 함께 기록됩니다.`
+    );
+    if (!ok) return;
+    const actor = (roleUser && roleUser.displayName) || "알 수 없음";
+    const patch = {
+      [info.paidField]: true,
+      [info.atField]: nowDateTimeStr(),
+      [info.byField]: actor,
+      paymentStage: nextKey,
+      [`${stageKey}PaidAmount`]: amount, // 그 시점의 청구액을 함께 남겨, 나중에 비율을 바꿔도 받은 금액이 보존된다
+      updatedAt: nowDateTimeStr(), updatedBy: actor,
+    };
+    setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
+    try {
+      if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
+      setToast(nextKey === "completed"
+        ? `🟢 ${iv.clientName || ""} 전액 수납이 완료되었습니다. (정산완료)`
+        : `${info.emoji} ${info.label} 입금이 확인되었습니다. 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label}`);
+    } catch (e) {
+      console.error("입금확인 저장 실패:", e);
+      setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x))); // 실패하면 화면도 되돌린다
+      alert("입금확인 저장에 실패했습니다.\n\n[사유] " + ((e && e.message) || e));
+    }
+  };
+
   const deleteInvoiceRecord = async (iv) => {
     if (!window.confirm(`"${iv.clientName}" 인보이스(${iv.code})를 삭제할까요?`)) return;
     setInvoiceList((prev) => prev.filter((x) => x.id !== iv.id));
@@ -12935,6 +13099,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onOpenInvoice={(iv, mode) => setInvoiceData({ ...iv, readOnly: mode === "view" })} // 👁️=조회전용 / ✏️=편집
           onDuplicate={duplicateInvoice}
           onDelete={deleteInvoiceRecord}
+          onConfirmPayment={confirmInvoicePayment}
           onNewInvoice={() => setShowNewInvoice(true)}
           onBack={() => goBackTo("pipeline")}
         />
