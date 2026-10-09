@@ -2783,6 +2783,28 @@ function getStepActionAmount(iv) {
   return getStepAmount(iv, getStepStage(iv));
 }
 
+/* ⭐ 입금확인일자 — 화면 어디서든 이 함수 하나로만 읽는다.
+   한 건에 날짜처럼 보이는 값이 둘 있고, 뜻이 완전히 다르다:
+     • {차수}PaidDate … 담당자가 입금확인 모달에서 **직접 고른 실제 입금일자** (예: 2026-08-06)
+     • {차수}PaidAt   … 시스템이 찍은 **확인 처리 시각** (버튼을 누른 오늘)
+   8월에 들어온 돈을 10월에 등록하면 둘이 두 달 차이가 난다. 사람이 보고 싶은 것은 언제나 앞의 것이다.
+   ⚠️ 지난 버전에서 단계 뱃지 툴팁이 PaidAt을 읽어 "과거 일자로 저장했는데 오늘 날짜가 뜬다"는 버그가 났다.
+   ⚠️ new Date()·오늘 날짜를 폴백으로 쓰지 않는다 — 기록이 없으면 비워 두고 "-"로 표시한다.
+      (입금일자 칸이 없던 시절의 옛 건만 PaidAt의 앞 10글자를 날짜로 빌려 쓴다) */
+function getStagePaidDate(iv, tier) {
+  if (!iv || !tier) return "";
+  const picked = iv[`${tier}PaidDate`];
+  if (picked) return String(picked).slice(0, 10);
+  const processedAt = iv[`${tier}PaidAt`];
+  if (processedAt) return String(processedAt).slice(0, 10);
+  return "";
+}
+function getStagePaidDateText(iv, tier) { return getStagePaidDate(iv, tier) || "-"; }
+// 입금 기록이 하나라도 있는지(세 차수 전수 확인) — 발송 모달의 "입금 내역" 영역 노출 조건
+function hasAnyPaidRecord(iv) {
+  return ["deposit", "interim", "balance"].some((t) => !!getStagePaidDate(iv, t));
+}
+
 function getSampleApproval(s) {
   if (!s) return { approved: false, at: "" };
   const at = s.approvedAt || s.consentAt || "";
@@ -3422,11 +3444,23 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                           const hist = [];
                           PAYMENT_STAGES.forEach((st) => {
                             if (!st.paidField) return;
-                            if (isStageRequested(iv, st.key)) hist.push(`📤 ${st.label} 청구발송 ${iv[`${st.key}RequestedAt`] || ""}${iv[`${st.key}RequestedBy`] ? ` (${iv[`${st.key}RequestedBy`]})` : ""}`);
-                            if (iv[st.paidField]) hist.push(`✓ ${st.label} 입금확인 ${iv[st.atField] || ""}${iv[st.byField] ? ` (${iv[st.byField]})` : ""}`);
+                            if (isStageRequested(iv, st.key)) hist.push(`📤 ${st.label} 청구발송일시: ${iv[`${st.key}RequestedAt`] || "-"}${iv[`${st.key}RequestedBy`] ? ` (${iv[`${st.key}RequestedBy`]})` : ""}`);
+                            if (iv[st.paidField]) {
+                              /* 🔴 반드시 {차수}PaidDate(담당자가 고른 실제 입금일자)를 먼저 보여준다.
+                                 {차수}PaidAt(버튼을 누른 시각)은 "시스템 등록"으로 따로 덧붙일 뿐, 입금일자 자리에 쓰지 않는다. */
+                              const paidOn = getStagePaidDateText(iv, st.key);
+                              const by = iv[st.byField] ? ` (${iv[st.byField]})` : "";
+                              const regAt = iv[st.atField] ? ` · 시스템 등록 ${iv[st.atField]}` : "";
+                              hist.push(`✓ ${st.label} 입금확인일자: ${paidOn}${by}${regAt}`);
+                            }
                           });
-                          if (iv.settledAt) hist.push(`🟢 최종 정산완료 ${iv.settledAt}${iv.settledBy ? ` (${iv.settledBy})` : ""}`);
-                          const tip = [info.desc, hist.length ? "\n[처리 이력]\n" + hist.join("\n") : ""].filter(Boolean).join("");
+                          if (iv.settledAt) hist.push(`🟢 최종 정산완료 처리: ${iv.settledAt}${iv.settledBy ? ` (${iv.settledBy})` : ""}`);
+                          /* 호버하면 맨 윗줄에 "지금 이 단계의 날짜"가 바로 보이게 한다.
+                             입금 단계 → 담당자가 고른 입금확인일자 / 청구 단계 → 청구서를 보낸 일시. */
+                          const headLine = info.phase === "paid" ? `입금확인일자: ${getStagePaidDateText(iv, info.tier)}`
+                            : info.phase === "request" && isStageRequested(iv, info.tier) ? `청구발송일시: ${iv[`${info.tier}RequestedAt`] || "-"}`
+                            : info.phase === "done" ? `정산완료 처리: ${iv.settledAt || "-"}` : "";
+                          const tip = [headLine, info.desc, hist.length ? "[처리 이력]\n" + hist.join("\n") : ""].filter(Boolean).join("\n\n");
                           return (
                             <span title={tip}
                               className={"w-full px-2 py-1 rounded-lg border text-[11px] font-bold text-center whitespace-nowrap " + (info.chip || "bg-slate-50 text-slate-600 border-slate-200")}>
@@ -4061,10 +4095,11 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
               </React.Fragment>
             )}
             {/* 이전 단계 입금 내역 — 중도금·잔금 발송 때 "어디까지 받았는지"가 바로 보이게 한다 */}
-            {(invoice.depositPaidDate || invoice.interimPaidDate) && (
+            {hasAnyPaidRecord(invoice) && (
               <div className="border-t border-slate-200 pt-1 mt-1 space-y-0.5">
                 {[["deposit", "계약금"], ["interim", "중도금"], ["balance", "잔금"]].map(([k, label], i) => {
-                  const d = invoice[`${k}PaidDate`];
+                  // 잔금까지 전수로 훑고, 날짜는 담당자가 고른 입금일자(getStagePaidDate)를 쓴다
+                  const d = getStagePaidDate(invoice, k);
                   if (!d) return null;
                   return (
                     <div key={k} className="flex justify-between text-[11px]">
