@@ -2661,6 +2661,86 @@ function isPaymentRowPaid(row, idx, invoice) {
   return !!(stage && invoice && invoice[`${stage.key}PaidDate`]);
 }
 
+/* ===================== 🧭 인보이스 8단계 청구/입금 파이프라인(stepStage) =====================
+   위의 PAYMENT_STAGES(계약금/중도금/잔금)는 "어느 대금 차수인가"만 구분한다.
+   실무에서는 같은 차수 안에서도 **청구서를 보낸 상태**와 **입금을 받은 상태**가 완전히 다른 일이라
+   (중도금 청구발송 = 고객 응답 대기 / 중도금 입금 = 선적 승인 가능) 둘을 갈라 7개 단계로 추적한다.
+     계약금청구 → 계약금입금 → 중도금청구 → 중도금입금 → 잔금청구 → 잔금입금 → 정산완료
+
+   ⚠️ 설계 원칙(PAYMENT_STAGES에서 이미 한 번 데였던 것과 같음):
+      저장된 stepStage 값을 그대로 믿지 않고 **입금 플래그 + 청구발송 일시에서 역산**한다.
+      예전 인보이스에는 stepStage 필드가 아예 없고, 저장값과 실제 플래그가 어긋나면
+      그 건이 어느 탭에도 안 잡혀 목록에서 통째로 사라진다.
+   ⚠️ 단 하나의 예외가 '정산완료'다 — 세금계산서 발행·정산 종결은 돈의 흐름만으로는 알 수 없어
+      [🟢 최종 정산완료] 버튼이 남기는 settledAt 기록이 있어야만 그 단계로 본다.
+      그래서 예전에 잔금까지 받아둔 건은 '잔금입금'에 놓이고, 종결 처리를 한 번 눌러주면 된다. */
+const STEP_STAGES = [
+  { key: "deposit_request", tier: "deposit", phase: "request", label: "계약금청구", emoji: "🟡",
+    tabOn: "bg-amber-500 text-white", cardCls: "border-amber-200 bg-amber-50/40", textCls: "text-amber-700", badgeCls: "bg-amber-100 text-amber-800",
+    btn: "bg-amber-500 hover:bg-amber-600", actionLabel: "🟡 계약금 입금확인", action: "confirm",
+    desc: "계약금(30%) 청구서 발송 후 입금 대기", amountHint: "청구 중(미수)" },
+  { key: "deposit_paid", tier: "deposit", phase: "paid", label: "계약금입금", emoji: "🟡",
+    tabOn: "bg-amber-600 text-white", cardCls: "border-amber-200 bg-amber-50/40", textCls: "text-amber-800", badgeCls: "bg-amber-100 text-amber-900",
+    btn: "bg-blue-600 hover:bg-blue-700", actionLabel: "🔵 중도금 청구발송", action: "request", actionTier: "interim",
+    desc: "계약금 입금 확인 완료 (공장 발주·생산 착수)", amountHint: "입금 확인액" },
+  { key: "interim_request", tier: "interim", phase: "request", label: "중도금청구", emoji: "🔵",
+    tabOn: "bg-blue-500 text-white", cardCls: "border-blue-200 bg-blue-50/40", textCls: "text-blue-700", badgeCls: "bg-blue-100 text-blue-800",
+    btn: "bg-blue-600 hover:bg-blue-700", actionLabel: "🔵 중도금 입금확인", action: "confirm",
+    desc: "생산 완료 후 중도금(60%) 청구 발송", amountHint: "청구 중(미수)" },
+  { key: "interim_paid", tier: "interim", phase: "paid", label: "중도금입금", emoji: "🔵",
+    tabOn: "bg-blue-700 text-white", cardCls: "border-blue-200 bg-blue-50/40", textCls: "text-blue-800", badgeCls: "bg-blue-100 text-blue-900",
+    btn: "bg-purple-600 hover:bg-purple-700", actionLabel: "🟣 잔금 청구발송", action: "request", actionTier: "balance",
+    desc: "중도금 입금 확인 완료 (선적·출고 승인)", amountHint: "입금 확인액" },
+  { key: "balance_request", tier: "balance", phase: "request", label: "잔금청구", emoji: "🟣",
+    tabOn: "bg-purple-500 text-white", cardCls: "border-purple-200 bg-purple-50/40", textCls: "text-purple-700", badgeCls: "bg-purple-100 text-purple-800",
+    btn: "bg-purple-600 hover:bg-purple-700", actionLabel: "🟣 잔금 입금확인", action: "confirm",
+    desc: "통관·납품 후 잔금(10%) 청구 발송", amountHint: "청구 중(미수)" },
+  { key: "balance_paid", tier: "balance", phase: "paid", label: "잔금입금", emoji: "🟣",
+    tabOn: "bg-purple-700 text-white", cardCls: "border-purple-200 bg-purple-50/40", textCls: "text-purple-800", badgeCls: "bg-purple-100 text-purple-900",
+    btn: "bg-emerald-600 hover:bg-emerald-700", actionLabel: "🟢 최종 정산완료", action: "settle",
+    desc: "잔금 입금 확인 완료 (세금계산서·정산 종결 대기)", amountHint: "입금 확인액" },
+  { key: "completed", tier: "", phase: "done", label: "정산완료", emoji: "🟢",
+    tabOn: "bg-emerald-600 text-white", cardCls: "border-emerald-200 bg-emerald-50/40", textCls: "text-emerald-700", badgeCls: "bg-emerald-100 text-emerald-800",
+    btn: "", actionLabel: "", action: "",
+    desc: "모든 대금(100%) 입금 및 세금계산서·정산 종결", amountHint: "총 수납액" },
+];
+const STEP_STAGE_MAP = Object.fromEntries(STEP_STAGES.map((s) => [s.key, s]));
+const STEP_STAGE_ORDER = STEP_STAGES.map((s) => s.key);
+
+/* 청구발송 기록이 남아 있는지 — 일시(RequestedAt)를 1순위로 보고, 없으면 레거시 플래그도 인정한다 */
+function isStageRequested(iv, tier) {
+  if (!iv || !tier) return false;
+  return !!(iv[`${tier}RequestedAt`] || iv[`${tier}Requested`]);
+}
+function getStepStage(iv) {
+  if (!iv) return "deposit_request";
+  // 종결은 명시적 기록으로만 — 돈의 흐름(플래그)만으로는 세금계산서·정산 종결 여부를 알 수 없다
+  if (iv.settledAt || iv.stepStage === "completed") return "completed";
+  if (iv.balancePaid) return "balance_paid";
+  if (iv.interimPaid) return isStageRequested(iv, "balance") ? "balance_request" : "interim_paid";
+  if (iv.depositPaid) return isStageRequested(iv, "interim") ? "interim_request" : "deposit_paid";
+  return "deposit_request"; // 인보이스 발행 = 계약금 청구서가 나간 상태
+}
+/* 각 단계 카드에 합산할 금액.
+   청구 단계 → 지금 청구 중인(= 아직 못 받은) 금액 / 입금 단계 → 실제로 확인된 입금액 / 정산완료 → 총 수납액.
+   "받을 돈"과 "받은 돈"이 한 그리드에 섞이므로 카드마다 amountHint로 뜻을 함께 표기한다. */
+function getStepAmount(iv, stepKey) {
+  const st = STEP_STAGE_MAP[stepKey];
+  if (!iv || !st) return 0;
+  const a = getStageAmounts(iv);
+  if (st.phase === "done") return a.paidTotal > 0 ? a.paidTotal : a.grand;
+  if (!st.tier) return 0;
+  if (st.phase === "paid") {
+    const amt = Number(iv[`${st.tier}PaidAmount`]);
+    return Number.isFinite(amt) && amt > 0 ? amt : (a[st.tier] || 0); // 옛 데이터(실입금액 미기록)는 예정액으로 폴백
+  }
+  return a[st.tier] || 0;
+}
+// 그 건에서 "지금 처리해야 할 금액" — 목록 행과 버튼 툴팁에 함께 보여준다
+function getStepActionAmount(iv) {
+  return getStepAmount(iv, getStepStage(iv));
+}
+
 function getSampleApproval(s) {
   if (!s) return { approved: false, at: "" };
   const at = s.approvedAt || s.consentAt || "";
@@ -3110,6 +3190,12 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
   const info = PAYMENT_STAGE_MAP[stageKey] || {};
   const nextKey = stageKey === "deposit" ? "interim" : stageKey === "interim" ? "balance" : "completed";
   const nextInfo = PAYMENT_STAGE_MAP[nextKey] || {};
+  /* 8단계 파이프라인 기준으로 "다음에 놓일 자리"를 안내한다 — 입금 확인만으로는 다음 차수의 청구가
+     나간 것이 아니므로 '{이번 차수}입금'에 멈추고, 잔금까지 받아도 종결은 별도 버튼이다. */
+  const nextStepInfo = STEP_STAGE_MAP[`${stageKey}_paid`] || {};
+  const afterHint = stageKey === "balance"
+    ? "세금계산서 발행까지 끝나면 [🟢 최종 정산완료]로 종결해주세요."
+    : `이어서 [${nextInfo.label} 청구발송]을 눌러 다음 청구서를 보낼 수 있습니다.`;
   const amounts = getStageAmounts(invoice);
   const amount = getCurrentStageAmount(invoice); // 이 단계의 청구(예정) 금액
   const [paidDate, setPaidDate] = useState(todayDisplay()); // 기본값 = 오늘
@@ -3179,7 +3265,7 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
             인보이스 정산표에 <b className="text-slate-700">"{formatKoreanDate(paidDate) || "YYYY년 M월 D일"} 입금({rateText}%)"</b> / <b className="text-slate-700">{won(paidAmount)}</b>으로 표기됩니다.
           </p>
           <p className="text-[11px] text-slate-500 leading-relaxed bg-blue-50/70 border border-blue-100 rounded-lg px-3 py-2">
-            확인하면 단계가 <b className="text-slate-700">{nextInfo.label}</b>(으)로 넘어가고, 처리 일시와 담당자가 함께 기록됩니다.
+            확인하면 단계가 <b className="text-slate-700">{nextStepInfo.label || `${info.label}입금`}</b>(으)로 넘어가고, 처리 일시와 담당자가 함께 기록됩니다. {afterHint}
           </p>
         </div>
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
@@ -3193,10 +3279,11 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
   );
 }
 
-function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin, onNewInvoice, onConfirmPayment }) {
+function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin, onNewInvoice, onStageAction }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [stageTab, setStageTab] = useState("all"); // all | deposit | interim | balance | completed
+  // all | deposit_request | deposit_paid | interim_request | interim_paid | balance_request | balance_paid | completed
+  const [stageTab, setStageTab] = useState("all");
   const PAGE_SIZE = 20;
 
   /* 🏢 업체별 모아보기 state.
@@ -3206,16 +3293,25 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
   const [openClient, setOpenClient] = useState(null);
 
   const safeList = useMemo(() => (Array.isArray(invoices) ? invoices.filter(Boolean) : []), [invoices]);
-  // 탭 배지 건수 — 검색어와 무관하게 전체 기준으로 세어, 검색 중에도 각 단계의 실제 잔량이 보이게 한다
-  const stageCounts = useMemo(() => {
-    const c = { all: safeList.length, deposit: 0, interim: 0, balance: 0, completed: 0 };
-    safeList.forEach((iv) => { c[getPaymentStage(iv)] = (c[getPaymentStage(iv)] || 0) + 1; });
-    return c;
+  /* 탭 배지 건수 + 대시보드 카드 금액 — 검색어와 무관하게 전체 기준으로 집계해,
+     검색 중에도 각 단계의 실제 잔량과 금액이 그대로 보이게 한다.
+     건수와 금액을 한 번의 순회로 같이 구해, 두 숫자가 서로 다른 기준으로 갈라지는 것을 막는다. */
+  const stageStats = useMemo(() => {
+    const s = { all: { count: safeList.length, amount: 0 } };
+    STEP_STAGE_ORDER.forEach((k) => { s[k] = { count: 0, amount: 0 }; });
+    safeList.forEach((iv) => {
+      const key = getStepStage(iv);
+      if (!s[key]) s[key] = { count: 0, amount: 0 };
+      s[key].count += 1;
+      s[key].amount += getStepAmount(iv, key) || 0;
+      s.all.amount += getInvoiceGrandTotal(iv) || 0; // 전체 카드는 총 계약금액(VAT 포함) 합계
+    });
+    return s;
   }, [safeList]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const scoped = stageTab === "all" ? safeList : safeList.filter((iv) => getPaymentStage(iv) === stageTab);
+    const scoped = stageTab === "all" ? safeList : safeList.filter((iv) => getStepStage(iv) === stageTab);
     const base = !q ? scoped : scoped.filter((iv) => ((iv && iv.clientName) || "").toLowerCase().includes(q) || ((iv && iv.code) || "").toLowerCase().includes(q));
     return [...base].sort((a, b) => (parseCreatedAt(b && b.createdAt) || 0) - (parseCreatedAt(a && a.createdAt) || 0));
   }, [safeList, search, stageTab]);
@@ -3267,10 +3363,10 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                     <td className="px-3 py-3 text-right whitespace-nowrap">
                       <div className="text-sm font-semibold text-[#1E3A8A]">{won(getInvoiceGrandTotal(iv))}</div>
                       {(() => {
-                        const st = getPaymentStage(iv);
-                        const info = PAYMENT_STAGE_MAP[st];
+                        const st = getStepStage(iv);
+                        const info = STEP_STAGE_MAP[st];
                         if (st === "completed") return <div className="text-[11px] text-emerald-600 font-semibold mt-0.5">🟢 전액 수납 완료</div>;
-                        return <div className="text-[11px] text-slate-500 mt-0.5">{info.emoji} {info.label} {won(getCurrentStageAmount(iv))}</div>;
+                        return <div className="text-[11px] text-slate-500 mt-0.5">{info.emoji} {info.label} {won(getStepAmount(iv, st))}</div>;
                       })()}
                     </td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(iv.createdBy) || "-"}</td>
@@ -3283,27 +3379,44 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                       })()}
                     </td>
                     <td className="px-3 py-3 text-center" onClick={(e) => e.stopPropagation()}>
-                      {/* 💰 단계별 입금확인 — 누르면 그 단계가 입금 처리되고 다음 단계로 자동 승격된다.
-                          단계 탭을 보고 있을 때만 노출해, "전체" 탭에서 실수로 눌리는 것을 막는다. */}
-                      {onConfirmPayment && stageTab !== "all" && stageTab !== "completed" && getPaymentStage(iv) === stageTab && (() => {
-                        const info = PAYMENT_STAGE_MAP[stageTab];
+                      {/* 🧭 단계별 순차 승격 버튼 — 그 건이 지금 놓인 단계에 따라 다음 할 일 하나만 보여준다.
+                          (청구 단계 → 입금확인 / 입금 단계 → 다음 대금 청구발송 / 잔금입금 → 최종 정산완료)
+                          ⚠️ 탭이 아니라 **행 자신의 단계**를 기준으로 삼는다 — 예전처럼 탭이 맞을 때만 띄우면
+                             [전체] 탭에서는 아무 것도 못 눌러 매번 탭을 옮겨 다녀야 했다.
+                             모든 액션이 확인 모달을 거치므로 오클릭은 그 자리에서 되돌릴 수 있다. */}
+                      {onStageAction && (() => {
+                        const stepKey = getStepStage(iv);
+                        const info = STEP_STAGE_MAP[stepKey];
+                        if (!info || !info.action) return null;
+                        const amt = won(getStepAmount(iv, stepKey));
+                        const tip = info.action === "confirm" ? `${info.label.replace("청구", "")} ${amt} 입금을 확인 처리합니다`
+                          : info.action === "request" ? `다음 대금 청구 안내문을 만들어 발송 처리합니다`
+                          : `세금계산서·정산까지 끝난 건으로 최종 종결합니다`;
                         return (
-                          <button onClick={() => onConfirmPayment(iv, stageTab)}
-                            title={`${info.label} ${won(getCurrentStageAmount(iv))} 입금을 확인 처리합니다`}
+                          <button onClick={() => onStageAction(iv, stepKey)} title={tip}
                             className={"w-full mb-1.5 px-2 py-1.5 rounded-lg text-white text-[11px] font-bold whitespace-nowrap shadow-sm " + info.btn}>
-                            {info.emoji} {info.label} 입금확인
+                            {info.actionLabel}
                           </button>
                         );
                       })()}
-                      {/* 이미 받은 단계는 확인 일시·담당자를 그대로 보여준다(추적 가능해야 하므로 지우지 않음) */}
+                      {/* 지나온 단계의 처리 일시·담당자를 그대로 보여준다(추적 가능해야 하므로 지우지 않음).
+                          청구발송(📤)과 입금확인(✓)을 구분해, 어디까지 보냈고 어디까지 받았는지 한 줄로 읽힌다. */}
                       {(() => {
-                        const done = PAYMENT_STAGES.filter((s) => s.paidField && iv[s.paidField]);
-                        if (done.length === 0) return null;
+                        const marks = [];
+                        PAYMENT_STAGES.forEach((s) => {
+                          if (!s.paidField) return;
+                          if (isStageRequested(iv, s.key)) marks.push({ k: s.key + "-req", cls: "bg-slate-100 text-slate-600", text: `📤${s.label}`,
+                            tip: `${s.label} 청구발송 ${iv[`${s.key}RequestedAt`] || ""}${iv[`${s.key}RequestedBy`] ? ` (${iv[`${s.key}RequestedBy`]})` : ""}` });
+                          if (iv[s.paidField]) marks.push({ k: s.key + "-paid", cls: s.cls, text: `✓${s.label}`,
+                            tip: `${s.label} 입금확인 ${iv[s.atField] || ""}${iv[s.byField] ? ` (${iv[s.byField]})` : ""}` });
+                        });
+                        if (iv.settledAt) marks.push({ k: "settled", cls: "bg-emerald-100 text-emerald-800", text: "🟢정산완료",
+                          tip: `최종 정산완료 ${iv.settledAt}${iv.settledBy ? ` (${iv.settledBy})` : ""}` });
+                        if (marks.length === 0) return null;
                         return (
                           <div className="mb-1.5 flex flex-wrap justify-center gap-1">
-                            {done.map((s) => (
-                              <span key={s.key} title={`${s.label} 입금확인 ${iv[s.atField] || ""}${iv[s.byField] ? ` (${iv[s.byField]})` : ""}`}
-                                className={"px-1.5 py-0.5 rounded text-[10px] font-bold " + s.cls}>✓{s.label}</span>
+                            {marks.map((m) => (
+                              <span key={m.k} title={m.tip} className={"px-1.5 py-0.5 rounded text-[10px] font-bold " + m.cls}>{m.text}</span>
                             ))}
                           </div>
                         );
@@ -3337,25 +3450,53 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
           <button onClick={onBack} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">← 돌아가기</button>
         </div>
       </div>
-      {/* 💰 대금 수금 단계 탭 — 계약금 → 중도금 → 잔금 → 정산완료 파이프라인 */}
+      {/* 💰 대금 파이프라인 탭 — 청구와 입금을 갈라 8단계로 추적한다
+          (계약금청구 → 계약금입금 → 중도금청구 → 중도금입금 → 잔금청구 → 잔금입금 → 정산완료) */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        {[{ key: "all", emoji: "", label: "전체", rateHint: "", tabOn: "bg-slate-800 text-white", desc: "전체 인보이스 목록" }, ...PAYMENT_STAGES].map((s) => {
+        {[{ key: "all", emoji: "", label: "전체", tabOn: "bg-slate-800 text-white", desc: "전체 인보이스 목록" }, ...STEP_STAGES].map((s) => {
           const on = stageTab === s.key;
-          const n = stageCounts[s.key] || 0;
+          const n = (stageStats[s.key] || {}).count || 0;
           return (
             <button key={s.key} onClick={() => setStageTab(s.key)} title={s.desc}
               className={"flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap border transition-colors " +
                 (on ? s.tabOn + " border-transparent shadow-sm" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50")}>
-              <span>{s.emoji} {s.label}{s.rateHint ? ` (${s.rateHint})` : ""}</span>
+              <span>{s.emoji} {s.label}</span>
               <span className={"px-1.5 py-0.5 rounded-full text-[10px] font-bold " + (on ? "bg-white/25 text-white" : "bg-slate-100 text-slate-600")}>{n}</span>
+            </button>
+          );
+        })}
+      </div>
+      {/* 📊 단계별 요약 대시보드 — 4×2 그리드(좁은 화면은 2열로 접힘). 카드를 누르면 그 단계로 바로 필터링된다.
+          ⚠️ 청구 카드는 "아직 못 받은 돈", 입금 카드는 "이미 받은 돈"이라 뜻이 정반대다.
+             두 숫자를 한 그리드에 두면 헷갈리므로 카드마다 성격(청구 중 / 입금 확인액)을 함께 적는다. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-4">
+        {[{ key: "all", label: "총 건수 / 금액", emoji: "📑", cardCls: "border-slate-200 bg-slate-50/60", textCls: "text-slate-800", amountHint: "총 계약금액(VAT 포함)", desc: "전체 인보이스 목록" }, ...STEP_STAGES].map((s) => {
+          const st = stageStats[s.key] || { count: 0, amount: 0 };
+          const on = stageTab === s.key;
+          return (
+            <button key={s.key} type="button" onClick={() => setStageTab(s.key)} title={`${s.desc} — ${s.amountHint}`}
+              className={"text-left rounded-xl border px-3.5 py-3 transition-all hover:shadow-sm " + s.cardCls +
+                (on ? " ring-2 ring-offset-1 ring-slate-400 shadow-sm" : "")}>
+              <div className="flex items-center gap-1 text-[11px] font-bold text-slate-600 whitespace-nowrap overflow-hidden">
+                <span>{s.emoji}</span><span className="truncate">{s.label}</span>
+              </div>
+              <div className={"text-base font-extrabold mt-1 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis " + s.textCls}>
+                {won(st.amount)}
+              </div>
+              <div className="flex items-center justify-between mt-0.5 gap-1">
+                <span className="text-[10px] text-slate-400 truncate">{s.amountHint}</span>
+                <span className="text-[11px] font-bold text-slate-500 whitespace-nowrap">{st.count}건</span>
+              </div>
             </button>
           );
         })}
       </div>
       {stageTab !== "all" && (
         <p className="text-[11px] text-slate-500 mb-3 -mt-1">
-          {PAYMENT_STAGE_MAP[stageTab].desc} 단계의 건입니다.
-          {stageTab !== "completed" && " 입금이 확인되면 [입금확인] 버튼을 눌러 다음 단계로 넘겨주세요."}
+          {STEP_STAGE_MAP[stageTab].desc} 단계의 건입니다.
+          {STEP_STAGE_MAP[stageTab].action === "confirm" && " 입금이 확인되면 [입금확인] 버튼을 눌러 다음 단계로 넘겨주세요."}
+          {STEP_STAGE_MAP[stageTab].action === "request" && " 다음 대금 청구서를 보내려면 [청구발송] 버튼을 눌러주세요."}
+          {STEP_STAGE_MAP[stageTab].action === "settle" && " 세금계산서 발행까지 끝났으면 [최종 정산완료]로 종결해주세요."}
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -3375,7 +3516,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
         <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">
           {stageTab === "all"
             ? '발행된 인보이스가 없습니다. 제안서 미리보기에서 "📄 인보이스 발행"을 눌러 만들 수 있습니다.'
-            : `${PAYMENT_STAGE_MAP[stageTab].label} 단계에 해당하는 인보이스가 없습니다.`}
+            : `${STEP_STAGE_MAP[stageTab].label} 단계에 해당하는 인보이스가 없습니다.`}
         </div>
       ) : isGroupByCompany ? (
         <div className="space-y-3">
@@ -3806,7 +3947,10 @@ function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTo
   );
 }
 
-function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
+/* titleText / sendLabel / sentLabel / footnote 는 선택 항목이다.
+   목록 화면의 [중도금·잔금 청구발송]에서도 이 모달을 그대로 재사용하면서 제목·버튼 문구만 바꾸기 위한 것으로,
+   넘기지 않으면 기존 "고객 승인요청 발송" 문구가 그대로 쓰인다(기존 호출부는 손대지 않음). */
+function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLabel, sentLabel, footnote }) {
   const link = `${window.location.origin}/agree?type=invoice&id=${invoice.id}`;
   const items = invoice.items || [];
   const first = items[0] || {};
@@ -3852,7 +3996,7 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
     <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="text-base font-bold text-slate-800">📲 인보이스 고객 승인요청 발송</h2>
+          <h2 className="text-base font-bold text-slate-800">{titleText || "📲 인보이스 고객 승인요청 발송"}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
         <div className="p-6 space-y-3 overflow-y-auto flex-1">
@@ -3920,10 +4064,10 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent }) {
               예전엔 문구만 복사되고 상태가 [검토대기]에 머물러 있었다. */}
           <button onClick={() => { copy(message, "msg"); if (onSent) onSent(); }}
             className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold">
-            {copied === "msg" ? "✅ 복사되었습니다 (발송완료 처리됨)" : "💬 안내 문구 전체 복사 + 발송완료 처리"}
+            {copied === "msg" ? (sentLabel || "✅ 복사되었습니다 (발송완료 처리됨)") : (sendLabel || "💬 안내 문구 전체 복사 + 발송완료 처리")}
           </button>
           <p className="text-[11px] text-slate-400">
-            복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 승인을 마치면 이 인보이스가 자동으로 <b>고객승인</b>으로 바뀝니다.
+            {footnote || <React.Fragment>복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 승인을 마치면 이 인보이스가 자동으로 <b>고객승인</b>으로 바뀝니다.</React.Fragment>}
           </p>
         </div>
       </div>
@@ -10778,7 +10922,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       proposalTitle: p.proposalTitle || "", itemSummary: p.itemSummary || "", subtotal, adjustmentReason, adjustmentAmount, discountReason, discountAmount, totalAmount, totalCbm: p.totalCbm || 0,
       items: cleanItems, validUntil: addDays(30),
       /* 💰 수금 추적 시작점 — 신규 발행 건은 항상 계약금 단계부터 출발한다 */
-      paymentStage: "deposit", depositPaid: false, interimPaid: false, balancePaid: false,
+      paymentStage: "deposit", stepStage: "deposit_request", depositPaid: false, interimPaid: false, balancePaid: false,
       createdAt: nowDateTimeStr(), createdBy: actorName,
     };
     const local = { id: Date.now() + Math.random(), ...record };
@@ -10807,7 +10951,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       items: (iv.items || []).map((it) => ({ ...it })), // 원본 배열을 공유하지 않도록 각 품목을 복제
       validUntil: addDays(30),
       /* 복제본은 "새 발주"이므로 입금 이력을 승계하지 않고 계약금 단계부터 다시 시작한다 */
-      paymentStage: "deposit", depositPaid: false, interimPaid: false, balancePaid: false,
+      paymentStage: "deposit", stepStage: "deposit_request", depositPaid: false, interimPaid: false, balancePaid: false,
       createdAt: nowDateTimeStr(), createdBy: actorName,
       duplicatedFromCode: iv.code || "",
     };
@@ -10825,6 +10969,73 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     if (!iv || !PAYMENT_STAGE_MAP[stageKey]) return;
     if (getPaymentStage(iv) !== stageKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
     setPaymentConfirm({ iv, stageKey });
+  };
+
+  /* ===== 🧭 8단계 파이프라인 승격 처리 =====
+     목록의 버튼 하나가 그 건의 현재 단계에 따라 세 갈래로 갈린다:
+       ① 청구 단계 → 입금확인 모달(기존 흐름 그대로)
+       ② 입금 단계 → 다음 대금 청구 안내문 발송 모달 → {차수}RequestedAt 기록
+       ③ 잔금입금 → 최종 정산완료(settledAt) 종결
+     ⚠️ 어떤 갈래든 "지금 화면에 보이는 단계"와 "실제 데이터로 역산한 단계"가 어긋나면 중단한다 —
+        두 사람이 동시에 같은 건을 처리하면 한 단계를 건너뛰고 승격될 수 있다. */
+  const [stageRequest, setStageRequest] = useState(null); // {iv, tier} — 중도금·잔금 청구 안내문 발송 모달
+
+  const markStageRequested = async (iv, tier) => {
+    if (!iv || !tier) return;
+    const actor = (roleUser && roleUser.displayName) || "알 수 없음";
+    const label = (PAYMENT_STAGE_MAP[tier] || {}).label || "";
+    const patch = {
+      [`${tier}RequestedAt`]: nowDateTimeStr(),
+      [`${tier}RequestedBy`]: actor,
+      [`${tier}Requested`]: true,
+      stepStage: `${tier}_request`,
+      updatedAt: nowDateTimeStr(), updatedBy: actor,
+    };
+    setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
+    try {
+      if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
+      setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
+      setToast(`📤 ${label} 청구 안내문이 복사되었습니다. → ${label}청구 단계로 이동`);
+    } catch (e) {
+      console.error("청구발송 기록 저장 실패:", e);
+      setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x))); // 실패하면 화면도 되돌린다
+      alert("청구발송 처리 저장에 실패했습니다.\n\n[사유] " + ((e && e.message) || e));
+    }
+  };
+
+  const settleInvoice = async (iv) => {
+    if (!iv) return;
+    if (getStepStage(iv) !== "balance_paid") { setToast("잔금 입금이 확인된 건만 정산완료로 종결할 수 있습니다."); return; }
+    const amounts = getStageAmounts(iv);
+    if (!window.confirm(
+      `"${iv.clientName || ""}" ${iv.code || ""} 건을 최종 정산완료로 종결할까요?\n\n` +
+      `• 총 계약금액 : ${won(amounts.grand)}\n• 총 수납금액 : ${won(amounts.paidTotal)}\n` +
+      (Math.abs(amounts.outstanding) > 0 ? `• 남은 금액 : ${won(amounts.outstanding)} ← 확인이 필요합니다\n` : "") +
+      `\n세금계산서 발행까지 끝난 건에만 눌러주세요.`
+    )) return;
+    const actor = (roleUser && roleUser.displayName) || "알 수 없음";
+    const patch = { stepStage: "completed", settledAt: nowDateTimeStr(), settledBy: actor, paymentStage: "completed", updatedAt: nowDateTimeStr(), updatedBy: actor };
+    setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
+    try {
+      if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
+      setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
+      setToast(`🟢 ${iv.clientName || ""} 건이 정산완료로 종결되었습니다.`);
+    } catch (e) {
+      console.error("정산완료 저장 실패:", e);
+      setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x)));
+      alert("정산완료 처리 저장에 실패했습니다.\n\n[사유] " + ((e && e.message) || e));
+    }
+  };
+
+  const handleInvoiceStageAction = (iv, stepKey) => {
+    if (!iv) return;
+    const current = getStepStage(iv);
+    if (current !== stepKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
+    const info = STEP_STAGE_MAP[current];
+    if (!info || !info.action) return;
+    if (info.action === "confirm") { openPaymentConfirm(iv, info.tier); return; }
+    if (info.action === "request") { setStageRequest({ iv, tier: info.actionTier }); return; }
+    if (info.action === "settle") { settleInvoice(iv); }
   };
 
   const confirmInvoicePayment = async (iv, stageKey, paidDate, paidAmount, paidRate) => {
@@ -10848,6 +11059,10 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       [info.atField]: nowDateTimeStr(),    // 확인 처리 시각(감사 추적용) — 입금일자와는 별개
       [info.byField]: actor,
       paymentStage: nextKey,
+      /* 8단계 파이프라인에서는 "입금 확인" 자리에 멈춘다 — 다음 대금 청구서를 아직 보내지 않았으므로
+         바로 다음 차수의 청구 단계로 넘기면 보내지도 않은 청구가 미수로 잡힌다.
+         잔금까지 받아도 정산완료가 아니라 '잔금입금'이다(세금계산서·정산 종결은 별도 버튼). */
+      stepStage: `${stageKey}_paid`,
       updatedAt: nowDateTimeStr(), updatedBy: actor,
     };
     setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
@@ -10856,8 +11071,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       /* 지금 열려 있는 인보이스 미리보기도 즉시 갱신 — 닫았다 다시 열지 않아도 정산표 라벨이 바로 바뀐다 */
       setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
       setToast(nextKey === "completed"
-        ? `🟢 ${iv.clientName || ""} 전액 수납이 완료되었습니다. (정산완료)`
-        : `${info.emoji} ${info.label} ${won(amount)} (${rate}%) 입금 확인 → 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label}`);
+        ? `🟣 ${iv.clientName || ""} 잔금 ${won(amount)} 입금 확인 → [🟢 최종 정산완료] 버튼으로 종결해주세요.`
+        : `${info.emoji} ${info.label} ${won(amount)} (${rate}%) 입금 확인 → 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label} 청구발송`);
     } catch (e) {
       console.error("입금확인 저장 실패:", e);
       setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x))); // 실패하면 화면도 되돌린다
@@ -13059,6 +13274,26 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         />
       )}
 
+      {/* 📤 중도금·잔금 청구발송 — 승인요청 발송 모달을 그대로 재사용한다.
+          문구는 buildInvoiceStageMessage가 그 건의 현재 수금 단계를 보고 자동 생성하므로
+          계약금을 받은 건에는 중도금 안내문이, 중도금까지 받은 건에는 잔금 안내문이 나온다.
+          문구를 복사하는 순간 청구발송으로 기록되고 다음 단계로 넘어간다. */}
+      {stageRequest && (() => {
+        const { iv, tier } = stageRequest;
+        const label = (PAYMENT_STAGE_MAP[tier] || {}).label || "";
+        return (
+          <InvoiceApprovalSendModal
+            invoice={{ ...iv, items: Array.isArray(iv.items) ? iv.items : [] }}
+            titleText={`📤 ${label} 청구 안내문 발송`}
+            sendLabel={`💬 ${label} 청구 문구 전체 복사 + 청구발송 처리`}
+            sentLabel={`✅ 복사되었습니다 (${label}청구 단계로 이동)`}
+            footnote={`복사한 문구를 카카오톡·문자로 보내주세요. 입금이 확인되면 목록에서 [${label} 입금확인]을 눌러 다음 단계로 넘기시면 됩니다.`}
+            onSent={async () => { setStageRequest(null); await markStageRequested(iv, tier); }}
+            onClose={() => setStageRequest(null)}
+          />
+        );
+      })()}
+
       <ClientInfoModal clients={clientsList} open={clientModal.open} mode={clientModal.mode} initial={clientInfo} itemCount={draftItems.length}
         onClose={() => setClientModal({ open: false, mode: clientModal.mode })} onSubmit={handleClientSubmit} />
       <PdfPreview
@@ -13430,7 +13665,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onOpenInvoice={(iv, mode) => setInvoiceData({ ...iv, readOnly: mode === "view" })} // 👁️=조회전용 / ✏️=편집
           onDuplicate={duplicateInvoice}
           onDelete={deleteInvoiceRecord}
-          onConfirmPayment={openPaymentConfirm}
+          onStageAction={handleInvoiceStageAction}
           onNewInvoice={() => setShowNewInvoice(true)}
           onBack={() => goBackTo("pipeline")}
         />
