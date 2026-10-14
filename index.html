@@ -2577,6 +2577,27 @@ function getInvoiceGrandTotal(iv) {
    ③이 핵심 — 계약금을 예정보다 많이/적게 받으면 그 차액이 중도금·잔금에 자동 반영되어
    "합계금액 − 실입금 합계"가 언제나 남은 청구액과 일치한다(실수량·차액 정산 대응).
    마지막 미입금 행은 나머지로 채워 1원 오차도 남기지 않는다. */
+/* ⭐ 저장된 실입금액 읽기 — 화면 어디서든 이 함수 하나로만 읽는다.
+   ⚠️ **0원은 정상적인 값이다**. 고객과 "중도금 없이 계약금+잔금"으로 합의하면 중도금 실입금액이 0원이 된다.
+      그래서 `Number(x) > 0` 같은 판정을 쓰면 0원이 '기록 없음'으로 떨어져 그 단계가 미입금으로 되돌아간다
+      (정산표에서 중도금이 다시 60%로 살아나고, 입금확인 자체가 막혔던 것이 이 때문).
+   ⚠️ 반대로 Number()만 쓰면 null·""도 0으로 변해 '기록 없음'이 '0원 입금'으로 둔갑한다.
+      그래서 값의 **존재 여부를 먼저 확인**하고 숫자 판정을 나중에 한다.
+   반환: 숫자(0 포함) = 기록된 실입금액 / null = 기록 없음 */
+function readPaidAmount(iv, tier) {
+  if (!iv || !tier) return null;
+  const raw = iv[`${tier}PaidAmount`];
+  if (raw === undefined || raw === null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+// 그 차수의 청구(예정) 금액이 0원인가 — "중도금 없음" 합의 건을 가려내는 데 쓴다
+function isZeroTierAmount(iv, tier) {
+  if (!iv || !tier) return false;
+  const a = getStageAmounts(iv);
+  return (Number(a[tier]) || 0) === 0;
+}
+
 function resolvePaymentRows(schedule, grandTotal, iv) {
   const base = (schedule && schedule.length ? schedule : DEFAULT_PAYMENT_SCHEDULE);
   const rows = base.map((r, i) => {
@@ -2585,10 +2606,10 @@ function resolvePaymentRows(schedule, grandTotal, iv) {
     const st = PAYMENT_STAGES[i];
     c.stageKey = st ? st.key : null;
     c.paidDate = (st && iv) ? (iv[`${st.key}PaidDate`] || "") : "";
-    const amt = (st && iv) ? Number(iv[`${st.key}PaidAmount`]) : NaN;
-    c.paidAmount = Number.isFinite(amt) && amt > 0 ? amt : null;
+    c.paidAmount = (st && iv) ? readPaidAmount(iv, st.key) : null; // 0원도 그대로 살린다
+    c.isZeroPaid = c.paidAmount === 0;
     const rt = (st && iv) ? Number(iv[`${st.key}PaidRate`]) : NaN;
-    c.paidRate = Number.isFinite(rt) && rt > 0 ? rt : null;
+    c.paidRate = Number.isFinite(rt) && rt >= 0 ? rt : null;
     // 입금일자와 금액이 모두 있어야 "확정된 실입금"으로 본다(옛 데이터는 아래 비율 계산으로 넘어간다)
     c.isPaid = !!(c.paidDate && c.paidAmount != null);
     return c;
@@ -2647,6 +2668,10 @@ function paymentRowLabel(row, idx, invoice) {
   const stage = PAYMENT_STAGES[idx];
   const date = stage && invoice ? invoice[`${stage.key}PaidDate`] : "";
   if (!date) return row.label || "";
+  /* 💡 0원으로 확인된 차수 — "2026년 10월 14일 입금(0%)"으로 찍으면 돈을 받은 것처럼 읽힌다.
+     중도금 없이 계약금+잔금으로 합의한 건이므로 고객 문서에는 "해당 없음"으로 적는다.
+     (행 자체는 지우지 않는다 — 3단 분할 구조와 합계가 그대로 보여야 금액 대조가 된다) */
+  if (readPaidAmount(invoice, stage.key) === 0) return `${stage.label} (해당 없음 · 0원)`;
   /* 비율은 "실제 입금 비율"이 있으면 그것을 쓴다 — 예정 30%인데 39%를 받았으면 39%로 찍혀야
      금액(실입금액)과 비율이 서로 맞는다. 옛 데이터(비율 미기록)는 예정 비율로 폴백. */
   const savedRate = Number(invoice[`${stage.key}PaidRate`]);
@@ -2752,8 +2777,8 @@ function getStepAmount(iv, stepKey) {
     /* 입금 카드 = 그 차수에 **실제로 들어온 돈**.
        ①{차수}PaidAmount(입금확인 모달에서 받은 실입금액) → ②{차수}Amount(수기로 적어둔 금액 필드)
        → ③그래도 없으면 정산표의 예정액. ①②가 0이거나 숫자가 아니면 다음 순서로 넘어간다. */
-    const paid = Number(iv[`${st.tier}PaidAmount`]);
-    if (Number.isFinite(paid) && paid > 0) return paid;
+    const paid = readPaidAmount(iv, st.tier);
+    if (paid !== null) return paid;                 // 0원도 그대로 — "중도금 없음" 건은 카드에 ₩0으로 잡혀야 맞다
     const saved = Number(iv[`${st.tier}Amount`]);
     if (Number.isFinite(saved) && saved > 0) return saved;
     return a[st.tier] || 0;
@@ -2803,6 +2828,26 @@ function getStagePaidDateText(iv, tier) { return getStagePaidDate(iv, tier) || "
 // 입금 기록이 하나라도 있는지(세 차수 전수 확인) — 발송 모달의 "입금 내역" 영역 노출 조건
 function hasAnyPaidRecord(iv) {
   return ["deposit", "interim", "balance"].some((t) => !!getStagePaidDate(iv, t));
+}
+
+/* 🧭 그 건에서 지금 눌러야 할 액션.
+   보통은 단계 정의(STEP_STAGES) 그대로지만, **청구액이 0원인 차수**는 예외다.
+   고객과 "중도금 없이 계약금+잔금"으로 합의하면 보낼 청구서 자체가 없는데도
+   [중도금 청구발송]만 떠 있어, 0원짜리 안내문을 보내야만 다음으로 넘어갈 수 있었다.
+   그래서 0원 차수에서는 버튼을 [중도금 없음 · 0원 확인]으로 바꿔 입금확인 모달로 바로 보낸다.
+   (차수 이름을 고정하지 않으므로 잔금이 0원인 건에도 똑같이 적용된다) */
+function getStepActionFor(iv, stepKey) {
+  const info = STEP_STAGE_MAP[stepKey];
+  if (!info || !info.action) return null;
+  if (info.action === "request" && isZeroTierAmount(iv, info.actionTier)) {
+    const t = PAYMENT_STAGE_MAP[info.actionTier] || {};
+    return {
+      ...info, action: "confirm", tier: info.actionTier, zeroSkip: true,
+      btn: t.btn || info.btn,
+      actionLabel: `${t.emoji || ""} ${t.label || ""} 없음 · 0원 확인`.trim(),
+    };
+  }
+  return info;
 }
 
 function getSampleApproval(s) {
@@ -3265,15 +3310,29 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
   const [paidDate, setPaidDate] = useState(todayDisplay()); // 기본값 = 오늘
   /* 실제 입금 금액 — 기본값은 청구액이지만, 과·소 입금이나 실수량 정산으로 달라질 수 있어 직접 고친다.
      문자열로 들고 숫자만 추려 쓴다(천 단위 콤마를 화면에 그대로 보여주기 위함). */
-  const [paidAmountRaw, setPaidAmountRaw] = useState(String(amount || ""));
-  const paidAmount = Number(String(paidAmountRaw).replace(/[^0-9]/g, "")) || 0;
+  const [paidAmountRaw, setPaidAmountRaw] = useState(String(Number.isFinite(amount) ? amount : ""));
+  const digits = String(paidAmountRaw).replace(/[^0-9]/g, "");
+  const paidAmount = Number(digits) || 0;
+  const amountEmpty = digits === "";                 // 아예 비워 둔 것과 0을 적은 것은 다르다
+  const isZeroPaid = !amountEmpty && paidAmount === 0;
   const grand = amounts.grand || 0;
   const paidRate = grand > 0 ? (paidAmount / grand) * 100 : 0;
   const rateText = Number.isInteger(Number(paidRate.toFixed(1))) ? String(Math.round(paidRate)) : paidRate.toFixed(1);
   const diff = paidAmount - amount; // 청구액과의 차액(+면 더 받음)
+  /* 💡 0원 확인 안내 — 중도금 없이 계약금+잔금으로 합의한 건은 0원이 정상 값이다.
+     예전에는 `paidAmount <= 0`에서 막혀 "실제 입금 금액을 입력해주세요"만 반복됐다. */
+  const zeroNotice = stageKey === "balance"
+    ? `${info.label} 없음(0원)으로 확인 처리되어 [🟢 최종 정산완료] 단계로 넘어갑니다.`
+    : `${info.label} 없음(0원)으로 확인 처리되어 ${nextInfo.label} 청구 단계로 즉시 이동합니다.`;
   const submit = () => {
     if (!paidDate) { alert("입금 확인 일자를 선택해주세요."); return; }
-    if (paidAmount <= 0) { alert("실제 입금 금액을 입력해주세요."); return; }
+    /* 0원은 허용하되, **빈 칸은 그냥 넘기지 않는다** — 청구액이 남아 있는데 금액을 안 적은 것은
+       0원 합의가 아니라 입력을 빠뜨린 경우가 대부분이라, 0원 처리를 하려면 0을 직접 적게 한다.
+       (청구액 자체가 0원인 건은 칸이 "0"으로 채워져 있으므로 이 안내를 만날 일이 없다) */
+    if (amountEmpty && Number(amount) > 0) {
+      alert("실제 입금 금액을 입력해주세요.\n\n" + info.label + " 없이 진행하기로 한 건이면 0 을 입력하시면 됩니다.");
+      return;
+    }
     onConfirm(paidDate, paidAmount, Number(paidRate.toFixed(1)));
   };
   return (
@@ -3304,7 +3363,8 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">실제 입금 금액 (원)</label>
             <div className="relative">
-              <input value={paidAmount ? paidAmount.toLocaleString("ko-KR") : ""} inputMode="numeric"
+              {/* 0을 적으면 화면에도 "0"이 보여야 한다 — 예전엔 0이 빈 칸으로 그려져 입력된 줄도 몰랐다 */}
+              <input value={amountEmpty ? "" : paidAmount.toLocaleString("ko-KR")} inputMode="numeric"
                 onChange={(e) => setPaidAmountRaw(e.target.value)} placeholder="0"
                 className="w-full px-3 py-2 pr-8 rounded-lg border border-slate-200 text-sm text-right font-semibold outline-none focus:border-[#1E3A8A]" />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">원</span>
@@ -3324,9 +3384,19 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
                 차액은 남은 단계({stageKey === "deposit" ? "중도금·잔금" : stageKey === "interim" ? "잔금" : "없음"})에 자동 반영되어, 총 청구액은 {won(grand)}으로 유지됩니다.
               </p>
             )}
+            {/* 💡 0원 확인 — 중도금 없이 계약금+잔금으로 합의한 건. 막지 않고 무슨 일이 일어나는지 알려준다 */}
+            {isZeroPaid && (
+              <p className="text-[11px] text-amber-800 mt-1.5 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                {zeroNotice}
+                {Number(amount) > 0 && <span className="block mt-0.5 text-amber-700">이 단계 청구액 {won(amount)}은 남은 단계로 넘어가 총 청구액 {won(grand)}은 그대로 유지됩니다.</span>}
+              </p>
+            )}
           </div>
           <p className="text-[11px] text-slate-500 leading-relaxed">
-            인보이스 정산표에 <b className="text-slate-700">"{formatKoreanDate(paidDate) || "YYYY년 M월 D일"} 입금({rateText}%)"</b> / <b className="text-slate-700">{won(paidAmount)}</b>으로 표기됩니다.
+            인보이스 정산표에 {isZeroPaid
+              ? <b className="text-slate-700">"{info.label} (해당 없음 · 0원)"</b>
+              : <React.Fragment><b className="text-slate-700">"{formatKoreanDate(paidDate) || "YYYY년 M월 D일"} 입금({rateText}%)"</b> / <b className="text-slate-700">{won(paidAmount)}</b></React.Fragment>}
+            {"으"}로 표기됩니다.
           </p>
           <p className="text-[11px] text-slate-500 leading-relaxed bg-blue-50/70 border border-blue-100 rounded-lg px-3 py-2">
             확인하면 단계가 <b className="text-slate-700">{nextStepInfo.label || `${info.label}입금`}</b>(으)로 넘어가고, 처리 일시와 담당자가 함께 기록됩니다. {afterHint}
@@ -3335,7 +3405,7 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
           <button onClick={submit} className={"px-5 py-2 rounded-lg text-white text-sm font-bold shadow-sm " + (info.btn || "bg-[#1E3A8A]")}>
-            {info.emoji} 입금 확인 처리
+            {info.emoji} {isZeroPaid ? `${info.label} 없음(0원) 확인` : "입금 확인 처리"}
           </button>
         </div>
       </div>
@@ -3451,7 +3521,8 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                               const paidOn = getStagePaidDateText(iv, st.key);
                               const by = iv[st.byField] ? ` (${iv[st.byField]})` : "";
                               const regAt = iv[st.atField] ? ` · 시스템 등록 ${iv[st.atField]}` : "";
-                              hist.push(`✓ ${st.label} 입금확인일자: ${paidOn}${by}${regAt}`);
+                              const zero = readPaidAmount(iv, st.key) === 0 ? " · 해당 없음(0원)" : "";
+                              hist.push(`✓ ${st.label} 입금확인일자: ${paidOn}${zero}${by}${regAt}`);
                             }
                           });
                           if (iv.settledAt) hist.push(`🟢 최종 정산완료 처리: ${iv.settledAt}${iv.settledBy ? ` (${iv.settledBy})` : ""}`);
@@ -3474,10 +3545,12 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                                모든 액션이 확인 모달을 거치므로 오클릭은 그 자리에서 취소된다. */}
                         {onStageAction && (() => {
                           const stepKey = getStepStage(iv);
-                          const info = STEP_STAGE_MAP[stepKey];
+                          // 0원 차수면 [청구발송] 대신 [0원 확인]으로 바뀐다(getStepActionFor)
+                          const info = getStepActionFor(iv, stepKey);
                           if (!info || !info.action) return null;
                           const amt = won(getStepAmount(iv, stepKey));
-                          const tip = info.action === "confirm" ? `${info.label.replace("청구", "")} ${amt} 입금을 확인 처리합니다`
+                          const tip = info.zeroSkip ? `청구액이 0원이라 보낼 청구서가 없습니다. 0원으로 확인하고 다음 단계로 넘깁니다`
+                            : info.action === "confirm" ? `${info.label.replace("청구", "")} ${amt} 입금을 확인 처리합니다`
                             : info.action === "request" ? `다음 대금 청구 안내문을 만들어 발송 처리합니다`
                             : `세금계산서·정산까지 끝난 건으로 최종 종결합니다`;
                           return (
@@ -3960,11 +4033,13 @@ function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTo
   const paidLine = (label, planRate, stageKey) => {
     const dateStr = invoice && invoice[`${stageKey}PaidDate`];
     if (!dateStr) return "";
-    const amt = Number(invoice[`${stageKey}PaidAmount`]);
+    const amt = readPaidAmount(invoice, stageKey);
+    // 중도금 없이 합의한 건 — 고객에게 "0원 입금완료"로 나가면 안 되므로 '해당 없음'으로 적는다
+    if (amt === 0) return `• ${label} : 해당 없음 (협의에 따라 미청구)\n`;
     const rt = Number(invoice[`${stageKey}PaidRate`]);
     const shownRate = Number.isFinite(rt) && rt > 0 ? rt : planRate;
     const rateText = Number.isInteger(shownRate) ? shownRate : Number(shownRate).toFixed(1);
-    const detail = Number.isFinite(amt) && amt > 0 ? ` (${money(amt)} / ${rateText}%)` : "";
+    const detail = amt !== null && amt > 0 ? ` (${money(amt)} / ${rateText}%)` : "";
     return `• ${label}(${rateText}%) : ${formatKoreanDate(dateStr)} 입금완료${detail}\n`;
   };
 
@@ -11104,7 +11179,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     if (!iv) return;
     const current = getStepStage(iv);
     if (current !== stepKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
-    const info = STEP_STAGE_MAP[current];
+    // 0원 차수는 청구발송 없이 바로 입금확인(0원)으로 보낸다 — getStepActionFor가 액션을 바꿔 준다
+    const info = getStepActionFor(iv, current);
     if (!info || !info.action) return;
     if (info.action === "confirm") { openPaymentConfirm(iv, info.tier); return; }
     if (info.action === "request") { setStageRequest({ iv, tier: info.actionTier }); return; }
@@ -11116,10 +11192,15 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     if (!iv || !info || !info.paidField) return;
     if (getPaymentStage(iv) !== stageKey) { setToast("이미 처리되었거나 현재 단계가 아닙니다. 새로고침 후 다시 확인해주세요."); return; }
     const billed = getCurrentStageAmount(iv);                      // 이 단계의 청구(예정) 금액
-    const amount = Number(paidAmount) > 0 ? Number(paidAmount) : billed; // 실제 입금액(미지정이면 청구액)
+    /* 실제 입금액 — ⚠️ **0원을 그대로 저장해야 한다**.
+       예전엔 `> 0`이라 0원이 청구액으로 바뀌어, "중도금 없음"으로 확인해도 중도금이 60% 들어가 버렸다.
+       모달이 숫자를 못 넘긴 경우(undefined·NaN)에만 청구액으로 폴백한다. */
+    const n = Number(paidAmount);
+    const amount = Number.isFinite(n) && n >= 0 ? n : billed;
     const grand = getInvoiceGrandTotal(iv);
-    const rate = Number.isFinite(Number(paidRate)) && Number(paidRate) > 0
-      ? Number(paidRate)
+    const r = Number(paidRate);
+    const rate = Number.isFinite(r) && r >= 0
+      ? r
       : (grand > 0 ? Number(((amount / grand) * 100).toFixed(1)) : 0);
     const nextKey = stageKey === "deposit" ? "interim" : stageKey === "interim" ? "balance" : "completed";
     const actor = (roleUser && roleUser.displayName) || "알 수 없음";
@@ -11143,7 +11224,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
       /* 지금 열려 있는 인보이스 미리보기도 즉시 갱신 — 닫았다 다시 열지 않아도 정산표 라벨이 바로 바뀐다 */
       setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
-      setToast(nextKey === "completed"
+      setToast(amount === 0
+        ? `${info.emoji} ${info.label} 없음(0원)으로 확인 → 다음 단계: ${nextKey === "completed" ? "[🟢 최종 정산완료]" : PAYMENT_STAGE_MAP[nextKey].label + " 청구발송"}`
+        : nextKey === "completed"
         ? `🟣 ${iv.clientName || ""} 잔금 ${won(amount)} 입금 확인 → [🟢 최종 정산완료] 버튼으로 종결해주세요.`
         : `${info.emoji} ${info.label} ${won(amount)} (${rate}%) 입금 확인 → 다음 단계: ${PAYMENT_STAGE_MAP[nextKey].label} 청구발송`);
     } catch (e) {
