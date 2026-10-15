@@ -2830,6 +2830,94 @@ function hasAnyPaidRecord(iv) {
   return ["deposit", "interim", "balance"].some((t) => !!getStagePaidDate(iv, t));
 }
 
+/* ===================== ↩ 진행 단계 수동 변경 · 되돌리기(롤백) =====================
+   고객사가 결제 조건을 바꾸거나(잔금 몰아서 → 다시 중도금+잔금) 실수로 단계를 올렸을 때 되돌린다.
+
+   ⚠️ 여기가 이 기능의 핵심이자 함정이다 — `stepStage` 값만 바꿔서는 **아무 일도 일어나지 않는다**.
+      getStepStage()는 저장된 stepStage를 믿지 않고 입금 플래그에서 단계를 역산하기 때문에
+      (옛 인보이스가 탭에서 사라지는 것을 막으려고 일부러 그렇게 만들었다),
+      잔금청구 건에 stepStage만 'interim_request'로 적어 두면 화면은 그대로 잔금청구로 되돌아온다.
+      그래서 **목표 단계에 맞는 플래그 조합을 통째로 다시 써야** 한다. 그 정답표가 아래 STEP_FLAG_STATE다.
+
+   ⚠️ 되돌린 차수의 입금 기록(일자·금액)도 함께 지운다. 남겨 두면 정산표가 그 금액을 '확정 실입금'으로
+      계속 붙잡아, 중도금 60%가 복원되지 않고 0원인 채로 남는다. */
+const STEP_FLAG_STATE = {
+  deposit_request: { paid: { deposit: false, interim: false, balance: false }, req: { interim: false, balance: false }, settled: false },
+  deposit_paid:    { paid: { deposit: true,  interim: false, balance: false }, req: { interim: false, balance: false }, settled: false },
+  interim_request: { paid: { deposit: true,  interim: false, balance: false }, req: { interim: true,  balance: false }, settled: false },
+  interim_paid:    { paid: { deposit: true,  interim: true,  balance: false }, req: { interim: true,  balance: false }, settled: false },
+  balance_request: { paid: { deposit: true,  interim: true,  balance: false }, req: { interim: true,  balance: true  }, settled: false },
+  balance_paid:    { paid: { deposit: true,  interim: true,  balance: true  }, req: { interim: true,  balance: true  }, settled: false },
+  completed:       { paid: { deposit: true,  interim: true,  balance: true  }, req: { interim: true,  balance: true  }, settled: true  },
+};
+const PAYMENT_TIERS = ["deposit", "interim", "balance"];
+
+/* 되돌린 차수의 분할 금액을 되살린다.
+   ① 그 차수의 비율이 0%면 → "중도금 없음"으로 만들어 둔 건이므로 기본 분할(30/60/10)로 복원한다.
+      (0%인 채로 두면 되돌려도 중도금이 계속 0원이라 되돌린 의미가 없다)
+   ② 비율이 멀쩡하면 → 비율은 그대로 두고(40/40/20 같은 맞춤 분할 보존) 그 행의 고정금액·수기 라벨만 비운다.
+      고정금액(amount)이 남아 있으면 비율 재계산이 막힌다. */
+function restorePaymentSchedule(iv, clearedTiers) {
+  if (!clearedTiers || clearedTiers.length === 0) return null;
+  const cur = (iv && iv.paymentSchedule && iv.paymentSchedule.length) ? iv.paymentSchedule : null;
+  if (!cur) return null; // 저장된 스케줄이 없으면 기본 30/60/10이 이미 적용되므로 손대지 않는다
+  const idx = { deposit: 0, interim: 1, balance: 2 };
+  const needDefault = clearedTiers.some((t) => Number((cur[idx[t]] || {}).rate || 0) === 0);
+  if (needDefault) return { restored: true, schedule: DEFAULT_PAYMENT_SCHEDULE.map((d) => ({ ...d })) };
+  return {
+    restored: false,
+    schedule: cur.map((r, i) => {
+      const tier = PAYMENT_TIERS[i];
+      if (!tier || clearedTiers.indexOf(tier) < 0) return { ...r };
+      const c = { ...r, amount: null, labelEdited: false };
+      const d = DEFAULT_PAYMENT_SCHEDULE[i];
+      if (d && (!c.label || r.labelEdited)) c.label = d.label; // "2026년 ... 입금" 같은 수기 라벨은 되돌린다
+      delete c.resolved;
+      return c;
+    }),
+  };
+}
+
+/* 목표 단계로 만드는 patch를 만든다. 반환: { patch, clearedTiers, scheduleRestored } */
+function buildStepStagePatch(iv, targetKey) {
+  const target = STEP_FLAG_STATE[targetKey];
+  if (!iv || !target) return null;
+  const patch = { stepStage: targetKey };
+  const clearedTiers = [];
+  PAYMENT_TIERS.forEach((t) => {
+    const st = PAYMENT_STAGE_MAP[t] || {};
+    const shouldPaid = !!target.paid[t];
+    patch[st.paidField] = shouldPaid;
+    if (!shouldPaid) {
+      if (iv[st.paidField] || getStagePaidDate(iv, t)) clearedTiers.push(t);
+      // 빈 문자열·null로 지운다(undefined는 Firestore 저장에서 통째로 빠져 옛 값이 그대로 남는다)
+      patch[`${t}PaidDate`] = "";
+      patch[`${t}PaidAmount`] = null;
+      patch[`${t}PaidRate`] = null;
+      patch[`${t}BilledAmount`] = null;
+      patch[st.atField] = "";
+      patch[st.byField] = "";
+    }
+    if (t !== "deposit") { // 계약금청구는 인보이스 발행 자체가 청구라 별도 발송 플래그가 없다
+      const shouldReq = !!target.req[t];
+      patch[`${t}Requested`] = shouldReq;
+      if (!shouldReq) { patch[`${t}RequestedAt`] = ""; patch[`${t}RequestedBy`] = ""; }
+    }
+  });
+  if (target.settled) { if (!iv.settledAt) patch.settledAt = nowDateTimeStr(); }
+  else { patch.settledAt = ""; patch.settledBy = ""; }
+  // 옛 화면이 아직 읽는 paymentStage도 새 플래그에 맞춰 같이 고쳐 둔다(두 값이 어긋나면 혼선)
+  patch.paymentStage = target.paid.balance ? "completed" : target.paid.interim ? "balance" : target.paid.deposit ? "interim" : "deposit";
+  const sched = restorePaymentSchedule(iv, clearedTiers);
+  if (sched) patch.paymentSchedule = sched.schedule;
+  return { patch, clearedTiers, scheduleRestored: !!(sched && sched.restored) };
+}
+// 바로 직전 단계(없으면 null) — 목록의 [↩ 되돌리기] 버튼이 가리키는 곳
+function getPrevStepKey(iv) {
+  const i = STEP_STAGE_ORDER.indexOf(getStepStage(iv));
+  return i > 0 ? STEP_STAGE_ORDER[i - 1] : null;
+}
+
 /* 🧭 그 건에서 지금 눌러야 할 액션.
    보통은 단계 정의(STEP_STAGES) 그대로지만, **청구액이 0원인 차수**는 예외다.
    고객과 "중도금 없이 계약금+잔금"으로 합의하면 보낼 청구서 자체가 없는데도
@@ -3413,7 +3501,7 @@ function PaymentConfirmModal({ invoice, stageKey, onConfirm, onClose }) {
   );
 }
 
-function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin, onNewInvoice, onStageAction }) {
+function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicate, isAdmin, onNewInvoice, onStageAction, onRollbackStage }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   // all | deposit_request | deposit_paid | interim_request | interim_paid | balance_request | balance_paid | completed
@@ -3458,7 +3546,7 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
               <col style={{ width: "13%" }} /><col style={{ width: "10%" }} /><col style={{ width: "15%" }} />
               <col style={{ width: "22%" }} /><col style={{ width: "12%" }} /><col style={{ width: "9%" }} />
               {/* 작업 열은 [단계 뱃지 / 액션 버튼 / 아이콘 4개] 3단이라 아이콘 4개(32px×4 + 간격)가 들어갈 폭을 고정한다 */}
-              <col style={{ width: "9%" }} /><col style={{ width: "10%" }} /><col style={{ width: "182px" }} />
+              <col style={{ width: "9%" }} /><col style={{ width: "10%" }} /><col style={{ width: "196px" }} />
             </colgroup>
             <thead><tr className="bg-slate-50 text-xs font-semibold" style={{ color: "#1E293B" }}>
               <th className="text-left px-3 py-3 font-medium">인보이스번호</th>
@@ -3532,12 +3620,22 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                             : info.phase === "request" && isStageRequested(iv, info.tier) ? `청구발송일시: ${iv[`${info.tier}RequestedAt`] || "-"}`
                             : info.phase === "done" ? `정산완료 처리: ${iv.settledAt || "-"}` : "";
                           const tip = [headLine, info.desc, hist.length ? "[처리 이력]\n" + hist.join("\n") : ""].filter(Boolean).join("\n\n");
+                          const prevKey = getPrevStepKey(iv);
+                          const prevInfo = prevKey ? STEP_STAGE_MAP[prevKey] : null;
                           return (
-                            <span title={tip}
-                              className={"w-full px-2 py-1 rounded-lg border text-[11px] font-bold text-center whitespace-nowrap " + (info.chip || "bg-slate-50 text-slate-600 border-slate-200")}>
-                              {info.emoji} {info.label}
-                              {hist.length > 0 && <span className={"ml-1 font-normal " + (info.tone === "solid" ? "text-white/70" : "opacity-60")}>· {hist.length}</span>}
-                            </span>
+                            <div className="w-full flex items-center gap-1">
+                              <span title={tip}
+                                className={"flex-1 min-w-0 px-2 py-1 rounded-lg border text-[11px] font-bold text-center whitespace-nowrap overflow-hidden text-ellipsis " + (info.chip || "bg-slate-50 text-slate-600 border-slate-200")}>
+                                {info.emoji} {info.label}
+                                {hist.length > 0 && <span className={"ml-1 font-normal " + (info.tone === "solid" ? "text-white/70" : "opacity-60")}>· {hist.length}</span>}
+                              </span>
+                              {/* ↩ 되돌리기 — 조건 변경·오승격 대비. 첫 단계(계약금청구)에서는 돌아갈 곳이 없어 숨긴다 */}
+                              {onRollbackStage && prevInfo && (
+                                <button onClick={() => onRollbackStage(iv)}
+                                  title={`이전 단계(${prevInfo.label})로 되돌립니다`}
+                                  className="shrink-0 w-6 h-6 rounded-md border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-[11px] leading-none">↩</button>
+                              )}
+                            </div>
                           );
                         })()}
                         {/* ② 다음 단계 액션 버튼 — 그 건이 지금 놓인 단계에 따라 할 일 하나만 띄운다.
@@ -4223,7 +4321,7 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
   );
 }
 
-function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, onEmergencyApprove, mode }) {
+function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, onEmergencyApprove, onChangeStage, mode }) {
   const isInvoice = mode === "invoice";
   /* 미리보기 표의 인라인 수정 가능 여부.
      예전엔 인보이스 모드면 무조건 잠갔으나(좌측 폼에서만 편집), 이제 제안서와 동일하게
@@ -4531,6 +4629,34 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
             <Field label="고객사 주소"><input className={inputCls} value={clientAddress} onChange={(e) => setClientAddress(e.target.value)} placeholder="계약서 (갑) 주소란에 표기" /></Field>
             <Field label="작성일자"><input type="date" className={inputCls} value={contractDate} onChange={(e) => setContractDate(e.target.value)} /></Field>
           </div>
+
+          {/* ↩ 현재 결제 진행 단계 — 조건 변경·오승격을 여기서 바로 되돌린다.
+              ⚠️ select의 값을 state로 들고 있지 않고 data에서 직접 읽는다 — 저장된 실제 단계와
+                 화면이 어긋나는 일을 원천 차단하고, 취소하면 자동으로 원래 값으로 되돌아온다.
+              ⚠️ 저장 버튼을 거치지 않고 즉시 반영한다. 이 변경은 입금 플래그·기록·분할 스케줄을 한꺼번에
+                 다시 쓰는 일이라, 아래 [저장]이 만드는 paymentSchedule과 섞이면 서로 덮어써 어긋난다. */}
+          {isInvoice && onChangeStage && data.id && (() => {
+            const cur = getStepStage(data);
+            const curInfo = STEP_STAGE_MAP[cur] || {};
+            return (
+              <div className="rounded-lg border border-slate-200 p-3 mb-4">
+                <div className="text-xs font-semibold text-slate-500 mb-2">현재 결제 진행 단계</div>
+                <select className={inputCls} value={cur}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (!next || next === cur) return;
+                    if (dirty && !window.confirm("저장하지 않은 편집 내용이 있습니다.\n단계를 바꾸면 편집 내용이 저장 전 상태로 다시 불러와집니다.\n\n계속할까요?")) return;
+                    onChangeStage(data, next);
+                  }}>
+                  {STEP_STAGES.map((s) => <option key={s.key} value={s.key}>{s.emoji} {s.label}</option>)}
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
+                  {curInfo.desc}
+                  <span className="block mt-0.5">단계를 되돌리면 그 차수의 입금 기록이 지워지고, 금액이 우측 정산표에 다시 청구액으로 나타납니다.</span>
+                </p>
+              </div>
+            );
+          })()}
 
           {items.map((it, idx) => (
             <div key={it.id} className="rounded-lg border border-slate-200 p-3 mb-3">
@@ -11175,6 +11301,60 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     }
   };
 
+  /* ↩ 진행 단계 수동 변경 · 되돌리기.
+     되돌리면 그 차수의 입금 기록이 지워지고 금액이 다시 청구 대상으로 살아나므로,
+     무엇이 지워지는지 금액까지 보여준 뒤 확인을 받는다. */
+  const changeInvoiceStepStage = async (iv, targetKey) => {
+    if (!iv || !STEP_STAGE_MAP[targetKey]) return;
+    const current = getStepStage(iv);
+    if (current === targetKey) { setToast("이미 그 단계입니다."); return; }
+    const built = buildStepStagePatch(iv, targetKey);
+    if (!built) return;
+    const from = STEP_STAGE_MAP[current], to = STEP_STAGE_MAP[targetKey];
+    const curIdx = STEP_STAGE_ORDER.indexOf(current), tgtIdx = STEP_STAGE_ORDER.indexOf(targetKey);
+    const isBack = tgtIdx < curIdx;
+    const lines = [];
+    lines.push(isBack && curIdx - tgtIdx === 1
+      ? `해당 인보이스를 이전 단계([${to.label}])로 되돌리시겠습니까?`
+      : `진행 단계를 바꿉니다.`);
+    lines.push("", `${iv.clientName || ""} ${iv.code || ""}`, `  ${from.emoji} ${from.label}  →  ${to.emoji} ${to.label}`, "");
+    if (built.clearedTiers.length) {
+      lines.push("▸ 아래 입금 기록이 삭제되고, 그 금액은 다시 청구 대상이 됩니다:");
+      built.clearedTiers.forEach((t) => {
+        const amt = readPaidAmount(iv, t);
+        lines.push(`   · ${(PAYMENT_STAGE_MAP[t] || {}).label} ${getStagePaidDate(iv, t) || "-"}${amt === null ? "" : "  " + won(amt)}`);
+      });
+    }
+    if (built.scheduleRestored) lines.push("▸ 분할 비율이 기본값(계약금 30% / 중도금 60% / 잔금 10%)으로 복원됩니다.");
+    if (!isBack) lines.push("▸ 앞 단계로 건너뛰면 입금일자·금액은 기록되지 않습니다. 실제 입금은 [입금확인] 버튼으로 처리해주세요.");
+    lines.push("", "계속할까요?");
+    if (!window.confirm(lines.join("\n"))) return;
+
+    const actor = (roleUser && roleUser.displayName) || "알 수 없음";
+    const patch = { ...built.patch,
+      stageChangedAt: nowDateTimeStr(), stageChangedBy: actor,       // 누가 언제 단계를 손댔는지 추적용
+      stageChangedFrom: current, stageChangedTo: targetKey,
+      updatedAt: nowDateTimeStr(), updatedBy: actor };
+    const before = iv;
+    setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
+    setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev)); // 열려 있는 미리보기 정산표도 즉시 재계산
+    try {
+      if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
+      setToast(`${to.emoji} ${from.label} → ${to.label} 단계로 ${isBack ? "되돌렸습니다" : "변경했습니다"}.` +
+        (built.scheduleRestored ? " (분할 비율 30/60/10 복원)" : ""));
+    } catch (e) {
+      console.error("단계 변경 저장 실패:", e);
+      setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? before : x)));   // 실패하면 화면도 되돌린다
+      setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...before } : prev));
+      alert("단계 변경 저장에 실패했습니다.\n\n[사유] " + ((e && e.message) || e));
+    }
+  };
+  const rollbackInvoiceStage = (iv) => {
+    const prevKey = getPrevStepKey(iv);
+    if (!prevKey) { setToast("첫 단계라 되돌릴 이전 단계가 없습니다."); return; }
+    changeInvoiceStepStage(iv, prevKey);
+  };
+
   const handleInvoiceStageAction = (iv, stepKey) => {
     if (!iv) return;
     const current = getStepStage(iv);
@@ -13475,6 +13655,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       <PdfPreview
         mode="invoice"
         open={!!invoiceData} data={invoiceData} onClose={() => setInvoiceData(null)} supplierLogo={supplierLogo}
+        onChangeStage={changeInvoiceStepStage}
         onSendComplete={async (id, channel) => {
           const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
           const patch = { status: "발송완료", reviewStatus: "발송완료", sentBy: actorName, sentAt: nowDateTimeStr(), sentChannel: channel, updatedAt: nowDateTimeStr(), updatedBy: actorName };
@@ -13822,6 +14003,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onDuplicate={duplicateInvoice}
           onDelete={deleteInvoiceRecord}
           onStageAction={handleInvoiceStageAction}
+          onRollbackStage={rollbackInvoiceStage}
           onNewInvoice={() => setShowNewInvoice(true)}
           onBack={() => goBackTo("pipeline")}
         />
