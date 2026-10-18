@@ -4196,7 +4196,13 @@ function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTo
    목록 화면의 [중도금·잔금 청구발송]에서도 이 모달을 그대로 재사용하면서 제목·버튼 문구만 바꾸기 위한 것으로,
    넘기지 않으면 기존 "고객 승인요청 발송" 문구가 그대로 쓰인다(기존 호출부는 손대지 않음). */
 function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLabel, sentLabel, footnote }) {
-  const link = `${window.location.origin}/agree?type=invoice&id=${invoice.id}`;
+  /* 고객 승인 링크.
+     ⚠️ 건을 찾는 열쇠는 언제까지나 `id`(문서 ID)다 — 인보이스번호를 바꿨다고 열쇠까지 바꾸면
+        이미 고객에게 보낸 옛 링크가 전부 죽는다. 번호는 `no=`로 함께 실어, 주소만 봐도
+        어느 인보이스인지 알 수 있게 한다(없는 값이면 아예 붙이지 않는다). */
+  const invoiceNo = String((invoice && invoice.code) || "").trim();
+  const link = `${window.location.origin}/agree?type=invoice&id=${invoice.id}` +
+    (invoiceNo ? `&no=${encodeURIComponent(invoiceNo)}` : "");
   const items = invoice.items || [];
   const first = items[0] || {};
   const productLabel = (first.productName || "주문 품목") + (items.length > 1 ? ` 외 ${items.length - 1}건` : "");
@@ -4321,7 +4327,7 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
   );
 }
 
-function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, onEmergencyApprove, onChangeStage, mode }) {
+function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, onEmergencyApprove, onChangeStage, invoiceCodes, mode }) {
   const isInvoice = mode === "invoice";
   /* 미리보기 표의 인라인 수정 가능 여부.
      예전엔 인보이스 모드면 무조건 잠갔으나(좌측 폼에서만 편집), 이제 제안서와 동일하게
@@ -4349,6 +4355,9 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   /* 분할 청구 스케줄 — 비율·문구·금액을 인보이스별로 고칠 수 있다(고객사 요청으로 30/60/10을 바꾸는 경우가 잦음).
      저장된 paymentSchedule이 없으면 기본 30/60/10으로 시작한다. */
   const [payments, setPayments] = useState(() => ((data && data.paymentSchedule) || DEFAULT_PAYMENT_SCHEDULE).map((p) => ({ ...p })));
+  /* 📄 인보이스번호 — 자동 생성(INV-YYYYMMDD-NNN) 뒤에도 담당자가 자유롭게 고칠 수 있다.
+     고객사마다 요구하는 번호 체계가 달라 실무에서 손으로 바꿔야 하는 경우가 있다. */
+  const [code, setCode] = useState(() => (data && data.code) || "");
 
   useEffect(() => {
     if (!data) return;
@@ -4364,6 +4373,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
     setValidUntil(data.validUntil || "");
     setItems((data.items || []).map((it) => ({ ...it }))); // 각 품목의 고유 제품명(it.productName)을 그대로 쓴다 — 예전엔 제안서 제목으로 모든 행을 덮어써서 전 품목이 같은 이름으로 통일되어 보이는 버그가 있었음
     setPayments(((data.paymentSchedule && data.paymentSchedule.length ? data.paymentSchedule : DEFAULT_PAYMENT_SCHEDULE)).map((p) => ({ ...p })));
+    setCode(data.code || "");
     savedSigRef.current = null; // 다음 렌더에서 이 내용을 "저장된 상태"의 기준으로 다시 잡는다
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
@@ -4462,7 +4472,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   /* 지금 화면의 편집 내용을 한 줄 문자열로 요약한 값(사진 base64는 제외해 가볍게 유지).
      저장 시점의 값과 비교해 "저장되지 않은 수정"이 있는지 판단한다. */
   const editSignature = JSON.stringify({
-    cn: clientName, vu: validUntil, cd: contractDate, cc: clientCeo, ca: clientAddress,
+    cn: clientName, vu: validUntil, cd: contractDate, cc: clientCeo, ca: clientAddress, code,
     ar: adjustReasonInput, aa: adjustAmountInput, g: greeting, t: terms,
     py: payments.map((p) => [p.label, p.rate, p.amount, p.note, p.labelEdited]),
     it: items.map((x) => [x.id, x.productName, x.specSize, x.material, x.quantity, x.unitPrice, x.totalPrice, x.notes]),
@@ -4470,12 +4480,34 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
   if (savedSigRef.current === null) savedSigRef.current = editSignature; // 로드 직후 기준값 확정
   const dirty = savedSigRef.current !== editSignature;
 
+  /* 인보이스번호 중복 검사 — 같은 번호가 다른 인보이스에 이미 있으면 알려준다.
+     대소문자·앞뒤 공백 차이는 같은 번호로 본다(INV-0001 과 inv-0001 을 다른 번호로 두면 장부에서 섞인다).
+     막지는 않는다 — 분할 발행처럼 일부러 같은 번호를 쓰는 경우가 있어 확인만 받고 저장은 허용한다. */
+  const codeOwner = (() => {
+    const q = String(code || "").trim().toLowerCase();
+    if (!q || !Array.isArray(invoiceCodes)) return null;
+    return invoiceCodes.find((x) => x && x.id !== data.id && String(x.code || "").trim().toLowerCase() === q) || null;
+  })();
+
   const handleSave = () => {
     if (!onSave || !data.id) return;
+    /* 📄 인보이스번호 확정 — 저장 직전에만 따진다(타이핑 도중 경고가 뜨면 번호를 못 고친다).
+       ① 비워 두면 기존 번호를 되살린다 — 번호 없는 인보이스는 목록·발송문구에서 식별이 불가능해진다.
+       ② 중복이면 알리되 막지는 않는다(분할 발행 등 일부러 같은 번호를 쓰는 실무가 있다). */
+    let finalCode = String(code || "").trim();
+    if (isInvoice) {
+      if (!finalCode) {
+        if (!window.confirm(`인보이스번호가 비어 있습니다.\n\n기존 번호 "${data.code || "-"}"를 그대로 두고 저장할까요?\n[취소]를 누르면 저장하지 않고 번호를 다시 입력할 수 있습니다.`)) return;
+        finalCode = data.code || "";
+        setCode(finalCode); // 입력칸도 되돌려 화면과 저장값이 어긋나지 않게 한다
+      } else if (codeOwner) {
+        if (!window.confirm(`같은 번호를 쓰는 인보이스가 이미 있습니다.\n\n   ${finalCode}\n   → ${codeOwner.clientName || "고객사 미지정"}\n\n그래도 이 번호로 저장할까요?`)) return;
+      }
+    }
     /* 인보이스는 여기서 품목·차감을 고칠 수 있으므로 재계산된 금액을 전부 함께 저장한다.
        부가세·합계금액·계약금/중도금/잔금까지 저장해두면 목록·발송문구·고객 승인화면이
        매번 다시 계산하지 않고 인쇄물과 100% 같은 숫자를 쓰게 된다. */
-    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { contractDate, clientCeo, clientAddress, subtotal, totalAmount,
+    onSave(data.id, { clientName, items, validUntil, greeting, terms, supplier, ...(isInvoice ? { code: finalCode, contractDate, clientCeo, clientAddress, subtotal, totalAmount,
       vat, grandTotal, depositAmount, interimAmount, balanceAmount,
       /* 분할 청구 스케줄 — 확정된 금액(resolved)까지 함께 넣어 다시 열었을 때 같은 표가 그대로 뜬다.
          단, 직접 입력하지 않은 단계는 amount를 비워두어 총액이 바뀌면 비율대로 다시 계산되게 한다. */
@@ -4622,6 +4654,23 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
           style={{ maxHeight: "calc(100vh - 120px)", minHeight: 0 }}>
           <div className="text-sm font-bold text-slate-800 mb-3">📝 인보이스 편집</div>
 
+          {/* 📄 인보이스번호 — 자동 생성된 번호를 그대로 쓰거나, 고객사 요구에 맞춰 직접 고친다.
+              입력하는 즉시 우측 인쇄 문서 상단의 번호가 함께 바뀐다(저장해야 목록·발송문구에 반영). */}
+          <div className="rounded-lg border border-slate-200 p-3 mb-4">
+            <div className="text-xs font-semibold text-slate-500 mb-2">인보이스번호</div>
+            <input type="text" className={inputCls + " font-semibold tracking-tight"} value={code}
+              onChange={(e) => setCode(e.target.value)} placeholder="예: INV-20261018-030" />
+            {codeOwner ? (
+              <p className="text-[11px] text-amber-700 mt-1.5 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                ⚠️ 같은 번호를 쓰는 인보이스가 있습니다 — {codeOwner.clientName || "고객사 미지정"}. 저장할 때 한 번 더 확인합니다.
+              </p>
+            ) : String(code || "").trim() === "" ? (
+              <p className="text-[11px] text-rose-600 mt-1.5">번호가 비어 있습니다. 저장하면 기존 번호({data.code || "-"})로 되돌립니다.</p>
+            ) : (
+              <p className="text-[11px] text-slate-400 mt-1.5">목록·고객 승인링크·카톡 안내문구의 문서번호가 저장 후 함께 바뀝니다.</p>
+            )}
+          </div>
+
           <div className="rounded-lg border border-slate-200 p-3 mb-4">
             <div className="text-xs font-semibold text-slate-500 mb-2">고객사 정보 <span className="font-normal text-slate-400">(공급계약서에도 연동)</span></div>
             <Field label="고객사명"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: 주식회사 더마" /></Field>
@@ -4749,7 +4798,13 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
 
         {/* 1) 대타이틀 + 로고 */}
         <div className="flex items-start justify-between border-b-2 pb-4 mb-5" style={{ borderColor: DARK }}>
-          <h1 className="text-xl font-bold" style={{ color: DARK }}>{isInvoice ? "INVOICE" : "제품공급제안서"}</h1>
+          <div>
+            <h1 className="text-xl font-bold" style={{ color: DARK }}>{isInvoice ? "INVOICE" : "제품공급제안서"}</h1>
+            {/* 문서번호 — 좌측 폼의 입력값(code state)을 그대로 쓰므로 타이핑하는 즉시 여기에 반영된다 */}
+            {isInvoice && String(code || "").trim() !== "" && (
+              <div className="text-xs mt-1 tracking-tight" style={{ color: DARK }}>No. <b>{code}</b></div>
+            )}
+          </div>
           <img src={supplierLogo || DEFAULT_LOGO} className="h-12 object-contain" />
         </div>
 
@@ -13656,6 +13711,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         mode="invoice"
         open={!!invoiceData} data={invoiceData} onClose={() => setInvoiceData(null)} supplierLogo={supplierLogo}
         onChangeStage={changeInvoiceStepStage}
+        /* 번호 중복 검사용 — 자기 자신을 뺀 나머지 인보이스의 번호 목록(사진 등 무거운 필드는 넘기지 않는다) */
+        invoiceCodes={invoiceList.map((x) => ({ id: x.id, code: x.code, clientName: x.clientName }))}
         onSendComplete={async (id, channel) => {
           const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
           const patch = { status: "발송완료", reviewStatus: "발송완료", sentBy: actorName, sentAt: nowDateTimeStr(), sentChannel: channel, updatedAt: nowDateTimeStr(), updatedBy: actorName };
