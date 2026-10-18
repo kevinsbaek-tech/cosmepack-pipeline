@@ -2830,6 +2830,76 @@ function hasAnyPaidRecord(iv) {
   return ["deposit", "interim", "balance"].some((t) => !!getStagePaidDate(iv, t));
 }
 
+/* ===================== 📨 차수별 검토대기 → 발송완료 → 고객승인 =====================
+   계약금·중도금·잔금은 각각 **따로 청구서를 보내고 따로 승인을 받는다**.
+   예전에는 상태가 공용 필드(status·reviewStatus·sentBy·consentStatus) 하나뿐이라,
+   계약금이 [고객승인]이면 중도금 청구서를 아직 보내지도 않았는데 목록에 [고객승인]이 그대로 떠 있었다.
+   그래서 차수마다 자기 상태를 따로 들고(`{차수}ReviewStatus`·`{차수}SentAt`·`{차수}ApprovedAt`),
+   목록에는 **지금 머물러 있는 차수의 상태**만 보여준다.
+
+   ⚠️ 공용 필드를 '초기화'하는 방식은 쓰지 않는다 — 중도금 단계로 넘어갈 때 공용 status를 검토대기로
+      되돌리면 계약금을 언제 누가 보내고 고객이 언제 승인했는지가 통째로 지워진다(되돌릴 수 없는 손실).
+   ⚠️ 차수별 필드가 없던 **옛 인보이스**는 공용 필드가 곧 계약금 단계의 상태였으므로,
+      계약금 차수에 한해 공용 필드를 폴백으로 읽는다. */
+const TIER_STATUS_STYLE = {
+  "검토대기": "bg-slate-100 text-slate-600",
+  "발송완료": "bg-blue-100 text-blue-800",
+  "긴급승인": "bg-purple-100 text-purple-800",
+  "고객승인": "bg-emerald-100 text-emerald-800",
+};
+// 지금 상태를 보여줘야 할 차수 — 정산완료 건은 마지막 차수(잔금) 기준으로 본다
+function getActiveTier(iv) {
+  const info = STEP_STAGE_MAP[getStepStage(iv)] || {};
+  return info.tier || "balance";
+}
+function getTierStatus(iv, tier) {
+  if (!iv || !tier) return "검토대기";
+  if (iv[`${tier}ApprovedAt`]) return "고객승인";
+  if (iv[`${tier}SentAt`]) return "발송완료";
+  const saved = iv[`${tier}ReviewStatus`];
+  if (saved === "발송완료" || saved === "고객승인" || saved === "긴급승인") return saved;
+  if (saved === "검토대기") return "검토대기";
+  if (tier === "deposit") {
+    // 차수별 필드가 없던 시절의 건 — 공용 필드가 곧 계약금 단계의 상태였다
+    const st = iv.reviewStatus || iv.status || "";
+    if (iv.consentStatus === "승인완료" || iv.consentStatus === "동의완료" || st === "고객승인완료" || st === "고객동의완료") return "고객승인";
+    if (st === "긴급승인" || iv.emergencyApprovedAt) return "긴급승인";
+    if (iv.sentAt || iv.sentBy || st === "발송완료") return "발송완료";
+  }
+  return "검토대기";
+}
+function getTierSentBy(iv, tier) {
+  if (!iv || !tier) return "";
+  const v = iv[`${tier}SentBy`];
+  if (v) return v;
+  return tier === "deposit" ? (iv.sentBy || "") : ""; // 옛 건의 공용 발송자는 계약금 발송자였다
+}
+function getTierSentAt(iv, tier) {
+  if (!iv || !tier) return "";
+  return iv[`${tier}SentAt`] || (tier === "deposit" ? (iv.sentAt || "") : "");
+}
+function getTierApprovedAt(iv, tier) {
+  if (!iv || !tier) return "";
+  return iv[`${tier}ApprovedAt`] || (tier === "deposit" ? (iv.consentAt || "") : "");
+}
+function getTierApprovedBy(iv, tier) {
+  if (!iv || !tier) return "";
+  return iv[`${tier}ApprovedBy`] || (tier === "deposit" ? (iv.consentSignerName || "") : "");
+}
+/* 목록 [상태] 칸에 그릴 배지 — 지금 머물러 있는 차수의 진행 상태 하나. */
+function getActiveStatusBadge(iv) {
+  const tier = getActiveTier(iv);
+  const label = getTierStatus(iv, tier);
+  const tierLabel = (PAYMENT_STAGE_MAP[tier] || {}).label || "";
+  const at = label === "고객승인" ? getTierApprovedAt(iv, tier) : label === "발송완료" ? getTierSentAt(iv, tier) : "";
+  const by = label === "고객승인" ? getTierApprovedBy(iv, tier) : label === "발송완료" ? getTierSentBy(iv, tier) : "";
+  return { label, tier, tierLabel, at, by, cls: TIER_STATUS_STYLE[label] || TIER_STATUS_STYLE["검토대기"] };
+}
+// 그 차수의 청구서를 아직 안 보냈는가 — 발송 버튼을 띄울지 판단한다
+function needsTierSend(iv, tier) {
+  return !!tier && getTierStatus(iv, tier) === "검토대기";
+}
+
 /* ===================== ↩ 진행 단계 수동 변경 · 되돌리기(롤백) =====================
    고객사가 결제 조건을 바꾸거나(잔금 몰아서 → 다시 중도금+잔금) 실수로 단계를 올렸을 때 되돌린다.
 
@@ -2901,7 +2971,14 @@ function buildStepStagePatch(iv, targetKey) {
     if (t !== "deposit") { // 계약금청구는 인보이스 발행 자체가 청구라 별도 발송 플래그가 없다
       const shouldReq = !!target.req[t];
       patch[`${t}Requested`] = shouldReq;
-      if (!shouldReq) { patch[`${t}RequestedAt`] = ""; patch[`${t}RequestedBy`] = ""; }
+      if (!shouldReq) {
+        patch[`${t}RequestedAt`] = ""; patch[`${t}RequestedBy`] = "";
+        /* 그 차수의 발송·승인 기록도 함께 지운다 — 되돌렸는데 [고객승인] 배지가 남아 있으면
+           보내지도 않은 청구가 승인된 것처럼 보인다. 계약금은 인보이스 발행 자체가 청구라 건드리지 않는다. */
+        patch[`${t}ReviewStatus`] = "검토대기";
+        patch[`${t}SentAt`] = ""; patch[`${t}SentBy`] = ""; patch[`${t}SentChannel`] = "";
+        patch[`${t}ApprovedAt`] = ""; patch[`${t}ApprovedBy`] = "";
+      }
     }
   });
   if (target.settled) { if (!iv.settledAt) patch.settledAt = nowDateTimeStr(); }
@@ -2927,6 +3004,14 @@ function getPrevStepKey(iv) {
 function getStepActionFor(iv, stepKey) {
   const info = STEP_STAGE_MAP[stepKey];
   if (!info || !info.action) return null;
+  /* 청구 단계인데 그 차수의 청구서를 아직 안 보냈다면(검토대기) 입금확인보다 **발송이 먼저**다.
+     보내지도 않은 청구의 입금을 확인하는 일은 없고, 모달을 닫아 발송을 못 끝냈을 때
+     다시 열 길이 없으면 그 건이 막혀 버린다. */
+  if (info.action === "confirm" && info.phase === "request" && needsTierSend(iv, info.tier)) {
+    const t = PAYMENT_STAGE_MAP[info.tier] || {};
+    return { ...info, action: "send", sendTier: info.tier,
+      actionLabel: `📲 ${t.label || ""} 청구발송`.trim(), btn: t.btn || info.btn };
+  }
   if (info.action === "request" && isZeroTierAmount(iv, info.actionTier)) {
     const t = PAYMENT_STAGE_MAP[info.actionTier] || {};
     return {
@@ -3582,11 +3667,23 @@ function InvoiceListView({ invoices, onBack, onOpenInvoice, onDelete, onDuplicat
                       })()}
                     </td>
                     <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{displayStaffName(iv.createdBy) || "-"}</td>
-                    <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">{iv.sentBy ? displayStaffName(iv.sentBy) : <span className="text-slate-300">미발송</span>}</td>
+                    {/* 발송자 — 지금 머물러 있는 차수의 청구서를 보낸 사람. 중도금 단계면 중도금 발송자를 보여준다
+                        (공용 sentBy를 그대로 쓰면 중도금 청구서를 아직 안 보냈는데도 계약금 발송자가 계속 남는다) */}
+                    <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">
+                      {(() => {
+                        const t = getActiveTier(iv);
+                        const by = getTierSentBy(iv, t);
+                        if (!by) return <span className="text-slate-300">미발송</span>;
+                        return <span title={`${(PAYMENT_STAGE_MAP[t] || {}).label || ""} 청구 발송 ${getTierSentAt(iv, t) || ""}`}>{displayStaffName(by)}</span>;
+                      })()}
+                    </td>
                     <td className="px-3 py-3 text-center">
                       {(() => {
-                        const b = getInvoiceBadge(iv);
-                        return <span title={b.at ? `${b.label} ${b.at}${b.by ? ` (${b.by})` : ""}` : ""}
+                        /* 상태 = 지금 머물러 있는 차수(계약금/중도금/잔금)의 검토대기 → 발송완료 → 고객승인.
+                           차수가 바뀌면 그 차수의 진행 상태로 바뀌므로, 보내지도 않은 청구가 승인된 것처럼 보이지 않는다. */
+                        const b = getActiveStatusBadge(iv);
+                        const tip = `${b.tierLabel} 단계 · ${b.label}` + (b.at ? ` ${b.at}` : "") + (b.by ? ` (${b.by})` : "");
+                        return <span title={tip}
                           className={"px-2.5 py-1 text-xs font-bold rounded-full whitespace-nowrap " + b.cls}>{b.label}</span>;
                       })()}
                     </td>
@@ -11309,26 +11406,59 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         두 사람이 동시에 같은 건을 처리하면 한 단계를 건너뛰고 승격될 수 있다. */
   const [stageRequest, setStageRequest] = useState(null); // {iv, tier} — 중도금·잔금 청구 안내문 발송 모달
 
+  /* ① 그 차수의 청구 단계로 진입 — 아직 "보낸" 것은 아니다.
+        차수의 상태를 [검토대기]로 새로 열고, 발송자·승인 기록은 비워 둔다(이전 차수 기록은 그대로 남는다). */
   const markStageRequested = async (iv, tier) => {
-    if (!iv || !tier) return;
+    if (!iv || !tier) return null;
     const actor = (roleUser && roleUser.displayName) || "알 수 없음";
     const label = (PAYMENT_STAGE_MAP[tier] || {}).label || "";
     const patch = {
       [`${tier}RequestedAt`]: nowDateTimeStr(),
       [`${tier}RequestedBy`]: actor,
       [`${tier}Requested`]: true,
+      [`${tier}ReviewStatus`]: "검토대기",   // 이 차수는 이제부터 발송 전 상태
+      [`${tier}SentAt`]: "", [`${tier}SentBy`]: "", [`${tier}SentChannel`]: "",
+      [`${tier}ApprovedAt`]: "", [`${tier}ApprovedBy`]: "",
       stepStage: `${tier}_request`,
       updatedAt: nowDateTimeStr(), updatedBy: actor,
     };
     setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
+    setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
     try {
       if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
-      setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
-      setToast(`📤 ${label} 청구 안내문이 복사되었습니다. → ${label}청구 단계로 이동`);
+      setToast(`${label}청구 단계로 이동했습니다. 안내문을 복사하면 [발송완료]로 바뀝니다.`);
+      return { ...iv, ...patch };
     } catch (e) {
-      console.error("청구발송 기록 저장 실패:", e);
+      console.error("청구단계 진입 저장 실패:", e);
       setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x))); // 실패하면 화면도 되돌린다
-      alert("청구발송 처리 저장에 실패했습니다.\n\n[사유] " + ((e && e.message) || e));
+      setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...iv } : prev));
+      alert("청구단계 이동 저장에 실패했습니다.\n\n[사유] " + ((e && e.message) || e));
+      return null;
+    }
+  };
+
+  /* ② 그 차수의 청구서를 실제로 보냈다 — 안내문을 복사한 시점.
+        계약금 차수는 공용 필드(status·sentBy·sentAt)도 함께 갱신한다 — 옛 화면들이 아직 그 값을 읽는다. */
+  const markTierSent = async (iv, tier, channel) => {
+    if (!iv || !tier) return;
+    const actor = (roleUser && roleUser.displayName) || "알 수 없음";
+    const now = nowDateTimeStr();
+    const label = (PAYMENT_STAGE_MAP[tier] || {}).label || "";
+    const patch = {
+      [`${tier}ReviewStatus`]: "발송완료",
+      [`${tier}SentAt`]: now, [`${tier}SentBy`]: actor, [`${tier}SentChannel`]: channel || "카카오톡",
+      updatedAt: now, updatedBy: actor,
+      ...(tier === "deposit" ? { status: "발송완료", reviewStatus: "발송완료", sentBy: actor, sentAt: now, sentChannel: channel || "카카오톡" } : {}),
+    };
+    setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? { ...x, ...patch } : x)));
+    setInvoiceData((prev) => (prev && prev.id === iv.id ? { ...prev, ...patch } : prev));
+    try {
+      if (FIREBASE_ENABLED && typeof iv.id === "string") await fsUpdate(COLLECTIONS.invoices, iv.id, patch);
+      setToast(`📤 ${label} 청구 안내문 복사 완료 → [발송완료] (${displayStaffName(actor)})`);
+    } catch (e) {
+      console.error("발송완료 저장 실패:", e);
+      setInvoiceList((prev) => prev.map((x) => (x.id === iv.id ? iv : x)));
+      alert("발송완료 처리 저장에 실패했습니다.\n\n[사유] " + ((e && e.message) || e));
     }
   };
 
@@ -11418,7 +11548,16 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const info = getStepActionFor(iv, current);
     if (!info || !info.action) return;
     if (info.action === "confirm") { openPaymentConfirm(iv, info.tier); return; }
-    if (info.action === "request") { setStageRequest({ iv, tier: info.actionTier }); return; }
+    if (info.action === "send") { setStageRequest({ iv, tier: info.sendTier }); return; } // 이미 그 단계 — 발송만 하면 된다
+    if (info.action === "request") {
+      /* 다음 차수의 청구 단계로 먼저 올린 뒤(= [검토대기]로 열림) 안내문 모달을 띄운다.
+         모달을 그냥 닫아도 단계는 [중도금청구·검토대기]로 남아, 목록의 [📲 중도금 청구발송] 버튼으로 다시 보낼 수 있다. */
+      (async () => {
+        const next = await markStageRequested(iv, info.actionTier);
+        if (next) setStageRequest({ iv: next, tier: info.actionTier });
+      })();
+      return;
+    }
     if (info.action === "settle") { settleInvoice(iv); }
   };
 
@@ -13665,10 +13804,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         />
       )}
 
-      {/* 📤 중도금·잔금 청구발송 — 승인요청 발송 모달을 그대로 재사용한다.
+      {/* 📤 차수별 청구 안내문 발송 — 승인요청 발송 모달을 그대로 재사용한다.
           문구는 buildInvoiceStageMessage가 그 건의 현재 수금 단계를 보고 자동 생성하므로
           계약금을 받은 건에는 중도금 안내문이, 중도금까지 받은 건에는 잔금 안내문이 나온다.
-          문구를 복사하는 순간 청구발송으로 기록되고 다음 단계로 넘어간다. */}
+          문구를 복사하는 순간 **그 차수가 [발송완료]**가 되고 발송자·일시가 기록된다
+          (단계 이동은 버튼을 누른 시점에 이미 끝나 있다 — 복사하지 않고 닫아도 [검토대기]로 남는다). */}
       {stageRequest && (() => {
         const { iv, tier } = stageRequest;
         const label = (PAYMENT_STAGE_MAP[tier] || {}).label || "";
@@ -13677,9 +13817,9 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
             invoice={{ ...iv, items: Array.isArray(iv.items) ? iv.items : [] }}
             titleText={`📤 ${label} 청구 안내문 발송`}
             sendLabel={`💬 ${label} 청구 문구 전체 복사 + 청구발송 처리`}
-            sentLabel={`✅ 복사되었습니다 (${label}청구 단계로 이동)`}
-            footnote={`복사한 문구를 카카오톡·문자로 보내주세요. 입금이 확인되면 목록에서 [${label} 입금확인]을 눌러 다음 단계로 넘기시면 됩니다.`}
-            onSent={async () => { setStageRequest(null); await markStageRequested(iv, tier); }}
+            sentLabel={`✅ 복사되었습니다 (${label} 발송완료 처리됨)`}
+            footnote={`복사한 문구를 카카오톡·문자로 보내주세요. 고객이 링크에서 승인하면 ${label} 상태가 [고객승인]으로 바뀌고, 입금이 확인되면 [${label} 입금확인]을 눌러 다음 단계로 넘기시면 됩니다.`}
+            onSent={async () => { setStageRequest(null); await markTierSent(iv, tier, "카카오톡"); }}
             onClose={() => setStageRequest(null)}
           />
         );
@@ -14987,7 +15127,10 @@ function CustomerConsentPage({ invoiceId }) {
         const rec = { id: snap.id, ...snap.data() };
         setInvoice(rec);
         setSignerName(rec.clientCeo || "");
-        if (rec.consentStatus === "승인완료" || rec.consentStatus === "동의완료") setDone(true); // 구버전 값도 인정
+        /* ⚠️ "이미 승인함" 판정은 **지금 청구 중인 차수 기준**이다.
+           공용 consentStatus만 보면 계약금을 승인한 고객에게 중도금 청구서를 보냈을 때
+           "이미 승인하셨습니다" 화면이 떠 중도금 서명을 받을 수 없었다. */
+        if (getTierStatus(rec, getActiveTier(rec)) === "고객승인") setDone(true);
         setLoading(false);
       } catch (e) {
         console.error(e);
@@ -15002,11 +15145,19 @@ function CustomerConsentPage({ invoiceId }) {
   const submit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
+    /* 어느 차수의 승인인지는 저장된 단계에서 역산한다 — 링크에 차수를 적지 않으므로
+       이미 고객에게 보낸 옛 링크로 들어와도 그 시점의 청구 차수로 정확히 기록된다. */
+    const tier = getActiveTier(invoice);
+    const now = nowDateTimeStr();
     const patch = {
+      [`${tier}ApprovedAt`]: now,
+      [`${tier}ApprovedBy`]: signerName.trim(),
+      [`${tier}ReviewStatus`]: "고객승인",
+      // 공용 필드도 함께 갱신 — 계약서 (갑) 서명란 합성과 옛 화면들이 이 값을 읽는다
       consentStatus: "승인완료",
-      consentAt: nowDateTimeStr(),
+      consentAt: now,
       consentSignerName: signerName.trim(),
-      consentSignature: signature, // 계약서 (갑) 서명란에 그대로 합성된다
+      consentSignature: signature,
       reviewStatus: "고객승인완료",
     };
     try {
