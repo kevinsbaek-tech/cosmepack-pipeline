@@ -148,7 +148,13 @@ const shortenForMessage = (text, max) => {
      1) 요약 블록 `• 라벨 : 값` 중 가장 긴 값을 잘라냄 (최소 12자는 남김)
      2) 그래도 넘치면 맨 아래 `※` 안내 문단을 통째로 제거
    ⚠️ 열람 링크·제목·서명줄은 어떤 경우에도 건드리지 않는다. */
-const KAKAO_MSG_LIMIT = 470;
+/* 카카오톡은 말풍선이 길어지면 [전체보기]로 접고, **접히는 순간 하단 웹 미리보기 카드를 생략**한다.
+   그래서 안내문구를 470자 → 380자로 줄였다(실제 생성되는 문구는 370자 안팎).
+   ⚠️ 350자까지는 내리지 않았다 — 링크 URL 하나가 80자를 차지해서, 350으로 조이면
+      고객에게 나가는 본문 문장이 "…"로 잘린다(금액·문서번호가 잘린 안내문이 나가는 쪽이 더 큰 사고).
+      실측 근거: 같은 서식의 계약금 안내문(약 430자)은 접히지 않고 카드가 정상 노출됐고,
+      접힌 것은 결제 내역을 차수별로 풀어 쓴 470자짜리 잔금 안내문이었다. */
+const KAKAO_MSG_LIMIT = 380;
 const SUMMARY_LINE_RE = /^(•\s[^:]+:\s)(.+)$/;
 const fitMessageForKakao = (raw) => {
   let msg = String(raw || "");
@@ -158,6 +164,9 @@ const fitMessageForKakao = (raw) => {
     lines.forEach((ln, i) => {
       const m = SUMMARY_LINE_RE.exec(ln);
       const val = m ? m[2].replace(/…$/, "") : "";
+      /* ⚠️ 금액(₩)이 들어간 줄은 절대 자르지 않는다 — "₩880,0…"처럼 청구액이 잘려 나가면
+         고객이 받는 안내문에 금액이 틀리게 적히는 사고가 된다. 줄일 대상은 품목명·본문 문장뿐. */
+      if (ln.indexOf("₩") >= 0) return;
       if (m && val.length > longest && val.length > 12) { longest = val.length; target = i; }
     });
     if (target < 0) break; // 더 줄일 요약 항목이 없음
@@ -182,6 +191,7 @@ const fitMessageForKakao = (raw) => {
       if (ln.indexOf("://") >= 0) return;               // 열람 링크
       if (/^[─—-]{3,}/.test(ln)) return;                // 구분선
       if (ln.indexOf("(주)비케이브로") === 0) return;    // 서명줄
+      if (ln.indexOf("₩") >= 0) return;                 // 금액 줄(청구액이 잘리면 안 된다)
       const val = ln.replace(/…$/, "");
       if (val.length > longest && val.length > 24) { longest = val.length; target = i; }
     });
@@ -4254,89 +4264,63 @@ function PvNumber({ ro, value, onChange, className }) {
    같은 문구를 쓰면 고객이 어느 대금을 요청받는지 알 수 없다. 단계별로 제목·본문·청구 라인을 분기한다.
    ⚠️ 비율(%)은 하드코딩하지 않고 그 인보이스에 저장된 스케줄의 rate를 쓴다 — 30/60/10을 고친 건이 있다.
    ⚠️ 본문의 정식 URL(https://~)은 "열람 링크 1개"만 유지할 것(2개 이상이면 카카오톡 미리보기 카드가 사라진다). */
-function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTotal, grandTotal, amounts }) {
+function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTotal, grandTotal, amounts, totalQty }) {
   const client = (invoice && invoice.clientName) || "고객사";
   const code = (invoice && invoice.code) || "INV-발행건";
   const rows = (amounts && amounts.rows) || [];
   const rateOf = (i, fallback) => {
-    const r = Number((rows[i] || {}).rate);
-    return Number.isFinite(r) && r > 0 ? r : fallback;
+    const r = Number((rows[i] || {}).pct);
+    if (Number.isFinite(r) && r > 0) return Number.isInteger(r) ? r : Number(r.toFixed(1));
+    const stored = Number((rows[i] || {}).rate);
+    return Number.isFinite(stored) && stored > 0 ? stored : fallback;
   };
   const rDep = rateOf(0, 30), rInt = rateOf(1, 60), rBal = rateOf(2, 10);
   const money = (n) => `₩${Math.round(Number(n) || 0).toLocaleString()}`;
-  const head = `안녕하세요, ${client} 담당자님.\n화장품 용기 제조·공급 파트너 코스메팩입니다.\n\n`;
-  const common =
+  const qty = Number(totalQty) > 0 ? ` (${Number(totalQty).toLocaleString()}개)` : "";
+  const sep = "──────────";
+
+  /* 지난 차수 입금 내역은 **한 줄로 합친다**(예: "계약금/중도금 : 입금완료").
+     예전에는 차수마다 날짜·금액·비율을 한 줄씩 적어 본문이 길어졌고, 그 길이 때문에
+     카카오톡이 말풍선을 [전체보기]로 접으면서 **하단 웹 미리보기 카드를 통째로 생략**했다.
+     상세 입금 내역은 링크를 열면 인보이스 문서의 정산표에 그대로 다 있다. */
+  const paidBrief = () => {
+    const done = [];
+    [["deposit", "계약금"], ["interim", "중도금"], ["balance", "잔금"]].forEach(([k, label]) => {
+      if (!invoice || !invoice[`${k}PaidDate`]) return;
+      if (readPaidAmount(invoice, k) === 0) return; // 협의로 미청구한 차수는 적지 않는다
+      done.push(label);
+    });
+    return done.length ? `• ${done.join("/")} : 입금완료\n` : "";
+  };
+  // 요약 박스 — 문서번호·품목·총액·지난 입금·이번 청구. 총 공급가(부가세 별도) 줄은 뺐다(총 합계금액만으로 충분)
+  const box = (billLine) =>
     `─── 인보이스 요약 ───\n` +
     `• 문서 번호 : ${code}\n` +
-    `• 공급 품목 : ${shortenForMessage(productLabel)}\n` +
-    `• 총 공급가 : ${money(supplyTotal)} (부가세 별도)\n` +
-    `• 총 청구금액 : ${money(grandTotal)} (부가세 포함)\n`;
-  const tail = `\n🔗 인보이스 열람 및 확인하기:\n${link}\n\n`;
-  const sign = `(주)비케이브로 코스메팩 드림`;
-  /* 이전 단계 입금 완료 내역 — 입금일자가 있을 때만 줄을 만든다(없으면 아예 표기하지 않음).
-     실제 입금액·비율이 기록돼 있으면 "(₩1,500,000 / 39%)"를 덧붙여, 고객이 받은 금액을 바로 대조할 수 있게 한다. */
-  const paidLine = (label, planRate, stageKey) => {
-    const dateStr = invoice && invoice[`${stageKey}PaidDate`];
-    if (!dateStr) return "";
-    const amt = readPaidAmount(invoice, stageKey);
-    // 중도금 없이 합의한 건 — 고객에게 "0원 입금완료"로 나가면 안 되므로 '해당 없음'으로 적는다
-    if (amt === 0) return `• ${label} : 해당 없음 (협의에 따라 미청구)\n`;
-    const rt = Number(invoice[`${stageKey}PaidRate`]);
-    const shownRate = Number.isFinite(rt) && rt > 0 ? rt : planRate;
-    const rateText = Number.isInteger(shownRate) ? shownRate : Number(shownRate).toFixed(1);
-    const detail = amt !== null && amt > 0 ? ` (${money(amt)} / ${rateText}%)` : "";
-    return `• ${label}(${rateText}%) : ${formatKoreanDate(dateStr)} 입금완료${detail}\n`;
-  };
+    `• 공급 품목 : ${shortenForMessage(productLabel)}${qty}\n` +
+    `• 총 합계금액 : ${money(grandTotal)}\n` +
+    paidBrief() + billLine + `\n${sep}\n`;
+  const tail = `🔗 인보이스 열람 및 확인하기:\n${link}\n\n(주)비케이브로 코스메팩 드림`;
+  const open = (title, body) => `[코스메팩] ${title}\n\n안녕하세요, ${client} 담당자님.\n${body}\n\n`;
 
   if (stage === "interim") {
-    const history = paidLine("계약금", rDep, "deposit");
-    return (
-      `[코스메팩] 제품 생산 완료 및 중도금(${rInt}%) 청구 안내\n\n` + head +
-      `주문하신 제품의 현지 생산이 완료되었습니다.\n` +
-      `현지 검품 완료 후 선적(출고) 전 중도금(${rInt}%)을 아래와 같이 청구드립니다.\n\n` +
-      common + `──────────────────\n` +
-      (history ? `▶ 결제 진행 내역\n${history}` : "") +
-      `▶ 이번 청구 : 중도금(${rInt}%) ${money(amounts && amounts.interim)}\n` +
-      `──────────────────\n` + tail +
-      `※ 중도금 입금이 확인되면 즉시 선적이 진행됩니다.\n\n` + sign
-    );
+    return open(`생산 완료 및 중도금(${rInt}%) 청구 안내`,
+      `현지 생산이 완료되어 선적(출고) 전 중도금(${rInt}%)을 청구드립니다.`)
+      + box(`• 이번 청구(중도금 ${rInt}%) : ${money(amounts && amounts.interim)}`) + tail;
   }
   if (stage === "balance") {
-    const history = paidLine("계약금", rDep, "deposit")
-      + paidLine("중도금", rInt, "interim");
-    return (
-      `[코스메팩] 통관 완료 · 납품 및 최종 잔금(${rBal}%) 정산 안내\n\n` + head +
-      `주문하신 제품의 통관 및 국내 입고가 완료되었습니다.\n` +
-      `납품 건에 대한 최종 잔금(${rBal}%)을 아래와 같이 정산 청구드립니다.\n\n` +
-      common + `──────────────────\n` +
-      (history ? `▶ 결제 진행 내역\n${history}` : "") +
-      `▶ 이번 청구 : 잔금(${rBal}%) ${money(amounts && amounts.balance)}\n` +
-      `──────────────────\n` + tail +
-      `※ 최종 정산은 실제 입고 수량(실수량) 기준으로 처리됩니다.\n\n` + sign
-    );
+    return open(`통관 완료 및 잔금(${rBal}%) 정산 안내`,
+      `주문 제품의 국내 통관 및 입고가 완료되어 최종 잔금(${rBal}%) 인보이스를 안내드립니다.`)
+      + box(`• 이번 청구(잔금 ${rBal}%) : ${money(amounts && amounts.balance)}`) + tail;
   }
   if (stage === "completed") {
-    const history = paidLine("계약금", rDep, "deposit")
-      + paidLine("중도금", rInt, "interim")
-      + paidLine("잔금", rBal, "balance");
-    return (
-      `[코스메팩] 대금 정산 완료 안내\n\n` + head +
-      `해당 건의 대금 정산이 모두 완료되었습니다. 거래에 감사드립니다.\n\n` +
-      common + `──────────────────\n` +
-      (history ? `▶ 결제 완료 내역\n${history}` : "") +
-      `──────────────────\n` + tail + sign
-    );
+    return open(`대금 정산 완료 안내`,
+      `해당 건의 대금 정산이 모두 완료되었습니다. 거래에 감사드립니다.`)
+      + box(`• 정산 : 전액 입금완료`) + tail;
   }
   // 기본값 = 계약금(발행 직후)
-  return (
-    `[코스메팩] 제품 공급 인보이스(계약금 청구) 안내\n\n` + head +
-    `협의하신 제품의 공급 인보이스가 발행되었습니다.\n` +
-    `생산 착수를 위한 계약금(${rDep}%)을 아래와 같이 청구드립니다.\n\n` +
-    common + `• 열람 기한 : 발행일로부터 30일\n──────────────────\n` +
-    `▶ 이번 청구 : 계약금(${rDep}%) ${money(amounts && amounts.deposit)}\n` +
-    `──────────────────\n` + tail +
-    `※ 링크 화면에서 바로 승인하실 수 있으며, 계약금 입금 확인 시 즉시 생산이 착수됩니다.\n\n` + sign
-  );
+  return open(`제품 공급 인보이스(계약금 ${rDep}%) 청구 안내`,
+    `공급 인보이스가 발행되어 생산 착수를 위한 계약금(${rDep}%)을 청구드립니다.`)
+    + box(`• 이번 청구(계약금 ${rDep}%) : ${money(amounts && amounts.deposit)}`) + tail;
 }
 
 /* titleText / sendLabel / sentLabel / footnote 는 선택 항목이다.
@@ -4347,9 +4331,12 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
      ⚠️ 건을 찾는 열쇠는 언제까지나 `id`(문서 ID)다 — 인보이스번호를 바꿨다고 열쇠까지 바꾸면
         이미 고객에게 보낸 옛 링크가 전부 죽는다. 번호는 `no=`로 함께 실어, 주소만 봐도
         어느 인보이스인지 알 수 있게 한다(없는 값이면 아예 붙이지 않는다). */
-  const invoiceNo = String((invoice && invoice.code) || "").trim();
-  const link = `${window.location.origin}/agree?type=invoice&id=${invoice.id}` +
-    (invoiceNo ? `&no=${encodeURIComponent(invoiceNo)}` : "");
+  /* ⚠️ 링크는 **최대한 짧게** 유지한다.
+     카카오톡은 말풍선이 길어지면 [전체보기]로 접고, 접히는 순간 하단 웹 미리보기 카드를 생략한다.
+     URL 하나가 본문의 1/4을 차지하므로 꼬리 파라미터 한 개가 카드 노출을 좌우한다.
+     그래서 예전에 붙이던 `&no=<인보이스번호>`(표시용, 식별에는 쓰이지 않음)를 뺐다 —
+     문서 번호는 안내문 본문의 "• 문서 번호" 줄에 이미 그대로 들어간다. */
+  const link = `${window.location.origin}/agree?type=invoice&id=${invoice.id}`;
   const items = invoice.items || [];
   const first = items[0] || {};
   const productLabel = (first.productName || "주문 품목") + (items.length > 1 ? ` 외 ${items.length - 1}건` : "");
@@ -4375,7 +4362,7 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
   const stageAmount = stage === "completed" ? amounts.grand : (amounts[stage] || 0);
 
   const autoMessage = fitMessageForKakao(
-    buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTotal, grandTotal, amounts })
+    buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTotal, grandTotal, amounts, totalQty })
   );
   /* 담당자가 자유롭게 손볼 수 있도록 state로 관리한다 — 복사·발송은 "지금 화면의 내용" 그대로 나간다 */
   const [message, setMessage] = useState(autoMessage);
