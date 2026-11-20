@@ -1305,44 +1305,500 @@ const segAlreadySaid = (seg, acc) => {
   return !!n && acc.some((a) => searchNorm(a).includes(n));
 };
 
-function generateCosmepackProductName(p) {
+/* ===== v3 엔진: 추출 → 생성 → 검증 (지시서 §3) ===== */
+/* ===================== 🏷️ 코스메팩 표준 제품명 v3 =====================
+   지시서에 따라 세 단계를 완전히 분리한다.
+     A. extractSpecs  — 원본에서 사양을 뽑고 **출처를 함께 기록**한다
+     B. buildName     — 제품군별 템플릿으로 조립한다
+     C. verifyName    — 원본과 비교해 10가지를 검사한다
+
+   v2에서 실제로 터진 문제들을 규칙으로 못박았다.
+     · 단상자의 material "350g"은 **지질(종이 평량)**이지 용량이 아니다 → 재질 필드는 절대 용량으로 읽지 않는다
+     · 카테고리가 "PE튜브(2겹)"이어도 제품명에 겹수가 없으면 겹수를 쓰지 않는다 (추정 금지)
+     · 원본에 없는 말이 결과에 들어가면 **중대 오류**로 자동적용을 막는다
+   ==================================================================== */
+
+const cpNorm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+const cpKey = (s) => cpNorm(s).toLowerCase().replace(/[\s()（）·.\-]/g, "");
+
+/* ---------- 어휘 ---------- */
+const GLASS_MAKE = ["프레스유리", "블로우유리", "앰버유리", "소다유리", "튜브유리"];
+// 겹수·튜브 종류 — 제품명에 적혀 있을 때만 쓴다
+const TUBE_KIND = [
+  ["PE튜브 5겹", /pe\s*튜브\s*5\s*겹|pe\s*5\s*겹|5\s*겹\s*튜브|5겹/i],
+  ["PE튜브 2겹", /pe\s*튜브\s*2\s*겹|pe\s*2\s*겹|2\s*겹\s*튜브|2겹/i],
+  ["ABL튜브", /\babl\b/i],
+  ["PBL튜브", /\bpbl\b/i],
+  ["AL튜브", /\bal\s*튜브/i],
+];
+const NOZZLE = ["민짜토출구(버진씰부착)", "민짜토출구", "단노즐(선크림)형", "단노즐", "아이크림노즐형",
+  "드로퍼인서트", "세라믹헤드", "세라믹해드", "뾰족토출구", "점적마개토출", "커브노즐", "버튼식토출",
+  "노즐형", "미스트노즐", "스프레이노즐"];
+const APPLICATOR = ["롤러볼", "롤온", "스포이드", "브러쉬", "브러시", "실리콘브러쉬", "퍼프", "스파출라",
+  "스파츌라", "스파출러", "집게", "스푼", "어플리케이터", "팁"];
+const CP_FORM = ["세럼에센스용기", "에센스용기", "세럼용기", "크림용기", "토너용기", "향수병", "앰플병",
+  "바이알용기", "구슬용기", "롤링용기", "샴푸용기", "미스트용기", "스프레이용기", "쿠션용기",
+  "파우더용기", "가루형용기", "클렌징용기", "립글로즈용기", "립밤용기", "립밤튜브", "마스카라용기",
+  "아이섀도우용기", "블러셔용기", "파운데이션용기", "아이크림용기", "선크림용기", "선스틱",
+  "원형용기", "사각용기", "원통용기", "펌프용기", "이중크림용기", "튜브용기", "드로퍼튜브",
+  "단상자", "속지", "아웃박스", "실링지", "파우치", "마스크팩", "얼굴마스크", "아이패치",
+  "헤어밴드", "괄사", "컴팩트", "리필"];
+const STRUCT = ["에어리스진공", "진공용기", "리드포함", "리드미포함", "퍼프포함", "퍼프미포함",
+  "스푼포함", "트위스트락", "회전형", "탈부착", "버진씰", "식품용", "양면용", "이중"];
+const CP_MATERIAL = ["PETG", "PET", "ABS", "PP", "PE", "PS", "AS", "MS", "POM", "아크릴", "유리",
+  "알루미늄", "AL", "실리콘", "종이", "크라프트", "아트지", "스노우지"];
+const CAP_HINT = /캡/;
+const PUMP_HINT = /펌프|디스펜서/;
+const COLOR_HINT = /투명|반투명|불투명|유백|화이트|블랙|색상/;
+const PRINT_HINT = /인쇄|실크|라벨|전사/;
+const COAT_HINT = /코팅|증착|도금|무광|유광|금박|은박|그라데이션/;
+const FINISH_HINT = /사출|후가공|엠보|각인|스크래치/;
+
+const CAPACITY_RE = /(\d+(?:\.\d+)?(?:\s*[~\-]\s*\d+(?:\.\d+)?)?)\s*(ml|mL|ML|g|G|cc|CC)\b/;
+const DIAMETER_RE = /(\d+(?:\.\d+)?)\s*파이|[Øø]\s*(\d+(?:\.\d+)?)|지름\s*(\d+(?:\.\d+)?)\s*mm/;
+const DIMENSION_RE = /^\d+(?:\.\d+)?\s*[*xX×]\s*\d+(?:\.\d+)?(?:\s*[*xX×]\s*\d+(?:\.\d+)?)?\s*(?:mm)?$/;
+const PAPERWEIGHT_RE = /^\d+\s*g$/i;          // 단상자 material "350g" = 지질(평량)
+const DOSE_RE = /토출량\s*([\d.]+\s*cc)/i;
+
+const CP_PHRASES = ["민짜토출구(버진씰부착)", "단노즐(선크림)형", "아이크림노즐형", "로션펌프(디스펜서)",
+  "뾰족 토출구", "세라믹 헤드", "세라믹 해드", "스프레이 펌프", "미스트 펌프", "에센스 펌프",
+  "로션 펌프", "버블 펌프", "커브노즐 로션펌프", "상단 디스펜서",
+  "PE 5겹", "PE 2겹", "PE튜브 5겹", "PE튜브 2겹", "5겹 튜브", "2겹 튜브",
+  "립밤 튜브용기", "드로퍼 튜브용기", "가루형 용기", "파우더 용기", "파운데이션 용기",
+  "아이섀도우 용기", "블러셔 용기", "미스트 용기", "튜브 용기", "리필 쿠션", "쿠션 컴팩트",
+  "퍼프 미포함", "리드 포함", "캡 은박 코팅", "용기 금박 증착",
+  "실크 인쇄", "금박 사출", "은박 사출", "색상 사출", "무광 코팅", "유광 코팅"];
+
+/* ================= A. 사양 추출 (출처 기록) ================= */
+function cpClassifyToken(raw) {
+  const t = cpNorm(raw).replace(/^[\/·,\s]+|[\/·,\s]+$/g, "");
+  if (!t) return null;
+  const k = cpKey(t);
+  const capM = t.match(CAPACITY_RE);
+  if (capM && cpKey(capM[0]) === k) return { slot: "capacity", value: cpNorm(capM[0]).replace(/\s+/g, "") };
+  const diaM = t.match(DIAMETER_RE);
+  if (diaM && (k.endsWith("파이") || /^[Øø지름]/.test(t))) {
+    // 원본 표기를 보존한다 — "지름 56mm"를 "56파이"로 바꾸면 원본에 없던 말이 생긴다
+    return { slot: "diameter", value: k.endsWith("파이") ? (diaM[1] || diaM[2] || diaM[3]) + "파이" : cpNorm(t) };
+  }
+  const doseM = t.match(DOSE_RE);
+  if (doseM) return { slot: "dose", value: "토출량 " + doseM[1].replace(/\s+/g, "") };
+  if (DIMENSION_RE.test(t.replace(/\(.*\)/, "").trim())) return { slot: "dimension", value: t };
+  for (const g of GLASS_MAKE) if (k.includes(cpKey(g))) return { slot: "manufacturing", value: g };
+  for (const [label, re] of TUBE_KIND) if (re.test(t)) return { slot: "tubeKind", value: label };
+  for (const n of NOZZLE) if (k.includes(cpKey(n))) return { slot: "nozzle", value: t };
+  /* ⚠️ 끝말로 판단한다. "캡 은박 코팅"은 캡이 아니라 후가공이다 —
+     앞에 '캡'이 들어 있다고 캡으로 분류하면 후가공 정보가 본문으로 끌려 들어간다. */
+  /* ⚠️ 후가공 어휘(금박·은박·코팅·인쇄…)가 들어 있으면 부품이 아니라 후가공이다.
+     "금은박캡"은 캡의 한 종류가 아니라 캡에 입힌 후가공이고, "캡 은박 코팅"도 마찬가지다. */
+  if (COAT_HINT.test(t)) return { slot: "coating", value: t };
+  if (PRINT_HINT.test(t)) return { slot: "printing", value: t };
+  if (PUMP_HINT.test(t)) return { slot: "pump", value: /^[가-힣\s]+$/.test(t) ? t.replace(/\s+/g, "") : t };
+  if (CAP_HINT.test(t)) return { slot: "cap", value: t };
+  for (const a of APPLICATOR) if (k.includes(cpKey(a))) return { slot: "applicator", value: t };
+  for (const s of STRUCT) if (k.includes(cpKey(s))) return { slot: "struct", value: t };
+  for (const f of CP_FORM) {
+    if (k === cpKey(f)) return { slot: "form", value: f };            // 표준 표기로 통일
+    if (k.includes(cpKey(f))) {
+      /* "립밤 튜브용기" → "립밤튜브", "드로퍼 튜브용기" → "드로퍼튜브"
+         (튜브용기는 '튜브'와 같은 말이라 수식어와 붙여 한 낱말로 적는다) */
+      const compact = t.replace(/\s+/g, "").replace(/튜브용기$/, "튜브");
+      return { slot: "form", value: /^[가-힣A-Za-z0-9]+$/.test(compact) ? compact : t };
+    }
+  }
+  if (COLOR_HINT.test(t)) return { slot: "color", value: t };
+  if (PRINT_HINT.test(t)) return { slot: "printing", value: t };
+  if (COAT_HINT.test(t)) return { slot: "coating", value: t };
+  if (FINISH_HINT.test(t)) return { slot: "finishing", value: t };
+  for (const m of CP_MATERIAL) if (k === cpKey(m) || k === cpKey(m) + "용기") return { slot: "material", value: t };
+  return { slot: "unknown", value: t };
+}
+
+/* "100ml (반투명)"처럼 **측정값 뒤에 붙은 괄호**만 떼어낸다.
+   앞부분이 용량·파이로만 이루어졌을 때에만 분리하므로 "단노즐(선크림)형"은 그대로 둔다. */
+function cpSplitMeasureParen(tok) {
+  const m = cpNorm(tok).match(/^(.+?)\s*[(（]\s*(.+?)\s*[)）]\s*$/);
+  if (!m) return [tok];
+  const head = m[1].trim();
+  const onlyMeasure = CAPACITY_RE.test(head) && cpKey(head) === cpKey((head.match(CAPACITY_RE) || [""])[0]);
+  const onlyDia = DIAMETER_RE.test(head) && /파이$/.test(cpKey(head));
+  if (!onlyMeasure && !onlyDia) return [tok];
+  return [head, m[2].trim()];
+}
+
+function cpSplitName(nm) {
+  if (nm.indexOf("/") >= 0) {
+    const out = [];
+    nm.split("/").forEach((t) => cpSplitMeasureParen(t).forEach((x) => out.push(x)));
+    return out;
+  }
+  const found = [];
+  let rest = " " + nm + " ";
+  CP_PHRASES.slice().sort((a, b) => b.length - a.length).forEach((ph) => {
+    const i = rest.toLowerCase().indexOf(ph.toLowerCase());
+    if (i >= 0) { found.push(ph); rest = rest.slice(0, i) + " " + rest.slice(i + ph.length); }
+  });
+  const tail = [];
+  rest.split(/\s{1,}/).forEach((t) => cpSplitMeasureParen(t).forEach((x) => tail.push(x)));
+  return found.concat(tail);
+}
+
+const CP_MULTI = { form: 1, struct: 1, color: 1, printing: 1, coating: 1, finishing: 1, applicator: 1, unknown: 1 };
+
+function extractSpecs(p) {
   const src = p || {};
-  const pick = (k) => nameSeg(src[k]);
-  const used = {};
-  const take = (k) => { const v = pick(k); if (v) used[k] = v; return v; };
+  const a = { capacity: "", diameter: "", dose: "", dimension: "", manufacturing: "", tubeKind: "",
+    nozzle: "", cap: "", pump: "", material: "", paperWeight: "",
+    form: [], struct: [], color: [], printing: [], coating: [], finishing: [], applicator: [], unknown: [] };
+  const sources = {};     // 속성별 출처
+  const conflicts = [];   // 서로 다른 자료가 다른 값을 말할 때
 
-  const category = take("category");
-  const productType = take("productType");
-  const manufacturingType = take("manufacturingType");
-  const material = take("material");
-  const capType = take("capType");
-  const pumpType = take("pumpType");
-  const diameter = take("diameter");
-  const capacity = take("capacity");
+  const put = (c, source) => {
+    if (!c) return;
+    const { slot, value } = c;
+    if (CP_MULTI[slot]) {
+      if (!a[slot].some((x) => cpKey(x) === cpKey(value))) { a[slot].push(value); sources[slot + ":" + value] = source; }
+      return;
+    }
+    if (!a[slot]) { a[slot] = value; sources[slot] = source; return; }
+    const cur = cpKey(a[slot]), nv = cpKey(value);
+    if (cur === nv) return;
+    /* 한쪽이 다른 쪽을 품고 있으면 같은 말을 자세히/간략히 쓴 것이다(“에센스펌프” vs “펌프”).
+       충돌이 아니라 **더 구체적인 쪽**을 남긴다. */
+    if (cur.includes(nv)) return;
+    if (nv.includes(cur)) { a[slot] = value; sources[slot] = source; return; }
+    if (source === "제품구성필드") return;   // 제품구성은 부품 목록일 뿐 — 빈 칸만 채우고 충돌은 만들지 않는다
+    conflicts.push({ field: slot, kept: a[slot], keptFrom: sources[slot], other: value, otherFrom: source });
+  };
 
-  const base = [];
-  const push = (v) => { if (v && !segAlreadySaid(v, base)) base.push(v); };
-  push(category);                      // 규칙 1: 제품분류는 반드시 맨 앞
-  push(productType);
-  push(manufacturingType || material); // 템플릿의 "제조방식 또는 재질" — 제조방식을 우선한다
-  push(capType); push(pumpType);       // 캡과 펌프가 둘 다 있으면 둘 다 적는다(정보를 버리지 않음)
-  push(diameter);
-  push(capacity);                      // 규칙 2: 용량은 기본 제목의 마지막
+  // ① 제품명 — 가장 신뢰도 높은 출처
+  const brandM = cpNorm(src.name).match(/^\s*\[([^\]]*)\]/);
+  a.otherBrand = (brandM && cpKey(brandM[1]) !== cpKey("코스메팩")) ? brandM[1] : "";
+  const nm = cpNorm(src.name).replace(/^\s*\[[^\]]*\]/, " ").replace(/\(\s*\d+\s*만?\s*개\s*\)/g, " ");
+  a.nameHadSlash = cpNorm(src.name).indexOf("/") >= 0;
+  a.tokenMap = [];
+  const catKey = cpKey(src.category || "");
+  cpSplitName(nm).forEach((s, idx) => {
+    /* 첫 토막이 카테고리와 같으면 그건 대분류 표기다("PP펌프 / 로션펌프(디스펜서) / …").
+       이걸 펌프 종류로 삼아 버리면 뒤의 진짜 펌프 정보가 충돌로 버려진다. */
+    if (idx === 0 && catKey && cpKey(s) === catKey) { a.tokenMap.push({ raw: cpNorm(s), slot: "category", value: cpNorm(s) }); return; }
+    const c = cpClassifyToken(s);
+    if (c) a.tokenMap.push({ raw: cpNorm(s), slot: c.slot, value: c.value });
+    put(c, "제품명");
+  });
+  // 이름 전체 재스캔 — "68파이 250ml PET 용기"처럼 붙어 있는 값
+  if (!a.capacity) { const m = nm.match(CAPACITY_RE); if (m) { a.capacity = cpNorm(m[0]).replace(/\s+/g, ""); sources.capacity = "제품명"; } }
+  if (!a.diameter) {
+    const m = nm.match(DIAMETER_RE);
+    if (m) { a.diameter = m[1] ? m[1] + "파이" : cpNorm(m[0]); sources.diameter = "제품명"; }
+  }
+  if (!a.tubeKind) for (const [label, re] of TUBE_KIND) if (re.test(nm)) { a.tubeKind = label; sources.tubeKind = "제품명"; break; }
+  a.nameTokens = cpSplitName(nm).map(cpNorm).filter(Boolean);
 
-  // 규칙 3: 색상·인쇄·코팅·후가공은 괄호 안으로
-  const opts = [];
-  ["color", "printing", "coating", "finishing"].forEach((k) => {
-    const v = take(k);
-    if (v && !segAlreadySaid(v, opts)) opts.push(v);
+  // ② 구조화 필드 — 제품명에 없을 때만 채우고, 다르면 충돌로 기록
+  [["productType", "form"], ["manufacturingType", "manufacturing"], ["capType", "cap"],
+   ["pumpType", "pump"], ["diameter", "diameter"],
+   ["color", "color"], ["printing", "printing"], ["coating", "coating"], ["finishing", "finishing"]]
+   .forEach(([k, slot]) => {
+    if (!src[k]) return;
+    // 후가공 항목은 "A / B" 형태로 여러 개가 한 칸에 들어오는 경우가 많다
+    if (slot === "color" || slot === "printing" || slot === "coating" || slot === "finishing") {
+      cpNorm(src[k]).split("/").map((v) => cpNorm(v).replace(/^[\s\/·,]+|[\s\/·,]+$/g, "")).filter(Boolean)
+        .forEach((v) => put({ slot, value: v }, "사양필드"));
+      return;
+    }
+    const fv = cpNorm(src[k]).replace(/^[\s\/·,]+|[\s\/·,]+$/g, "");
+    if (fv) put({ slot, value: fv }, "사양필드");
   });
 
-  /* 항목이 1개뿐이면(예: 분류만 아는 상태) 이름이라고 부를 수 없다.
-     억지로 "[코스메팩] 유리용기"를 만들어 두면 600개가 전부 같은 이름이 되어 더 나쁘다. */
-  const missing = COSMEPACK_NAME_FIELDS.filter((f) => f.group === "base" && !used[f.key]).map((f) => f.label);
-  if (base.length < 2) return { ok: false, name: "", base: "", parts: base, options: opts, used, missing };
+  // ③ 용량 필드 — 용량은 여기서만 가져온다
+  if (src.capacity) {
+    const v = cpNorm(src.capacity);
+    if (!a.capacity) { a.capacity = v; sources.capacity = "용량필드"; }
+    else if (cpKey(a.capacity) !== cpKey(v)) conflicts.push({ field: "capacity", kept: a.capacity, keptFrom: sources.capacity, other: v, otherFrom: "용량필드" });
+  }
 
-  const name = `${COSMEPACK_NAME_PREFIX} ${base.join(" / ")}` + (opts.length ? ` (${opts.join(" / ")})` : "");
-  return { ok: true, name, base: base.join(" / "), parts: base, options: opts, used, missing };
+  /* ④ 재질 필드 — ⚠️ 절대 용량으로 읽지 않는다.
+        단상자의 "350g"은 지질(종이 평량)이고, 튜브의 "PE 2겹"은 겹수 표기다.
+        이걸 용량·재질로 섞어 쓴 것이 [코스메팩] 단상자 / 350g 사고의 원인이었다. */
+  const matRaw = cpNorm(src.material);
+  const bodyMat = matRaw.indexOf(":") >= 0 ? cpNorm((matRaw.split("/")[0] || "").split(":")[1] || "") : matRaw;
+  if (bodyMat) {
+    if (PAPERWEIGHT_RE.test(bodyMat)) { a.paperWeight = bodyMat.replace(/\s+/g, ""); sources.paperWeight = "재질필드"; }
+    else if (!a.material) { a.material = bodyMat; sources.material = "재질필드"; }
+  }
+
+  // ⑤ 사이즈 필드 — 파이가 여기에만 있는 경우가 많다
+  const ss = cpNorm(src.specSize);
+  if (ss) {
+    if (!a.diameter) { const m = ss.match(DIAMETER_RE); if (m) { a.diameter = (m[1] || m[2] || m[3]) + "파이"; sources.diameter = "사이즈필드"; } }
+    if (!a.dimension) { a.dimension = ss; sources.dimension = "사이즈필드"; }
+  }
+
+  // ⑥ 제품구성 — 펌프·부속의 근거
+  cpNorm(src.composition).split("/").forEach((s) => {
+    const c = cpClassifyToken(s);
+    if (c && (c.slot === "pump" || c.slot === "applicator" || c.slot === "struct")) put(c, "제품구성필드");
+  });
+
+  a.category = cpNorm(src.category).replace(/^[\s\/·,]+|[\s\/·,]+$/g, "");
+  return { attrs: a, sources, conflicts };
+}
+
+/* ================= B. 제품군별 이름 생성 ================= */
+const cpGroupOf = (cat, a) => {
+  const c = cpKey(cat);
+  if (c.includes("단상자") || (a.form || []).some((f) => cpKey(f).includes("단상자"))) return "box";
+  if (c.includes("펌프") || c.includes("자재")) return "part";
+  if (c.includes("유리")) return "glass";
+  if (c.includes("라미") || /abl|pbl/i.test(a.tubeKind || "")) return "lami";
+  if (c.includes("튜브")) return "tube";
+  if (c.includes("에어리스")) return "airless";
+  if (c.includes("pet용기") || c.includes("petg")) return "pet";
+  return "general";
+};
+
+/* 튜브 머리말 — ⚠️ 겹수는 **제품명에 적혀 있을 때만** 쓴다.
+   카테고리가 "PE튜브(2겹)"이라고 해서 겹수를 붙이면 추정이 된다(지시서 §4). */
+function cpTubeHead(a) {
+  if (a.tubeKind && a.sourcesTubeKind === "제품명") return a.tubeKind;
+  if (a.tubeKind) return a.tubeKind;
+  const c = a.category || "";
+  /* ⚠️ "PE튜브(2겹)"처럼 괄호 안에 든 겹수는 **분류 라벨**이므로 제품명에 쓰지 않는다(추정 금지).
+     "PE튜브 5겹"처럼 괄호 없이 적혀 있으면 그 제품의 사실로 보고 그대로 쓴다. */
+  const bare = c.replace(/\s*\(.*?\)\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (/\d\s*겹/.test(bare)) return bare;
+  if (/라미/.test(bare)) return "라미튜브";
+  if (/PE/i.test(bare)) return "PE튜브";     // 겹수 없이
+  return bare || "튜브";
+}
+
+function buildName(ext) {
+  const a = ext.attrs, S = ext.sources;
+  a.sourcesTubeKind = S.tubeKind;
+  /* 사이즈 필드에서만 뽑아낸 파이는 용기류 이름에 넣지 않는다.
+     용기류는 치수를 사이즈 칸에 적고 이름에는 쓰지 않는 관례라, 넣으면 없던 정보가 생긴 것처럼 된다.
+     튜브·부자재는 파이가 제품을 구별하는 핵심 사양이므로 그대로 쓴다. */
+  const diaFromSize = S.diameter === "사이즈필드";
+  const group = cpGroupOf(a.category, a);
+  const base = [];
+  const push = (v) => {
+    if (!v) return;
+    const k = cpKey(v);
+    if (!k) return;
+    if (base.some((b) => cpKey(b) === k)) return;
+    if (base.some((b) => cpKey(b).includes(k) && cpKey(b) !== k)) return;
+    base.push(cpNorm(v));
+  };
+  /* 머리말이 이미 담고 있는 일반명사는 다시 적지 않는다.
+     D 사례: 머리말 "PE튜브" + 형태 "튜브용기" → "튜브용기"는 군더더기다. */
+  const CP_GENERIC_FORM = ["튜브용기", "튜브", "용기", "단상자"];
+  const forms = () => a.form.forEach((f) => {
+    const k = cpKey(f);
+    if (CP_GENERIC_FORM.some((g) => cpKey(g) === k) && base.some((b) => cpKey(b).includes(k.replace("용기", "")))) {
+      a.formCovered = (a.formCovered || []).concat([f]);   // 머리말이 이미 담고 있음 — 누락이 아니다
+      return;
+    }
+    push(f);
+  });
+  const head = (() => {
+    if (group === "tube" || group === "lami") return cpTubeHead(a);
+    if (group === "airless") {
+      const m = (a.material || "").toUpperCase();
+      const hit = ["ABS", "AS", "PS", "PETG", "PET", "PP"].find((x) => m.indexOf(x) >= 0);
+      return hit ? hit + "용기" : (a.category || "에어리스용기");
+    }
+    if (group === "box") return "단상자";
+    return a.category || "";   // ⚠️ 카테고리가 없으면 머리말을 만들지 않는다(재질로 지어내면 "ABL 캡" 같은 이름이 나온다)
+  })();
+  push(head);
+
+  if (group === "box") {
+    /* 단상자: 단상자 / 포장 대상 제품 / 포장 대상 규격 / 상자 재질·구조 (인쇄·후가공)
+       ⚠️ 이름 안의 파이·용량은 **포장되는 제품**의 것이지 상자 자체의 용량이 아니다. */
+    a.form.filter((f) => cpKey(f) !== cpKey("단상자")).forEach(push);
+    push(a.tubeKind); push(a.cap);
+    push(a.diameter); push(a.capacity);
+  } else if (group === "part") {
+    // 부자재: 부자재 대분류 / 적용 제품 / 부품 형태 / 규격 / 재질
+    forms(); push(a.pump); push(a.cap); push(a.nozzle);
+    push(a.diameter); push(a.dose);
+    // 재질은 머리말에 이미 들어 있으면(예: "PP펌프") 다시 적지 않는다
+    const matHead = cpNorm(a.material).split(/[\s(（]/)[0];
+    if (matHead && !base.some((b) => cpKey(b).includes(cpKey(matHead)))) push(a.material);
+  } else if (group === "glass") {
+    forms(); push(a.manufacturing); push(a.nozzle); push(a.cap); push(a.pump);
+    push(a.applicator.join(" ")); if (!diaFromSize) push(a.diameter); push(a.capacity);
+  } else if (group === "tube" || group === "lami") {
+    forms(); push(a.nozzle); push(a.cap); push(a.pump); push(a.diameter); push(a.capacity);
+  } else if (group === "airless") {
+    forms(); push(a.nozzle); push(a.cap); push(a.pump); push(a.capacity);
+    push(a.struct.find((s) => /에어리스|진공/.test(s)) || "에어리스진공");
+  } else {
+    forms(); push(a.tubeKind); push(a.manufacturing); push(a.nozzle); push(a.cap); push(a.pump);
+    if (!diaFromSize) push(a.diameter); push(a.capacity);
+  }
+  a.applicator.forEach(push);
+  a.struct.forEach((s) => { if (group !== "airless" || !/에어리스|진공/.test(s)) push(s); });
+  /* ⚠️ 해석하지 못한 말은 이름에 억지로 붙이지 않는다(지시서 §4).
+     대신 analyzeProduct가 '해석하지 못한 단어'로 수동검토에 보낸다. */
+
+  const opts = [];
+  const addOpt = (v) => { if (v && !opts.some((o) => cpKey(o) === cpKey(v))) opts.push(cpNorm(v)); };
+  a.color.forEach(addOpt); a.printing.forEach(addOpt); a.coating.forEach(addOpt); a.finishing.forEach(addOpt);
+  if (group === "box" && a.paperWeight) addOpt(a.paperWeight + " 지질");
+
+  if (base.length < 2) return { ok: false, name: "", base: [], opts: [], group };
+  return { ok: true, group, base, opts,
+    name: "[코스메팩] " + base.join(" / ") + (opts.length ? " (" + opts.join(" / ") + ")" : "") };
+}
+
+/* ================= C. 생성 결과 검증 (지시서 §3-C의 10가지) ================= */
+const CP_STOPWORD = /^(및|and|the|용|형|개|세트|이상|이하|기타)$/i;
+function verifyName(p, ext, built) {
+  const a = ext.attrs;
+  const gen = cpKey(built.name);
+  const issues = [];
+  const has = (v) => !v || gen.includes(cpKey(v));
+
+  if (!has(a.capacity) && ext.sources.capacity === "제품명") issues.push({ no: 1, msg: "용량 누락: " + a.capacity });
+  if (!has(a.diameter) && ext.sources.diameter === "제품명") issues.push({ no: 2, msg: "구경·파이 누락: " + a.diameter });
+  const covered = (a.formCovered || []).map(cpKey);
+  a.form.forEach((f) => {
+    if (covered.indexOf(cpKey(f)) >= 0) return;             // 머리말이 담고 있음
+    if (!has(f)) issues.push({ no: 3, msg: "형태 누락: " + f });
+  });
+  [["캡", a.cap], ["펌프", a.pump], ["노즐", a.nozzle]].forEach(([lbl, v]) => {
+    if (v && !has(v)) issues.push({ no: 4, msg: lbl + " 누락: " + v });
+  });
+  [].concat(a.color, a.printing, a.coating, a.finishing).forEach((f) => {
+    if (!has(f)) issues.push({ no: 5, msg: "후가공 누락: " + f });
+  });
+  const segs = built.base.map(cpKey);
+  segs.forEach((s, i) => { if (segs.indexOf(s) !== i) issues.push({ no: 6, msg: "중복 표기: " + built.base[i] }); });
+
+  /* ⑦ 원본에 없는 정보가 생성되었는가 — 중대 오류(자동적용 차단).
+       결과의 모든 토막은 '제품명' 또는 '허용된 필드'에서 와야 한다.
+       허용 필드: 카테고리(대분류), 용량필드, 사이즈필드(파이), 사양필드. 재질필드의 지질은 괄호에만. */
+  /* 허용 출처 — 여기서 나온 말이 아니면 '원본에 없는 정보'다.
+     ⚠️ 재질 필드가 지질(평량, "350g")일 때는 허용하지 않는다. 그게 단상자 350g 사고의 근원이다. */
+  const matAllowed = (!a.paperWeight && p.material) ? p.material : "";
+  const allowed = cpKey([p.name, p.category, p.capacity, p.specSize, p.productType, p.manufacturingType,
+    p.capType, p.pumpType, p.diameter, p.composition, matAllowed,
+    a.paperWeight ? a.paperWeight + " 지질" : "", "에어리스진공", "지질"].filter(Boolean).join(" "));
+  // 제품명에서 뽑아 표준 표기로 다듬은 값도 '원본에서 온 것'이다 ("PE 5겹" → "PE튜브 5겹")
+  const canon = (a.tokenMap || []).map((x) => cpKey(x.value));
+  built.base.concat(built.opts).forEach((seg) => {
+    const k = cpKey(seg);
+    if (!k || CP_STOPWORD.test(seg)) return;
+    if (allowed.includes(k)) return;
+    if (canon.indexOf(k) >= 0) return;
+    issues.push({ no: 7, msg: "원본에 없는 정보 생성: " + seg, severe: true });
+  });
+
+  // ⑧ ml ↔ g 변환 — 원본의 단위가 그대로인지
+  const origCap = (cpNorm(p.name).match(CAPACITY_RE) || [])[0] || cpNorm(p.capacity);
+  if (origCap && a.capacity) {
+    const u1 = (origCap.match(/(ml|g|cc)/i) || [])[1], u2 = (a.capacity.match(/(ml|g|cc)/i) || [])[1];
+    if (u1 && u2 && u1.toLowerCase() !== u2.toLowerCase()) {
+      issues.push({ no: 8, msg: "단위가 바뀜: " + origCap + " → " + a.capacity, severe: true });
+    }
+  }
+  // ⑨ 제품 분류가 바뀌었는가
+  if (a.category && built.base.length) {
+    const headK = cpKey(built.base[0]), catK = cpKey(a.category.replace(/\s*\(.*?\)\s*/g, ""));
+    const nameHeadOk = cpKey(p.name || "").includes(headK);
+    if (!headK.includes(catK) && !catK.includes(headK) && !nameHeadOk) {
+      issues.push({ no: 9, msg: "분류가 바뀜: " + a.category + " → " + built.base[0], severe: true });
+    }
+  }
+  // ⑩ 제품을 구별하는 핵심 정보가 삭제되었는가
+  const tmap = {};
+  (a.tokenMap || []).forEach((x) => { tmap[cpKey(x.raw)] = x; });
+  (a.nameTokens || []).forEach((t) => {
+    const k = cpKey(t);
+    if (!k || k.length < 2 || CP_STOPWORD.test(t)) return;
+    if (DIMENSION_RE.test(t.replace(/\(.*\)/, "").trim())) return;   // 치수는 사이즈 필드에 남아 있다
+    if (CP_MATERIAL.some((m) => cpKey(m) === k)) return;                  // 재질은 분류에 녹아 있다
+    if (gen.includes(k)) return;
+    /* 표기를 다듬은 경우("립밤 튜브용기"→"립밤튜브")는 삭제가 아니다 —
+       그 토막이 어떤 속성이 되었는지 보고, 그 값이 결과에 있으면 보존된 것으로 본다. */
+    const mapped = tmap[k];
+    if (mapped && gen.includes(cpKey(mapped.value))) return;
+    if (mapped && covered.indexOf(cpKey(mapped.value)) >= 0) return;
+    issues.push({ no: 10, msg: "핵심 정보 삭제: " + t });
+  });
+  return issues;
+}
+
+/* ================= 최종 분류 ================= */
+function analyzeProduct(p) {
+  const ext = extractSpecs(p);
+  const built = buildName(ext);
+  const already = cpNorm(p.name).indexOf("[코스메팩]") === 0;
+  if (!built.ok) {
+    return { status: "수동검토", reason: "사양 정보가 부족해 이름을 만들 수 없음", name: "", ext, built, issues: [] };
+  }
+  const issues = verifyName(p, ext, built);
+  const severe = issues.filter((i) => i.severe);
+  const out = { name: built.name, ext, built, issues,
+    attrs: ext.attrs, conflicts: ext.conflicts, group: built.group };
+
+  if (ext.attrs.otherBrand) return { ...out, status: "수동검토", reason: "다른 브랜드 표기 [" + ext.attrs.otherBrand + "] — 확인 필요" };
+  if (!ext.attrs.category) return { ...out, status: "수동검토", reason: "카테고리 미지정 — 제품군을 먼저 정해야 함" };
+  if (severe.length) return { ...out, status: "수동검토", reason: "중대: " + severe.map((i) => i.msg).join(" / ") };
+  if (ext.conflicts.length) {
+    return { ...out, status: "수동검토",
+      reason: "정보 충돌: " + ext.conflicts.map((c) => `${c.field}(${c.kept}↔${c.other})`).join(", ") };
+  }
+  if (issues.length) return { ...out, status: "수동검토", reason: issues.map((i) => i.msg).join(" / ") };
+  if (already && cpKey(built.name) === cpKey(p.name)) return { ...out, status: "변경불필요", reason: "이미 표준 형식" };
+  if (already) return { ...out, status: "변경불필요", reason: "이미 표준 형식(정렬만 다름)" };
+  if (!ext.attrs.nameHadSlash && ext.attrs.unknown.length) {
+    return { ...out, status: "수동검토", reason: "해석하지 못한 단어: " + ext.attrs.unknown.join(", ") };
+  }
+  return { ...out, status: "자동적용", reason: "" };
+}
+
+
+
+function generateCosmepackProductName(p) {
+  /* ⚠️ v3 엔진에 위임한다. 반환 형태(ok/name/base/parts/options/used/missing)는 예전 그대로라
+     이 함수를 쓰는 기존 화면·검증 로직이 수정 없이 계속 동작한다. */
+  const res = analyzeProduct(p || {});
+  const a = res.ext ? res.ext.attrs : {};
+  const built = res.built || { ok: false, base: [], opts: [] };
+  /* nameSource는 "이름을 만드는 데 실제로 쓴 항목"을 {필드명: 값} 형태로 남긴다.
+     기존에 저장된 제품 문서와 화면이 이 모양을 기대하므로 형태를 바꾸지 않는다. */
+  const used = {};
+  const put1 = (k, v) => { if (v) used[k] = v; };
+  put1("category", a.category);
+  put1("productType", (a.form || []).join(" / "));
+  put1("manufacturingType", a.manufacturing);
+  put1("material", a.material);
+  put1("capType", a.cap);
+  put1("pumpType", a.pump);
+  put1("diameter", a.diameter);
+  put1("capacity", a.capacity);
+  put1("color", (a.color || []).join(" / "));
+  put1("printing", (a.printing || []).join(" / "));
+  put1("coating", (a.coating || []).join(" / "));
+  put1("finishing", (a.finishing || []).join(" / "));
+  const missing = [];
+  [["category", "제품분류"], ["form", "제품형태"], ["manufacturing", "제조방식"], ["material", "재질"],
+   ["cap", "캡 종류"], ["pump", "펌프 종류"], ["diameter", "구경·파이"], ["capacity", "용량"]].forEach(([k, label]) => {
+    const v = a[k];
+    const empty = Array.isArray(v) ? v.length === 0 : !v;
+    if (empty) missing.push(label);
+  });
+  /* 카테고리가 없으면 어떤 제품군 템플릿을 쓸지 정할 수 없으므로 '확정 불가'로 돌려준다.
+     (isProductSpecIncomplete가 이 값을 보고 '사양 확인 필요'로 분류한다) */
+  if (!built.ok || !a.category) {
+    return { ok: false, name: built.ok ? res.name : "", base: "", parts: [], options: [], used: used,
+      missing: missing.length ? missing : ["사양 정보"], v3: res };
+  }
+  return { ok: true, name: res.name, base: built.base.join(" / "), parts: built.base,
+    options: built.opts, used: used, missing: missing, v3: res };
 }
 
 /* ===================== 🔎 중복 제품 방지 (지시서 6장) =====================
@@ -9772,123 +10228,188 @@ function ProductsView({ products, factories, proposals, sampleStock, onBack, onD
       "지금 이름"과 "표준 규칙으로 만들면 이렇게 된다"를 나란히 보여주기만 하고,
       체크한 건에 대해서만, 그것도 **제품명 관련 필드만** 바꾼다.
       제품 ID·SKU·사진·공장·제안서 연결·수량별 단가는 patch에 아예 들어가지 않으므로 손상될 수 없다. */
+/* 🏷️ 표준 제품명 일괄 검토 (지시서 §5)
+   세 영역으로 나눈다: 자동 적용 가능 / 수동 검토 필요 / 이미 적합.
+   ⚠️ 기본 선택은 **아무것도 체크하지 않는다.** 관리자가 하나씩 확인해서 고른 것만 바뀐다.
+   추천 이름은 직접 고쳐서 적용할 수 있다. */
 function StandardNameReviewModal({ products, onClose, onApply }) {
+  const [tab, setTab] = useState("auto");       // auto | manual | ok
+  const [query, setQuery] = useState("");
+  const [cat, setCat] = useState("");
+  const [checked, setChecked] = useState({});   // { [제품id]: true } — 기본 빈 상태
+  const [nameEdits, setNameEdits] = useState({}); // { [제품id]: "고친 추천 이름" }
+  const [applying, setApplying] = useState(false);
+
   const rows = useMemo(() => (products || []).map((p) => {
-    const r = generateCosmepackProductName(p);
-    const cur = String(p.name || "").trim();
-    let state;
-    if (!r.ok) state = "manual";                       // 자동 생성 불가 → 수동 검토 필요
-    else if (cur === r.name) state = "same";           // 이미 표준명과 같음
-    else if (p.nameEdited) state = "edited";           // 사람이 직접 고친 이름 → 기본 제외
-    else state = "change";
-    return { p, gen: r, cur, state };
+    const res = analyzeProduct(p);
+    const a = (res.ext && res.ext.attrs) || {};
+    const issues = res.issues || [];
+    return {
+      p, res,
+      cur: String(p.name || "").trim(),
+      gen: res.name || "",
+      status: p.nameEdited && res.status === "자동적용" ? "수동검토" : res.status,
+      reason: p.nameEdited && res.status === "자동적용" ? "사람이 직접 고친 이름 — 덮어쓰지 않음" : (res.reason || ""),
+      specs: [
+        a.capacity && "용량 " + a.capacity,
+        a.diameter && "구경 " + a.diameter,
+        a.manufacturing && "제조 " + a.manufacturing,
+        a.tubeKind, a.cap && "캡 " + a.cap, a.pump && "펌프 " + a.pump,
+        a.nozzle && "토출구 " + a.nozzle,
+        (a.form || []).join(" "),
+        (a.applicator || []).join(" "),
+      ].filter(Boolean).join(" · "),
+      missing: issues.filter((i) => [1, 2, 3, 4, 5, 10].indexOf(i.no) >= 0).map((i) => i.msg),
+      invented: issues.filter((i) => i.no === 7).map((i) => i.msg),
+      conflicts: (res.conflicts || []).map((c) => `${c.field}: ${c.kept}(${c.keptFrom}) ↔ ${c.other}(${c.otherFrom})`),
+    };
   }), [products]);
 
-  const groups = {
-    change: rows.filter((r) => r.state === "change"),
-    edited: rows.filter((r) => r.state === "edited"),
-    manual: rows.filter((r) => r.state === "manual"),
-    same: rows.filter((r) => r.state === "same"),
-  };
-  const [tab, setTab] = useState("change");
-  // 기본 선택은 '변경 대상'만 — 사람이 고친 이름과 생성 불가 건은 눌러서 직접 골라야 한다
-  const [picked, setPicked] = useState(() => new Set(groups.change.map((r) => String(r.p.id))));
-  const [busy, setBusy] = useState(false);
+  const cats = useMemo(() => {
+    const m = {};
+    rows.forEach((r) => { const c = r.p.category || "(미분류)"; m[c] = (m[c] || 0) + 1; });
+    return Object.keys(m).sort((a, b) => m[b] - m[a]);
+  }, [rows]);
 
-  const TABS = [
-    ["change", `변경 대상 ${groups.change.length}`, "표준 규칙으로 이름이 새로 만들어지는 제품"],
-    ["edited", `직접 수정한 이름 ${groups.edited.length}`, "사람이 고친 이름이라 기본 제외 — 바꾸려면 직접 선택"],
-    ["manual", `수동 검토 필요 ${groups.manual.length}`, "사양이 부족해 자동 생성이 안 되는 제품"],
-    ["same", `이미 일치 ${groups.same.length}`, "지금 이름이 이미 표준명과 같음"],
-  ];
-  const list = groups[tab] || [];
-  const selectable = tab !== "manual" && tab !== "same";
-  const toggle = (id) => setPicked((prev) => { const n = new Set(prev); const k = String(id); n.has(k) ? n.delete(k) : n.add(k); return n; });
-  const allOn = list.length > 0 && list.every((r) => picked.has(String(r.p.id)));
-  const toggleAll = () => setPicked((prev) => {
-    const n = new Set(prev);
-    list.forEach((r) => (allOn ? n.delete(String(r.p.id)) : n.add(String(r.p.id))));
-    return n;
+  const groups = {
+    auto: rows.filter((r) => r.status === "자동적용"),
+    manual: rows.filter((r) => r.status === "수동검토"),
+    ok: rows.filter((r) => r.status === "변경불필요"),
+  };
+  const visible = (groups[tab] || []).filter((r) => {
+    if (cat && (r.p.category || "(미분류)") !== cat) return false;
+    if (!query.trim()) return true;
+    const q = searchNorm(query);
+    return searchNorm([r.cur, r.gen, r.p.sku, r.p.category, r.specs].filter(Boolean).join(" ")).includes(q);
   });
-  const chosen = rows.filter((r) => r.gen.ok && picked.has(String(r.p.id)) && r.cur !== r.gen.name);
+
+  const nameOf = (r) => (nameEdits[r.p.id] !== undefined ? nameEdits[r.p.id] : r.gen);
+  const chosen = rows.filter((r) => checked[r.p.id] && nameOf(r).trim());
+  const toggleAllVisible = (on) => {
+    const next = { ...checked };
+    visible.forEach((r) => { if (on) next[r.p.id] = true; else delete next[r.p.id]; });
+    setChecked(next);
+  };
+
+  const apply = async () => {
+    if (chosen.length === 0) return;
+    if (!window.confirm(
+      `${chosen.length}건의 제품명을 바꿉니다.\n\n` +
+      `· SKU · 사진 · 공장 · 제안서/인보이스 연결 · 수량별 단가는 바뀌지 않습니다.\n` +
+      `· 기존 이름은 변경 이력에 보관되어 되돌릴 수 있습니다.\n\n계속할까요?`)) return;
+    setApplying(true);
+    try {
+      await onApply(chosen.map((r) => ({
+        id: r.p.id, name: nameOf(r).trim(), originalName: r.cur,
+        used: (r.res.ext && r.res.ext.sources) || {},
+        missing: r.missing,
+      })));
+      setChecked({});
+    } finally { setApplying(false); }
+  };
+
+  const TABS = [["auto", "자동 적용 가능", groups.auto.length, "emerald"],
+                ["manual", "수동 검토 필요", groups.manual.length, "amber"],
+                ["ok", "이미 적합", groups.ok.length, "slate"]];
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full flex flex-col" style={{ width: "95vw", maxWidth: "1200px", height: "88vh" }}>
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "97vw", maxWidth: "1400px", height: "90vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
           <div>
             <h2 className="text-base font-bold text-slate-800">🏷️ 표준 제품명 일괄 검토</h2>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              아직 아무것도 바뀌지 않았습니다. 체크한 제품의 <b>제품명만</b> 바뀌며, SKU·사진·공장·제안서 연결·수량별 단가는 그대로 유지됩니다.
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              전체 {rows.length}건 · 확인하신 제품만 변경됩니다. 기본값은 아무것도 선택되지 않은 상태입니다.
             </p>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
 
-        <div className="px-6 pt-3 flex flex-wrap gap-2 shrink-0">
-          {TABS.map(([k, label, desc]) => (
-            <button key={k} onClick={() => setTab(k)} title={desc}
-              className={"px-3 py-1.5 rounded-lg text-xs font-bold border " +
-                (tab === k ? "bg-slate-800 text-white border-transparent" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50")}>
-              {label}
+        <div className="px-6 pt-3 flex items-center gap-2 flex-wrap shrink-0">
+          {TABS.map(([k, label, n, tone]) => (
+            <button key={k} onClick={() => setTab(k)}
+              className={"text-xs px-3 py-1.5 rounded-lg font-medium border "
+                + (tab === k
+                  ? (tone === "emerald" ? "bg-emerald-600 text-white border-emerald-600"
+                    : tone === "amber" ? "bg-amber-500 text-white border-amber-500"
+                    : "bg-slate-600 text-white border-slate-600")
+                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50")}>
+              {label} ({n})
             </button>
           ))}
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="제품명·SKU·사양 검색"
+            className="ml-auto text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A] w-56" />
+          <select value={cat} onChange={(e) => setCat(e.target.value)}
+            className="text-xs px-2 py-1.5 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]">
+            <option value="">전체 카테고리</option>
+            {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
         </div>
-        <p className="px-6 pt-2 text-[11px] text-slate-500 shrink-0">{(TABS.find((t) => t[0] === tab) || [])[2]}</p>
 
-        <div className="flex-1 overflow-y-auto px-6 py-3">
-          {list.length === 0 ? (
-            <div className="text-center text-sm text-slate-400 py-16">해당하는 제품이 없습니다.</div>
-          ) : (
-            <table className="w-full text-xs border-collapse">
-              <thead className="sticky top-0 bg-slate-50">
-                <tr className="text-slate-500">
-                  <th className="border border-slate-200 px-2 py-2 w-10">
-                    {selectable && <input type="checkbox" checked={allOn} onChange={toggleAll} />}
-                  </th>
-                  <th className="border border-slate-200 px-2 py-2 text-left">지금 제품명</th>
-                  <th className="border border-slate-200 px-2 py-2 text-left">표준 규칙으로 만들면</th>
-                  <th className="border border-slate-200 px-2 py-2 w-28">SKU</th>
+        <div className="px-6 py-2 flex items-center gap-2 text-[11px] text-slate-500 shrink-0">
+          <button onClick={() => toggleAllVisible(true)} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">보이는 {visible.length}건 선택</button>
+          <button onClick={() => toggleAllVisible(false)} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">선택 해제</button>
+          {tab === "manual" && <span className="text-amber-600">수동 검토 대상입니다. 추천 이름을 직접 고친 뒤 선택해주세요.</span>}
+          {tab === "ok" && <span>이미 표준 형식입니다. 바꿀 필요가 없습니다.</span>}
+        </div>
+
+        <div className="px-6 overflow-y-auto flex-1">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-slate-500 border-b border-slate-200">
+                <th className="w-8 py-2"></th>
+                <th className="text-left py-2 font-medium w-1/4">기존 제품명</th>
+                <th className="text-left py-2 font-medium w-1/4">추천 표준 제품명 <span className="text-[10px] text-slate-400">(수정 가능)</span></th>
+                <th className="text-left py-2 font-medium">추출된 핵심 사양</th>
+                <th className="text-left py-2 font-medium w-48">검토 사항</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.length === 0 && <tr><td colSpan={5} className="text-center text-slate-400 py-10">해당하는 제품이 없습니다.</td></tr>}
+              {visible.map((r) => (
+                <tr key={r.p.id} className="border-b border-slate-100 align-top">
+                  <td className="py-2">
+                    <input type="checkbox" checked={!!checked[r.p.id]}
+                      onChange={(e) => setChecked((prev) => { const n = { ...prev }; if (e.target.checked) n[r.p.id] = true; else delete n[r.p.id]; return n; })} />
+                  </td>
+                  <td className="py-2 pr-2 text-slate-700" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+                    {r.cur || "(이름 없음)"}
+                    <div className="text-[10px] text-slate-400 mt-0.5">{r.p.category || "(미분류)"}{r.p.sku ? " · " + r.p.sku : ""}</div>
+                  </td>
+                  <td className="py-2 pr-2">
+                    <textarea rows={2} value={nameOf(r)}
+                      onChange={(e) => setNameEdits((prev) => ({ ...prev, [r.p.id]: e.target.value }))}
+                      className="w-full text-xs px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A] resize-y" />
+                  </td>
+                  <td className="py-2 pr-2 text-[10px] text-slate-500" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+                    {r.specs || "-"}
+                  </td>
+                  <td className="py-2 text-[10px]" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+                    {r.invented.length > 0 && (
+                      <div className="text-red-600 font-bold mb-0.5">⛔ 원본에 없는 정보: {r.invented.join(" / ")}</div>
+                    )}
+                    {r.missing.length > 0 && <div className="text-amber-700 mb-0.5">⚠️ {r.missing.join(" / ")}</div>}
+                    {r.conflicts.length > 0 && <div className="text-violet-700 mb-0.5">↔ 충돌 {r.conflicts.join(" / ")}</div>}
+                    {r.invented.length === 0 && r.missing.length === 0 && r.conflicts.length === 0 && (
+                      <span className="text-slate-400">{r.reason || "이상 없음"}</span>
+                    )}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {list.slice(0, 300).map((r) => (
-                  <tr key={r.p.id} className="align-top">
-                    <td className="border border-slate-200 px-2 py-2 text-center">
-                      {selectable && <input type="checkbox" checked={picked.has(String(r.p.id))} onChange={() => toggle(r.p.id)} />}
-                    </td>
-                    <td className="border border-slate-200 px-2 py-2 text-slate-600 break-all">{r.cur || <span className="text-slate-300">(이름 없음)</span>}</td>
-                    <td className="border border-slate-200 px-2 py-2 break-all">
-                      {r.gen.ok
-                        ? <b className="text-slate-800">{r.gen.name}</b>
-                        : <span className="text-amber-700">만들 수 없음 — 부족한 항목: {r.gen.missing.join(", ") || "-"}</span>}
-                    </td>
-                    <td className="border border-slate-200 px-2 py-2 text-slate-400 font-mono text-[10px] break-all">{r.p.sku || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {list.length > 300 && <p className="text-[11px] text-slate-400 mt-2">※ 화면에는 300건까지만 표시합니다(선택·적용은 체크한 건 전체에 적용됩니다).</p>}
+              ))}
+            </tbody>
+          </table>
         </div>
 
-        <div className="px-6 py-3 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0">
-          <span className="text-xs text-slate-500">선택한 <b className="text-slate-800">{chosen.length}</b>건의 제품명을 바꿉니다.</span>
-          <div className="flex gap-2">
-            <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm">닫기</button>
-            <button
-              disabled={busy || chosen.length === 0}
-              onClick={async () => {
-                if (!window.confirm(`선택한 ${chosen.length}개 제품의 이름을 표준 제품명으로 바꿉니다.\n\nSKU·사진·공장·제안서 연결·수량별 단가는 그대로 유지됩니다.\n계속할까요?`)) return;
-                setBusy(true);
-                await onApply(chosen.map((r) => ({ id: r.p.id, name: r.gen.name, used: r.gen.used, missing: r.gen.missing })));
-                setBusy(false);
-                onClose();
-              }}
-              className="px-4 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed">
-              {busy ? "적용 중..." : `선택 ${chosen.length}건 표준 제품명으로 변경`}
-            </button>
+        <div className="px-6 py-4 border-t border-slate-200 flex items-center gap-3 shrink-0">
+          <div className="text-[11px] text-slate-500 mr-auto">
+            선택 <b className="text-slate-800">{chosen.length}</b>건
+            <span className="ml-2 text-slate-400">SKU·사진·공장·제안서 연결·단가는 바뀌지 않습니다. 기존 이름은 되돌릴 수 있게 보관됩니다.</span>
           </div>
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm">닫기</button>
+          <button onClick={apply} disabled={chosen.length === 0 || applying}
+            className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-bold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+            {applying ? "적용 중…" : `선택한 ${chosen.length}건 적용`}
+          </button>
         </div>
       </div>
     </div>
@@ -14636,11 +15157,21 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     if (list.length === 0) return;
     let done = 0; const failed = [];
     for (const r of list) {
+      /* ⚠️ 바꾸는 것은 이름뿐이다. SKU·사진·공장·제안서 연결·수량별 단가는 patch에 넣지 않는다.
+         기존 이름은 nameOriginal과 nameHistory에 남겨 언제든 되돌릴 수 있게 한다(지시서 §7). */
+      const current = productsList.find((x) => String(x.id) === String(r.id)) || {};
+      const prevName = r.originalName || current.name || "";
+      const history = Array.isArray(current.nameHistory) ? current.nameHistory.slice(-9) : [];
       const patch = {
         name: r.name, nameAuto: r.name, nameSource: r.used || {},
         nameMissing: (r.missing || []).join(", "), nameEdited: false,
         specStatus: "확인완료", nameGeneratedAt: nowDateTimeStr(),
         nameGeneratedBy: (roleUser && roleUser.displayName) || "",
+        nameOriginal: current.nameOriginal || prevName,      // 맨 처음 이름은 한 번만 기록해 둔다
+        nameHistory: history.concat([{
+          at: nowDateTimeStr(), by: (roleUser && roleUser.displayName) || "",
+          from: prevName, to: r.name,
+        }]),
       };
       setProductsList((prev) => prev.map((p) => (String(p.id) === String(r.id) ? { ...p, ...patch } : p)));
       try {
