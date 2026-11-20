@@ -1950,6 +1950,82 @@ const stripBrackets = (s) => String(s || "").replace(/[\[\]\(\)\/-]/g, "");
    "유리용기"처럼 붙여 친 검색어와 부분일치가 되지 않았다(→ "등록했는데 검색이 안 된다"의 원인).
    검색어·제품명 양쪽을 같은 규칙으로 정규화하면 띄어쓰기를 어떻게 치든 동일하게 걸린다. */
 const searchNorm = (s) => stripBrackets(s).toLowerCase().replace(/\s+/g, "");
+/* ===================== 📦 샘플 재고 ↔ 제품관리 DB 연결 =====================
+   sample_stock은 원래 productName(문자열) 하나로만 제품을 가리켰다. 제품관리에서 이름을 바꾸면
+   연결이 끊어지고, 같은 제품인지도 이름이 완전히 같을 때만 알 수 있었다.
+   그래서 productId(제품 문서 ID)를 함께 저장하되, **기존 데이터를 지우거나 바꾸지 않는다.**
+   productId가 없는 옛 재고는 지금까지처럼 productName으로 동작하고, 관리자가 확인해서
+   하나씩 연결하면 그때부터 ID 기반으로 동작한다. 두 방식이 동시에 돌아간다. */
+
+// 재고 1건에 연결된 제품을 찾는다. ① productId ② SKU ③ (옛 데이터용) 이름 완전일치 순.
+function stockLinkedProduct(stockItem, products) {
+  const s = stockItem || {};
+  const list = Array.isArray(products) ? products : [];
+  if (s.productId != null && String(s.productId) !== "") {
+    const byId = list.find((p) => String(p.id) === String(s.productId));
+    if (byId) return byId;
+  }
+  if (s.productSku) {
+    const bySku = list.find((p) => p.sku && String(p.sku) === String(s.productSku));
+    if (bySku) return bySku;
+  }
+  const nm = searchNorm(s.productName || "");
+  if (!nm) return null;
+  const exact = list.filter((p) => searchNorm(p.name || "") === nm);
+  return exact.length === 1 ? exact[0] : null;   // 여러 개면 "확실하지 않음" — 자동 연결하지 않는다
+}
+
+/* 목록에 보여줄 제품명 — 연결돼 있으면 제품관리의 **최신 이름**을 보여준다(지시서 §4).
+   등록 당시의 이름은 productName에 그대로 남아 있어 언제든 확인할 수 있다. */
+function stockDisplayName(stockItem, products) {
+  const linked = stockLinkedProduct(stockItem, products);
+  return (linked && linked.name) || (stockItem && stockItem.productName) || "(이름 없음)";
+}
+
+/* 같은 제품 + 같은 보관 위치의 재고가 이미 있는가(지시서 §7).
+   보관 위치가 다르면 별개로 관리해야 하므로 중복이 아니다. */
+function findStockDuplicate(stockList, productId, productName, location) {
+  const loc = searchNorm(location || "");
+  return (Array.isArray(stockList) ? stockList : []).find((s) => {
+    if (searchNorm(s.location || "") !== loc) return false;
+    if (productId != null && String(productId) !== "" && s.productId != null && String(s.productId) !== "") {
+      return String(s.productId) === String(productId);
+    }
+    return searchNorm(s.productName || "") === searchNorm(productName || "");
+  }) || null;
+}
+
+/* 아직 제품과 연결되지 않은 옛 재고에 대해 연결 후보를 찾아준다(지시서 §6).
+   ⚠️ 자동으로 연결하지 않는다. 후보가 1건이어도 관리자가 눌러서 확정해야 한다. */
+function suggestStockLinks(stockItem, products) {
+  const s = stockItem || {};
+  const list = Array.isArray(products) ? products : [];
+  const nm = String(s.productName || "").trim();
+  if (!nm) return [];
+  if (s.productSku) {
+    const bySku = list.filter((p) => p.sku && String(p.sku) === String(s.productSku));
+    if (bySku.length) return bySku.map((p) => ({ product: p, by: "SKU 일치", strong: true }));
+  }
+  const exact = list.filter((p) => searchNorm(p.name || "") === searchNorm(nm));
+  if (exact.length) return exact.map((p) => ({ product: p, by: "제품명 완전일치", strong: exact.length === 1 }));
+  // 이름이 "제품명 / 규격" 형태로 저장돼 있던 경우가 많아 앞부분으로도 찾아본다
+  const head = nm.split("/")[0].trim();
+  return smartProductSearch(list, head || nm).slice(0, 8).map((p) => ({ product: p, by: "유사 검색", strong: false }));
+}
+
+// 특정 제품의 본사 샘플 재고(위치별로 여러 건일 수 있다) — 제품관리 화면에서 쓴다(지시서 §8)
+function stockRowsForProduct(product, stockList) {
+  if (!product) return [];
+  return (Array.isArray(stockList) ? stockList : []).filter((s) => {
+    if (s.productId != null && String(s.productId) !== "") return String(s.productId) === String(product.id);
+    if (s.productSku && product.sku) return String(s.productSku) === String(product.sku);
+    return searchNorm(s.productName || "") === searchNorm(product.name || "");
+  });
+}
+function stockTotalForProduct(product, stockList) {
+  return stockRowsForProduct(product, stockList).reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
+}
+
 function smartProductSearch(products, query) {
   const keywords = String(query || "").split(/[,\s]+/).map((k) => searchNorm(k)).filter(Boolean);
   if (keywords.length === 0) return (products || []).slice(0, 8);
@@ -8357,7 +8433,7 @@ function SimilarProductsModal({ product, allProducts, onClose }) {
   );
 }
 
-function ProductDetailModal({ product, onClose, onOpenSimilar }) {
+function ProductDetailModal({ product, sampleStock, onClose, onOpenSimilar }) {
   const tiers = product.priceTiers || [];
   const refItems = (product.referenceImages || []).map((r) => (typeof r === "string" ? { image: r, note: "" } : r)).filter((r) => r.image);
   const fileFields = [["containerDieline", "용기칼선"], ["boxDieline", "단상자칼선"], ["otherFile", "기타파일"]]
@@ -8401,6 +8477,32 @@ function ProductDetailModal({ product, onClose, onOpenSimilar }) {
           </div>
         </div>
         <div className="p-6 overflow-y-auto flex-1">
+          {/* 📦 한국 본사 샘플 재고 보유 현황(지시서 §8) — 보기 전용.
+              수량·위치 수정은 샘플 재고 화면에서 한다. 여기서 제품 정보를 바꾸지 않는다. */}
+          {(() => {
+            const myStock = stockRowsForProduct(product, sampleStock);
+            const total = myStock.reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
+            if (!sampleStock) return null;
+            return (
+              <div className={"mb-5 rounded-lg border px-3 py-2.5 "
+                + (total > 0 ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50")}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold text-slate-700">📦 한국 본사 샘플</span>
+                  {total > 0 ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-600 text-white font-bold">보유 {total}개</span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 font-medium">보유 없음</span>
+                  )}
+                  {myStock.map((s) => (
+                    <span key={s.id} className="text-[11px] text-slate-600 bg-white border border-slate-200 rounded px-2 py-0.5">
+                      {s.location || "위치 미지정"} · {Number(s.quantity) || 0}개
+                      {s.condition ? " · " + s.condition : ""}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
           <div className="flex gap-6 mb-5">
             {product.image && (
               <ZoomableImage src={product.image} className="w-32 h-32 object-cover rounded-lg border border-slate-200 shrink-0" />
@@ -9127,7 +9229,7 @@ function BatchFactoryUpdateModal({ products, onRun, onClose }) {
   );
 }
 
-function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onUpdateWithLinks, onLinkProposalItem, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection, onBackfillFromProposals, backfillProgress, openNewProductForm, onConsumeOpenNew, onProductRegistered, onApplyStandardNames }) {
+function ProductsView({ products, factories, proposals, sampleStock, onBack, onDelete, onAdd, onAddDuplicate, onBulkAdd, onUseInSourcing, onUpdate, onUpdateWithLinks, onLinkProposalItem, onDedupe, onAutoAssignCategories, onStripBrandPrefix, onOpenProposal, onSyncFactories, onUploadZip, onDeleteAllProducts, onDeleteAllUploaded, onSyncProposalLinks, onAutoMergeBoxHero, onBulkDelete, onBulkUpdateFactoryInfo, onMergeProducts, isAdmin, initialViewProduct, onConsumeInitialView, onBulkCompressImages, bulkCompressProgress, onBulkMigrateInspection, onBackfillFromProposals, backfillProgress, openNewProductForm, onConsumeOpenNew, onProductRegistered, onApplyStandardNames }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("date_desc");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -9365,7 +9467,7 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
 
   return (
     <main className="max-w-7xl mx-auto px-6 py-8">
-      {viewingProduct && <ProductDetailModal product={viewingProduct} onClose={() => setViewingProduct(null)} onOpenSimilar={(p) => { setViewingProduct(null); setViewingSimilarProduct(p); }} />}
+      {viewingProduct && <ProductDetailModal product={viewingProduct} sampleStock={sampleStock} onClose={() => setViewingProduct(null)} onOpenSimilar={(p) => { setViewingProduct(null); setViewingSimilarProduct(p); }} />}
       {viewingSimilarProduct && <SimilarProductsModal product={viewingSimilarProduct} allProducts={products} onClose={() => setViewingSimilarProduct(null)} />}
       {viewingProductProposals && (
         <ProductProposalsModal product={viewingProductProposals} proposals={proposals} onClose={() => setViewingProductProposals(null)}
@@ -9546,6 +9648,13 @@ function ProductsView({ products, factories, proposals, onBack, onDelete, onAdd,
                     {p.sku && <div className="text-xs mt-0.5" style={{ color: "#1e293b" }}>{p.sku}</div>}
                     {/* ⚠️ 자동 등록 때 비슷한 제품이 있었지만 같다고 확신할 수 없어 합치지 않은 건 —
                         관리자가 확인해 [선택 제품 병합]으로 합치거나 그대로 두면 된다. */}
+                    {/* 📦 본사 샘플 보유 — 제품관리 목록에서 바로 보이게 한다(지시서 §8) */}
+                    {stockTotalForProduct(p, sampleStock) > 0 && (
+                      <div className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold inline-block mr-1"
+                        title={stockRowsForProduct(p, sampleStock).map((s) => (s.location || "위치 미지정") + " " + (Number(s.quantity) || 0) + "개").join(" / ")}>
+                        📦 샘플 {stockTotalForProduct(p, sampleStock)}개
+                      </div>
+                    )}
                     {p.dupReviewOf && (
                       <div className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold inline-block"
                         title={`'${p.dupReviewName || "기존 제품"}'과(와) ${p.dupReviewBy || "일부 사양"}. 자동 병합하지 않았습니다.`}>
@@ -10381,9 +10490,16 @@ function SampleAnnounceModal({ shippingFees, onClose }) {
   );
 }
 
-function StockPickerModal({ stock, productName, onClose, onPick }) {
-  // 상단에서 선택된 "요청 제품"과 정확히 이름이 일치하는 재고만 보여준다(다른 제품 재고는 아예 안 보이게 필터링)
-  const matched = (stock || []).filter((s) => s.productName === productName);
+function StockPickerModal({ stock, products, productName, onClose, onPick }) {
+  /* 요청 제품에 해당하는 재고만 보여준다.
+     ⭐ 이름 문자열 비교에만 의존하지 않는다 — 제품관리에서 이름을 바꾸면 재고의 등록 당시 이름과
+        달라져서 "재고가 있는데 안 보이는" 일이 생긴다. 연결된 제품의 최신 이름으로도 맞춰본다. */
+  const matched = (stock || []).filter((s) => {
+    if (s.productName === productName) return true;
+    const linked = stockLinkedProduct(s, products);
+    if (linked && searchNorm(linked.name || "") === searchNorm(productName || "")) return true;
+    return searchNorm(s.productName || "") === searchNorm(productName || "");
+  });
   const available = matched.filter((s) => (Number(s.quantity) || 0) > 0);
   const totalQty = available.reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
   const [selected, setSelected] = useState(null); // 클릭해서 고른 재고 항목(출고수량을 정하기 전 단계)
@@ -10456,7 +10572,7 @@ function StockPickerModal({ stock, productName, onClose, onPick }) {
   );
 }
 
-function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId, presetData, onClose, onSave, clients }) {
+function SampleCreateModal({ accounts, proposals, products, sampleStock, initialProposalId, presetData, onClose, onSave, clients }) {
   const preset = presetData || {};
   const assigneeOptions = accounts || [];
   const [sampleType, setSampleType] = useState(preset.sampleType || "general"); // "general"(1차 일반확인) | "ct"(2차 CT맞춤제작)
@@ -10656,7 +10772,7 @@ function SampleCreateModal({ accounts, proposals, sampleStock, initialProposalId
           </div>
         </div>
         {showStockPicker && (
-          <StockPickerModal stock={sampleStock} productName={productName} onClose={() => setShowStockPicker(false)} onPick={(s, qty) => { setPickedStock(s); setProductName(s.productName); setStockQty(qty); setShowStockPicker(false); }} />
+          <StockPickerModal stock={sampleStock} products={products} productName={productName} onClose={() => setShowStockPicker(false)} onPick={(s, qty) => { setPickedStock(s); setProductName(s.productName); setStockQty(qty); setShowStockPicker(false); }} />
         )}
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 shrink-0">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">취소</button>
@@ -10915,7 +11031,7 @@ function SampleInvoiceModal({ sample, products, proposals, sampleStock, onDecrem
         <SampleApprovalSendModal sample={sample} kind="sample" qty={qty} grandTotal={grandTotal} supplyTotal={supplyTotal} onClose={() => setShowApprovalSend(false)} />
       )}
       {showStockPicker && (
-        <StockPickerModal stock={sampleStock} productName={productName} onClose={() => setShowStockPicker(false)} onPick={pickStockForInvoice} />
+        <StockPickerModal stock={sampleStock} products={products} productName={productName} onClose={() => setShowStockPicker(false)} onPick={pickStockForInvoice} />
       )}
       <div className={"bg-white overflow-hidden flex flex-col mx-auto " + (publicView ? "w-full" : "rounded-xl w-full")}
         style={publicView ? undefined : { width: "97vw", maxWidth: "1420px", height: "88vh" }} onClick={(e) => e.stopPropagation()}>
@@ -11642,25 +11758,59 @@ function SampleCard({ sample, accounts, products, proposals, sampleStock, onDecr
   );
 }
 
-function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onSaveEdits, onDelete, onClose }) {
-  const [newName, setNewName] = useState("");
+/* 📦 한국 본사 샘플 재고 — 제품관리 DB에서 제품을 '선택'해서 등록한다(지시서 §3).
+   제품 정보(이름·사진·SKU·재질·규격·공장)는 제품관리가 기준이고, 이 화면은 **수량과 보관 위치만** 관리한다.
+   ⚠️ 기존 재고(productId 없음)는 그대로 보이고 그대로 동작한다. 연결은 관리자가 확인 후 하나씩 한다. */
+function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onSaveEdits, onDelete, onClose, onOpenProduct }) {
+  const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState(null);      // 검색에서 고른 제품(제품관리 문서)
   const [newQty, setNewQty] = useState(1);
   const [newLocation, setNewLocation] = useState("본사 창고");
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [edits, setEdits] = useState({}); // { [재고id]: {productName?, quantity?, location?} } — [💾수정저장] 누르기 전까지의 임시 수정본
+  const [newCondition, setNewCondition] = useState("");
+  const [newNote, setNewNote] = useState("");
+  const [edits, setEdits] = useState({});          // { [재고id]: {quantity?, location?, condition?, note?} }
   const [saved, setSaved] = useState(false);
-  // 제품 관리 DB에서 실시간 검색(다중키워드+유사도순 정렬은 기존 smartProductSearch 재사용) — 최대 6개만 노출
-  const suggestions = newName.trim() ? smartProductSearch(products, newName).slice(0, 6) : [];
-  const pickSuggestion = (p) => {
-    setNewName([p.name, p.specSize].filter(Boolean).join(" / ")); // 정확한 전체 제품명+규격을 그대로 삽입(오기입 방지)
-    setShowSuggestions(false);
-  };
+  const [linkTarget, setLinkTarget] = useState(null); // 옛 재고를 제품과 연결하는 중
+  const suggestions = query.trim() ? smartProductSearch(products, query).slice(0, 8) : [];
+
   const addRow = () => {
-    if (!newName.trim()) return;
-    onAdd({ productName: newName.trim(), quantity: Number(newQty) || 0, location: newLocation.trim() || "본사 창고" });
-    setNewName(""); setNewQty(1);
+    if (!picked) return;
+    const loc = newLocation.trim() || "본사 창고";
+    const qty = Number(newQty) || 0;
+    /* 지시서 §7 — 같은 제품 + 같은 위치면 새로 만들지 않고 기존 수량에 더할지 묻는다.
+       위치가 다르면 별개 재고이므로 그대로 새로 만든다. 기존 수량은 절대 덮어쓰지 않는다. */
+    const dup = findStockDuplicate(stock, picked.id, picked.name, loc);
+    if (dup) {
+      const cur = Number(dup.quantity) || 0;
+      const ok = window.confirm(
+        `이미 등록된 샘플 재고가 있습니다.\n\n` +
+        `${stockDisplayName(dup, products)}\n보관 위치: ${dup.location || "-"}\n현재 수량: ${cur}개\n\n` +
+        `기존 재고에 ${qty}개를 추가하시겠습니까?  (${cur} + ${qty} = ${cur + qty}개)`);
+      if (!ok) return;
+      const patch = { quantity: cur + qty };
+      if (!dup.productId && picked.id != null) {          // 이참에 연결도 해준다(수량·위치는 건드리지 않음)
+        patch.productId = String(picked.id);
+        patch.productSku = picked.sku || "";
+        patch.linkedAt = nowDateTimeStr();
+      }
+      onUpdate(dup, patch);
+      setPicked(null); setQuery(""); setNewQty(1);
+      return;
+    }
+    onAdd({
+      productId: String(picked.id),
+      productSku: picked.sku || "",
+      productName: picked.name || "",     // 등록 당시 이름 스냅샷 — 제품명이 바뀌어도 이 값은 남는다
+      quantity: qty,
+      location: loc,
+      condition: newCondition.trim(),
+      note: newNote.trim(),
+      linkedAt: nowDateTimeStr(),
+    });
+    setPicked(null); setQuery(""); setNewQty(1); setNewCondition(""); setNewNote("");
   };
-  const getVal = (s, field) => (edits[s.id] && edits[s.id][field] !== undefined ? edits[s.id][field] : s[field]);
+
+  const getVal = (s, field) => (edits[s.id] && edits[s.id][field] !== undefined ? edits[s.id][field] : (s[field] !== undefined ? s[field] : ""));
   const setEditField = (id, field, value) => setEdits((prev) => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
   const saveEdits = async () => {
     await onSaveEdits(edits);
@@ -11668,81 +11818,248 @@ function SampleStockModal({ stock, products, isAdmin, onAdd, onUpdate, onSaveEdi
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
+  const confirmLink = (s, p) => {
+    if (!window.confirm(`"${s.productName}" 재고를\n\n제품: ${p.name}\nSKU: ${p.sku || "-"}\n\n이 제품과 연결할까요?\n(수량 ${s.quantity}개와 보관 위치는 그대로 유지됩니다)`)) return;
+    onUpdate(s, { productId: String(p.id), productSku: p.sku || "", linkedAt: nowDateTimeStr() });
+    setLinkTarget(null);
+  };
+
+  const rows = Array.isArray(stock) ? stock : [];
+  const unlinked = rows.filter((s) => !stockLinkedProduct(s, products));
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "95vw", maxWidth: "980px", height: "80vh" }} onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl w-full overflow-hidden flex flex-col" style={{ width: "96vw", maxWidth: "1120px", height: "86vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
-          <h2 className="text-base font-bold text-slate-800">📦 한국 본사 샘플 재고 현황</h2>
+          <div>
+            <h2 className="text-base font-bold text-slate-800">📦 한국 본사 샘플 재고 현황</h2>
+            <p className="text-[11px] text-slate-400 mt-0.5">제품 정보는 제품관리가 기준입니다. 이 화면에서는 수량과 보관 위치를 관리합니다.</p>
+          </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
         </div>
+
         <div className="p-5 overflow-y-auto flex-1">
           {isAdmin && (
-            <div className="flex gap-2 mb-4 pb-4 border-b border-slate-100">
-              <div className="relative z-30" style={{ flex: "2 1 0%" }}>
-                <input
-                  value={newName}
-                  onChange={(e) => { setNewName(e.target.value); setShowSuggestions(true); }}
-                  onFocus={() => setShowSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                  placeholder="제품명 (제품 DB에서 검색하거나 새 이름을 직접 입력)"
-                  className="w-full text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]"
-                />
-                {showSuggestions && suggestions.length > 0 && (
-                  <div className={DROPDOWN_CLS}>
-                    {suggestions.map((p) => (
-                      <button key={p.id} type="button" onMouseDown={() => pickSuggestion(p)} className="w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-slate-50 text-left border-b border-slate-50 last:border-0">
-                        <div className="w-9 h-9 rounded bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
-                          {p.image ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
+            <div className="mb-4 pb-4 border-b border-slate-100">
+              {!picked ? (
+                <div className="relative z-30">
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">제품 선택 — 제품관리 DB에서 검색</label>
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="제품명 · SKU · 카테고리 · 재질 · 용량 · 사이즈/파이로 검색"
+                    className="w-full text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]"
+                  />
+                  {query.trim() && (
+                    <div className="mt-1 border border-slate-200 rounded-lg overflow-hidden max-h-72 overflow-y-auto">
+                      {suggestions.length === 0 && (
+                        <div className="px-3 py-4 text-center text-[11px] text-slate-400">
+                          검색 결과가 없습니다. 제품관리에 먼저 제품을 등록해주세요.
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-medium text-slate-800" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>{p.name}</div>
-                          <div className="text-[10px] text-slate-400 truncate">{p.specSize || "규격 미상"}</div>
-                        </div>
-                        {p.category && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#1E3A8A]/10 text-[#1E3A8A] font-medium shrink-0 whitespace-nowrap">{p.category}</span>}
-                      </button>
-                    ))}
+                      )}
+                      {suggestions.map((p) => (
+                        <button key={p.id} type="button" onClick={() => setPicked(p)}
+                          className="w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-slate-50 text-left border-b border-slate-50 last:border-0">
+                          <div className="w-11 h-11 rounded bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+                            {p.image ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-medium text-slate-800" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>{p.name}</div>
+                            <div className="text-[10px] text-slate-400 truncate">
+                              {[p.sku, p.material, p.capacity, p.specSize, p.factory].filter(Boolean).join(" · ") || "상세 정보 없음"}
+                            </div>
+                          </div>
+                          {stockTotalForProduct(p, stock) > 0 && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold shrink-0 whitespace-nowrap">
+                              보유 {stockTotalForProduct(p, stock)}개
+                            </span>
+                          )}
+                          {p.category && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#1E3A8A]/10 text-[#1E3A8A] font-medium shrink-0 whitespace-nowrap">{p.category}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-[#1E3A8A]/20 bg-[#1E3A8A]/[0.03] p-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-16 h-16 rounded bg-white border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+                      {picked.image ? <ZoomableImage src={picked.image} className="w-full h-full object-cover" downloadName={picked.name} />
+                        : <span className="text-slate-300 text-[10px]">사진</span>}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-slate-800" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>{picked.name}</div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 mt-1 text-[10px] text-slate-500">
+                        <div>SKU: <span className="text-slate-700">{picked.sku || "-"}</span></div>
+                        <div>재질: <span className="text-slate-700">{picked.material || "-"}</span></div>
+                        <div>용량: <span className="text-slate-700">{picked.capacity || "-"}</span></div>
+                        <div>사이즈: <span className="text-slate-700">{picked.specSize || "-"}</span></div>
+                        <div className="col-span-2">공장: <span className="text-slate-700">{picked.factory || "-"}</span></div>
+                      </div>
+                    </div>
+                    <button onClick={() => { setPicked(null); setQuery(""); }} className="text-[11px] text-slate-400 hover:text-slate-600 shrink-0">✕ 다시 선택</button>
                   </div>
-                )}
-              </div>
-              <input type="number" value={newQty} onChange={(e) => setNewQty(e.target.value)} className="w-20 text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
-              <input value={newLocation} onChange={(e) => setNewLocation(e.target.value)} placeholder="위치" className="w-28 text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
-              <button onClick={addRow} className="text-xs px-3 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 등록/입고</button>
+                  <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-[#1E3A8A]/10">
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-0.5">샘플 보유 수량</label>
+                      <input type="number" value={newQty} onChange={(e) => setNewQty(e.target.value)}
+                        className="w-24 text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-0.5">보관 위치</label>
+                      <input value={newLocation} onChange={(e) => setNewLocation(e.target.value)} placeholder="본사 창고"
+                        className="w-32 text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-0.5">샘플 상태 (선택)</label>
+                      <input value={newCondition} onChange={(e) => setNewCondition(e.target.value)} placeholder="양호 / 라벨없음 등"
+                        className="w-36 text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+                    </div>
+                    <div className="flex-1 min-w-[160px]">
+                      <label className="block text-[10px] text-slate-500 mb-0.5">비고 (선택)</label>
+                      <input value={newNote} onChange={(e) => setNewNote(e.target.value)}
+                        className="w-full text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+                    </div>
+                    <div className="flex items-end">
+                      <button onClick={addRow} className="text-xs px-4 py-2 rounded-lg bg-[#1E3A8A] text-white font-medium hover:opacity-90 whitespace-nowrap">➕ 등록/입고</button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
+
+          {isAdmin && unlinked.length > 0 && (
+            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+              ⚠️ 제품관리와 연결되지 않은 재고가 <b>{unlinked.length}건</b> 있습니다.
+              아래 목록의 <b>[제품 연결]</b> 버튼으로 하나씩 확인해 연결해주세요.
+              수량과 보관 위치는 그대로 유지됩니다.
+            </div>
+          )}
+
           <div className="border border-slate-200 rounded-lg overflow-hidden">
             <table className="w-full text-xs">
               <thead><tr className="bg-slate-50 text-slate-500">
+                <th className="text-left px-2 py-2 font-medium w-14">사진</th>
                 <th className="text-left px-3 py-2 font-medium">제품명</th>
+                <th className="text-left px-3 py-2 font-medium w-28">SKU</th>
+                <th className="text-left px-3 py-2 font-medium w-40">재질 · 규격</th>
                 <th className="text-right px-3 py-2 font-medium w-24">보유 수량</th>
-                <th className="text-left px-3 py-2 font-medium w-32">위치</th>
-                {isAdmin && <th className="w-12"></th>}
+                <th className="text-left px-3 py-2 font-medium w-32">보관 위치</th>
+                {isAdmin && <th className="w-28"></th>}
               </tr></thead>
               <tbody>
-                {(stock || []).length === 0 && <tr><td colSpan={4} className="text-center text-slate-400 py-8">등록된 재고가 없습니다.</td></tr>}
-                {(stock || []).map((s) => (
-                  <tr key={s.id} className={"border-t border-slate-100 " + (edits[s.id] ? "bg-amber-50/50" : "")}>
-                    <td className="px-3 py-1.5">
-                      {isAdmin ? <input className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "productName")} onChange={(e) => setEditField(s.id, "productName", e.target.value)} /> : s.productName}
-                    </td>
-                    <td className="px-3 py-1.5 text-right">
-                      {isAdmin ? <input type="number" className="w-20 text-right px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "quantity")} onChange={(e) => setEditField(s.id, "quantity", Number(e.target.value) || 0)} /> : <span className="font-semibold">{s.quantity}</span>}
-                    </td>
-                    <td className="px-3 py-1.5">
-                      {isAdmin ? <input className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "location") || ""} onChange={(e) => setEditField(s.id, "location", e.target.value)} /> : (s.location || "-")}
-                    </td>
-                    {isAdmin && <td className="px-3 py-1.5 text-center"><button onClick={() => onDelete(s)} className="text-red-400 hover:text-red-600">🗑️</button></td>}
-                  </tr>
-                ))}
+                {rows.length === 0 && <tr><td colSpan={7} className="text-center text-slate-400 py-8">등록된 재고가 없습니다.</td></tr>}
+                {rows.map((s) => {
+                  const linked = stockLinkedProduct(s, products);
+                  const renamed = linked && linked.name && s.productName && searchNorm(linked.name) !== searchNorm(s.productName);
+                  return (
+                    <tr key={s.id} className={"border-t border-slate-100 align-top " + (edits[s.id] ? "bg-amber-50/50" : "")}>
+                      <td className="px-2 py-1.5">
+                        <div className="w-10 h-10 rounded bg-slate-50 border border-slate-100 overflow-hidden flex items-center justify-center">
+                          {linked && linked.image ? <ZoomableImage src={linked.image} className="w-full h-full object-cover" downloadName={linked.name} />
+                            : <span className="text-slate-300 text-[9px]">사진</span>}
+                        </div>
+                      </td>
+                      <td className="px-3 py-1.5">
+                        {linked ? (
+                          <button onClick={() => onOpenProduct && onOpenProduct(linked)}
+                            className="text-left font-medium text-slate-800 hover:text-[#1E3A8A] hover:underline"
+                            style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+                            {linked.name}
+                          </button>
+                        ) : (
+                          <span className="text-slate-700" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>{s.productName}</span>
+                        )}
+                        {!linked && <div className="text-[9px] mt-0.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold inline-block">⚠️ 제품 미연결</div>}
+                        {renamed && <div className="text-[9px] text-slate-400 mt-0.5">등록 당시: {s.productName}</div>}
+                        {s.note && <div className="text-[10px] text-slate-400 mt-0.5">{s.note}</div>}
+                      </td>
+                      <td className="px-3 py-1.5 text-slate-500">{(linked && linked.sku) || s.productSku || "-"}</td>
+                      <td className="px-3 py-1.5 text-slate-500" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+                        {linked ? ([linked.material, linked.capacity, linked.specSize].filter(Boolean).join(" · ") || "-") : "-"}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">
+                        {isAdmin ? <input type="number" className="w-20 text-right px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "quantity")} onChange={(e) => setEditField(s.id, "quantity", Number(e.target.value) || 0)} /> : <span className="font-semibold">{s.quantity}</span>}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        {isAdmin ? <input className="w-full px-1.5 py-1 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" value={getVal(s, "location") || ""} onChange={(e) => setEditField(s.id, "location", e.target.value)} /> : (s.location || "-")}
+                      </td>
+                      {isAdmin && (
+                        <td className="px-2 py-1.5 text-center whitespace-nowrap">
+                          {!linked && (
+                            <button onClick={() => setLinkTarget(s)} className="text-[10px] px-2 py-1 rounded bg-amber-500 text-white font-bold hover:opacity-90 mr-1">제품 연결</button>
+                          )}
+                          <button onClick={() => onDelete(s)} className="text-red-400 hover:text-red-600">🗑️</button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          <p className="text-[10px] text-slate-400 mt-2">
+            제품명·사진·SKU·재질·규격은 제품관리에서 수정합니다. 이 화면에서는 수량과 보관 위치만 바꿀 수 있습니다.
+          </p>
         </div>
+
         {isAdmin && (
           <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
             {Object.keys(edits).length > 0 && <span className="text-[11px] text-amber-600 mr-auto">수정된 항목 {Object.keys(edits).length}건 — 저장 전입니다</span>}
             <button onClick={saveEdits} disabled={Object.keys(edits).length === 0} className="px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">{saved ? "✅ 저장됨" : "💾 수정 저장"}</button>
           </div>
         )}
+
+        {linkTarget && (
+          <StockLinkModal stockItem={linkTarget} products={products} onCancel={() => setLinkTarget(null)} onConfirm={confirmLink} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* 옛 재고(제품 미연결)를 제품관리의 제품과 연결하는 창(지시서 §6).
+   후보를 보여줄 뿐 자동으로 연결하지 않는다 — 관리자가 눌러야 확정된다. */
+function StockLinkModal({ stockItem, products, onCancel, onConfirm }) {
+  const [query, setQuery] = useState(stockItem.productName || "");
+  const auto = suggestStockLinks(stockItem, products);
+  const manual = query.trim() ? smartProductSearch(products, query).slice(0, 8) : [];
+  const list = query.trim() === String(stockItem.productName || "").trim() && auto.length
+    ? auto
+    : manual.map((p) => ({ product: p, by: "검색 결과", strong: false }));
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" onClick={onCancel}>
+      <div className="bg-white rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-slate-200">
+          <h3 className="text-sm font-bold text-slate-800">기존 재고를 제품과 연결</h3>
+          <p className="text-[11px] text-slate-500 mt-1">
+            재고 <b>"{stockItem.productName}"</b> · 수량 {stockItem.quantity}개 · 위치 {stockItem.location || "-"}
+          </p>
+          <p className="text-[11px] text-amber-700 mt-1">연결해도 수량과 보관 위치는 바뀌지 않습니다. 같은 제품이 확실할 때만 선택해주세요.</p>
+        </div>
+        <div className="p-4 overflow-y-auto flex-1">
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="제품명 · SKU · 규격으로 검색"
+            className="w-full text-xs px-2.5 py-2 rounded-lg border border-slate-200 outline-none focus:border-[#1E3A8A] mb-3" />
+          {list.length === 0 && <div className="text-center text-[11px] text-slate-400 py-8">일치하는 제품이 없습니다. 제품관리에 먼저 등록해주세요.</div>}
+          {list.map(({ product: p, by, strong }) => (
+            <button key={p.id} type="button" onClick={() => onConfirm(stockItem, p)}
+              className="w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-slate-50 text-left border border-slate-100 rounded-lg mb-1.5">
+              <div className="w-11 h-11 rounded bg-slate-50 border border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+                {p.image ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-slate-300 text-[9px]">사진</span>}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-slate-800" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>{p.name}</div>
+                <div className="text-[10px] text-slate-400 truncate">{[p.sku, p.material, p.capacity, p.specSize].filter(Boolean).join(" · ") || "상세 정보 없음"}</div>
+              </div>
+              <span className={"text-[9px] px-1.5 py-0.5 rounded-full font-bold shrink-0 whitespace-nowrap "
+                + (strong ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>{by}</span>
+            </button>
+          ))}
+        </div>
+        <div className="px-5 py-3 border-t border-slate-200 flex justify-end">
+          <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm">취소</button>
+        </div>
       </div>
     </div>
   );
@@ -11763,7 +12080,7 @@ function SampleDetailModal({ onClose, children }) {
   );
 }
 
-function SampleStageView({ samples, accounts, proposals, products, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onSaveStockEdits, onDeleteStock, onAddMemo, onDeleteMemo, initialProposalId, onConsumeInitialProposal, onBack , clients}) {
+function SampleStageView({ samples, accounts, proposals, products, sampleStock, onDecrementStock, supplierLogo, shippingFees, shippingFeeNotes, onSaveShippingFees, currentUserName, isAdmin, onCreate, onUpdate, onDelete, onAddStock, onUpdateStock, onSaveStockEdits, onDeleteStock, onAddMemo, onDeleteMemo, initialProposalId, onConsumeInitialProposal, onBack , clients, onOpenProduct}) {
   const [showCreate, setShowCreate] = useState(false);
   const [pendingProposalId, setPendingProposalId] = useState(null); // "🧪 샘플요청 등록"으로 넘어온 제안서 id를 등록모달에 넘겨주기 위한 로컬 보관
   // "🧪 샘플요청 등록"으로 특정(발송완료된) 제안서에서 넘어온 경우, 등록모달을 자동으로 열어준다.
@@ -11950,8 +12267,8 @@ function SampleStageView({ samples, accounts, proposals, products, sampleStock, 
       )}
       {filtered.length > 0 && <Pagination page={page} totalPages={totalPages} onChange={setPage} totalItems={filtered.length} />}
 
-      {showCreate && <SampleCreateModal clients={clients} accounts={accounts} proposals={proposals} sampleStock={sampleStock} initialProposalId={pendingProposalId} presetData={ctPreset} onClose={() => { setShowCreate(false); setPendingProposalId(null); setCtPreset(null); }} onSave={handleCreateSample} />}
-      {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onSaveEdits={onSaveStockEdits} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} />}
+      {showCreate && <SampleCreateModal clients={clients} accounts={accounts} proposals={proposals} products={products} sampleStock={sampleStock} initialProposalId={pendingProposalId} presetData={ctPreset} onClose={() => { setShowCreate(false); setPendingProposalId(null); setCtPreset(null); }} onSave={handleCreateSample} />}
+      {showStockManage && <SampleStockModal stock={sampleStock} products={products} isAdmin={isAdmin} onAdd={onAddStock} onUpdate={onUpdateStock} onSaveEdits={onSaveStockEdits} onDelete={onDeleteStock} onClose={() => setShowStockManage(false)} onOpenProduct={onOpenProduct} />}
       {showFeeSettings && (
         <ShippingFeeSettingsModal
           shippingFees={shippingFees}
@@ -13508,7 +13825,16 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     // "발송완료" 단계로 처음 전환되는 순간 한국 본사 재고에서 신청수량만큼 자동 차감(같은 샘플이 재확인되어도 중복차감 안되도록 stockDeducted 플래그로 방지)
     // ("수령"으로 곧바로 건너뛴 경우에도 발송이 일어난 것이므로 동일하게 차감한다 — stockDeducted 플래그로 중복차감은 계속 방지됨)
     if ((patch.status === "발송" || patch.status === "수령") && sample.stockLocation === "korea" && !sample.stockDeducted) {
-      const stockItem = sampleStockList.find((si) => si.productName === sample.productName);
+      /* ⭐ 재고를 찾을 때 제품 ID를 먼저 본다(지시서 §4).
+         예전에는 productName 문자열이 똑같아야만 찾았기 때문에, 제품관리에서 이름을 조금만 바꿔도
+         재고가 있는데 못 찾아 차감이 조용히 건너뛰어졌다.
+         ① 샘플에 연결된 제품 ID  ② 같은 이름의 제품에 연결된 재고  ③ (옛 데이터) 이름 완전일치 */
+      const sampleProduct = sample.productId != null && String(sample.productId) !== ""
+        ? productsList.find((p) => String(p.id) === String(sample.productId))
+        : productsList.find((p) => searchNorm(p.name || "") === searchNorm(sample.productName || ""));
+      const stockItem =
+        (sampleProduct && sampleStockList.find((si) => si.productId != null && String(si.productId) === String(sampleProduct.id)))
+        || sampleStockList.find((si) => searchNorm(si.productName || "") === searchNorm(sample.productName || ""));
       const needQty = Number(sample.invoiceQty) || 1;
       if (stockItem) {
         const currentQty = Number(stockItem.quantity) || 0;
@@ -15468,6 +15794,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         <SampleStageView
           clients={clientsList}
           samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} onDecrementStock={decrementSampleStock} supplierLogo={supplierLogo}
+          onOpenProduct={(p) => { setProductToView(p); setView("products"); }}
           shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
           onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onSaveStockEdits={saveSampleStockEdits} onDeleteStock={deleteSampleStock}
@@ -15521,6 +15848,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
           onBulkDelete={bulkDeleteProducts}
           onDeleteAllUploaded={deleteAllUploadedProductData}
           isAdmin={isAdmin}
+          sampleStock={sampleStockList}
           initialViewProduct={productToView} onConsumeInitialView={() => setProductToView(null)}
           openNewProductForm={openNewProductForm} onConsumeOpenNew={() => setOpenNewProductForm(false)}
           onProductRegistered={(created) => {
@@ -16246,7 +16574,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       )}
 
       {view === "pipeline" && activeStep === 4 && (
-        <SampleStageView clients={clientsList} samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} onDecrementStock={decrementSampleStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
+        <SampleStageView onOpenProduct={(p) => { setProductToView(p); setView("products"); }} clients={clientsList} samples={sampleList} accounts={accounts} proposals={proposalList} products={productsList} sampleStock={sampleStockList} onDecrementStock={decrementSampleStock} supplierLogo={supplierLogo} shippingFees={shippingFees} shippingFeeNotes={shippingFeeNotes} onSaveShippingFees={saveShippingFees} currentUserName={(roleUser && roleUser.displayName) || ""} isAdmin={isAdmin} onAddMemo={addSampleMemo} onDeleteMemo={deleteSampleMemo}
           onCreate={addSample} onUpdate={updateSample} onDelete={deleteSample}
           onAddStock={addSampleStock} onUpdateStock={updateSampleStock} onSaveStockEdits={saveSampleStockEdits} onDeleteStock={deleteSampleStock}
           initialProposalId={sampleInitProposalId} onConsumeInitialProposal={() => setSampleInitProposalId(null)} />
