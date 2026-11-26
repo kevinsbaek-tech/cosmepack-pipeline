@@ -222,7 +222,97 @@ const COLLECTIONS = {
   tasks: "task_assignments", // 업무지시 & 소통방
   sampleStock: "sample_stock", // 한국 본사 샘플 재고 현황
   invoices: "invoices", // INVOICE(인보이스) 발행 — 제안서에서 파생, proposalId로 연결
+  docVersions: "doc_versions", // 📌 고객 발송본(발송 시점 문서를 통째로 얼려 보관) — 원본과 분리된 별도 기록
 };
+
+/* ===================== 📌 고객 발송본 보존 =====================
+   문제: 고객에게 링크를 보낸 뒤 관리자가 금액이나 품목을 고치면, 이미 보낸 링크에서도
+         고친 내용이 보였다. 고객에게 처음 무엇을 제시했는지 확인할 방법이 없었다.
+
+   해결: 발송본을 확정하는 순간 그 시점의 문서를 **통째로 복사해서 얼린다**(doc_versions).
+         발송본 화면은 원본 문서를 다시 읽지 않고 얼린 사본만 본다. 그래서 원본의 금액·품목·
+         제품명·사진이 나중에 바뀌어도 과거 발송본은 영향을 받지 않는다.
+
+   ⚠️ 확정된 발송본은 고치지 않는다. 내용이 바뀌어야 하면 **새 버전(v2, v3…)을 만든다.**
+   ⚠️ 원본 문서(proposals·invoices)는 이 기능 때문에 바뀌지 않는다. 발송본은 별도 기록이다.
+   ================================================================= */
+
+// 문자열을 짧은 지문으로 — 발송본이 나중에 손상·변조되지 않았는지 확인하는 용도(FNV-1a 32bit)
+function snapshotHash(obj) {
+  let s;
+  try { s = stableStringify(obj); } catch (e) { s = String(obj); }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return ("00000000" + h.toString(16)).slice(-8) + "-" + s.length;
+}
+// 키 순서가 달라도 같은 지문이 나오도록 정렬해서 직렬화한다
+function stableStringify(v) {
+  if (v === null || typeof v !== "object") return JSON.stringify(v === undefined ? null : v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+}
+
+/* 발송본에 얼려 넣을 문서 데이터를 만든다(지시서 §3).
+   ⚠️ 여기서 만든 사본은 원본 문서를 참조하지 않는다 — 제품관리에서 제품명·사진이 바뀌어도
+      과거 발송본에는 영향이 없어야 하므로, 품목의 이름·사진·규격을 값으로 복사해 둔다. */
+function buildDocSnapshot(doc, opts) {
+  const o = opts || {};
+  const d = doc || {};
+  const items = (Array.isArray(d.items) ? d.items : []).map((it) => ({
+    id: it.id, productName: it.productName || "", image: it.image || "",
+    specSize: it.specSize || "", material: it.material || "", category: it.category || "",
+    quantity: Number(it.quantity) || 0,
+    unitPrice: Number(it.unitPrice) || 0,
+    totalPrice: Number(it.totalPrice) || 0,
+    cbm: Number(it.cbm) || 0, notes: it.notes || "", leadTime: it.leadTime || "",
+    altGroupId: it.altGroupId || "", altSelected: !!it.altSelected,
+  }));
+  const snap = {
+    docId: String(d.id == null ? "" : d.id),
+    code: d.code || "",
+    clientName: d.clientName || d.client || "",
+    clientContact: d.clientContact || "",
+    supplierName: d.supplierName || "",
+    supplierLogo: o.supplierLogo || "",
+    createdAt: d.createdAt || "",
+    validUntil: d.validUntil || "",
+    items: items,
+    totalAmount: d.totalAmount != null ? Number(d.totalAmount) : null,
+    adjustAmount: d.adjustAmount != null ? Number(d.adjustAmount) : null,
+    adjustLabel: d.adjustLabel || "",
+    discountAmount: d.discountAmount != null ? Number(d.discountAmount) : null,
+    paymentTerms: d.paymentTerms || "",
+    remark: d.remark || "", notes: d.notes || "",
+    payRows: Array.isArray(d.payRows) ? JSON.parse(JSON.stringify(d.payRows)) : null,
+    depositRate: d.depositRate != null ? d.depositRate : null,
+    interimRate: d.interimRate != null ? d.interimRate : null,
+    balanceRate: d.balanceRate != null ? d.balanceRate : null,
+    depositAmount: d.depositAmount != null ? Number(d.depositAmount) : null,
+    interimAmount: d.interimAmount != null ? Number(d.interimAmount) : null,
+    balanceAmount: d.balanceAmount != null ? Number(d.balanceAmount) : null,
+  };
+  return pruneUndefined(snap);
+}
+
+// 같은 문서·같은 청구 단계에서 다음 버전 번호 (v1, v2, v3 …)
+function nextVersionNo(versions, docId, tier) {
+  const mine = (Array.isArray(versions) ? versions : []).filter((v) =>
+    String(v.docId) === String(docId) && String(v.tier || "") === String(tier || ""));
+  return mine.reduce((max, v) => Math.max(max, Number(v.version) || 0), 0) + 1;
+}
+// 한 문서(+단계)의 발송본을 최신 버전부터
+function versionsOf(versions, docId, tier) {
+  return (Array.isArray(versions) ? versions : [])
+    .filter((v) => String(v.docId) === String(docId) && (tier == null || String(v.tier || "") === String(tier || "")))
+    .sort((a, b) => (Number(b.version) || 0) - (Number(a.version) || 0));
+}
+// 버전별 고객 링크 — 이 주소는 언제 열어도 그 버전의 얼린 내용만 보여준다
+function sentLinkFor(v) {
+  return `${window.location.origin}/agree?type=sent&id=${(v && v.id) || ""}`;
+}
 
 /* ⭐ Firestore는 필드값이 하나라도 undefined면 add()/set() 자체를 예외로 거부한다
    ("Unsupported field value: undefined (found in field ○○)").
@@ -4226,7 +4316,89 @@ function AltQuotePickModal({ proposal, onCancel, onConfirm, saving }) {
   );
 }
 
-function ProposalSummaryModal({ proposal, onClose, onOpenFull, onEdit }) {
+/* 📌 발송 이력 (지시서 §8) — 이 문서로 고객에게 나간 발송본들을 버전별로 보여준다.
+   ⚠️ 원본 문서를 덮어쓰지 않는 별도 기록이다. 여기서 과거 발송본의 내용을 고칠 수 없다. */
+function SentHistoryPanel({ doc, versions, compact }) {
+  const [copied, setCopied] = useState("");
+  const [openMsg, setOpenMsg] = useState(null);
+  const rows = versionsOf(versions || [], doc && doc.id, null);
+  const copy = (text, key) => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(""), 1800); });
+    } else window.prompt("아래 내용을 복사해 주세요.", text);
+  };
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-500">
+        발송 이력이 없습니다.
+        {doc && (doc.sentAt || doc.sentBy) && (
+          <span className="block mt-1 text-amber-700">
+            ⚠️ 이 문서는 {String(doc.sentAt || "").slice(0, 16) || "과거"}에 발송된 기록이 있으나,
+            <b> 발송 당시 원본이 보관되어 있지 않습니다</b> (버전 관리 도입 이전 발송건).
+            지금 보이는 내용은 <b>현재 데이터 기준</b>이며 발송 당시와 다를 수 있습니다.
+          </span>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-slate-200 overflow-hidden">
+      <table className="w-full text-[11px]">
+        <thead><tr className="bg-slate-50 text-slate-500">
+          <th className="text-left px-2 py-1.5 font-medium w-14">버전</th>
+          <th className="text-left px-2 py-1.5 font-medium w-32">발송일시</th>
+          <th className="text-left px-2 py-1.5 font-medium w-24">담당자</th>
+          <th className="text-right px-2 py-1.5 font-medium w-28">문서 금액</th>
+          <th className="text-left px-2 py-1.5 font-medium w-24">고객 승인</th>
+          <th className="px-2 py-1.5"></th>
+        </tr></thead>
+        <tbody>
+          {rows.map((v) => (
+            <React.Fragment key={v.id}>
+              <tr className="border-t border-slate-100 align-top">
+                <td className="px-2 py-1.5 font-bold text-slate-700">
+                  v{v.version}
+                  {v.tierLabel && <div className="text-[9px] text-slate-400 font-normal">{v.tierLabel}</div>}
+                </td>
+                <td className="px-2 py-1.5 text-slate-600">
+                  {v.sentAt ? String(v.sentAt).slice(0, 16) : <span className="text-amber-600">미발송(확정만 됨)</span>}
+                </td>
+                <td className="px-2 py-1.5 text-slate-600">{v.sentBy || v.createdBy || "-"}</td>
+                <td className="px-2 py-1.5 text-right font-semibold text-slate-800">{won(v.totalAmount || 0)}</td>
+                <td className="px-2 py-1.5">
+                  {v.approvedAt
+                    ? <span className="text-emerald-700 font-bold">승인 {String(v.approvedAt).slice(5, 16)}</span>
+                    : v.supersededBy ? <span className="text-slate-400">수정본 발행됨</span> : <span className="text-slate-400">대기</span>}
+                </td>
+                <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                  <button onClick={() => window.open(sentLinkFor(v), "_blank")} className="text-[10px] px-1.5 py-1 rounded bg-[#1E3A8A] text-white font-bold mr-1">PDF</button>
+                  <button onClick={() => copy(sentLinkFor(v), v.id)} className="text-[10px] px-1.5 py-1 rounded border border-slate-200 text-slate-600 mr-1">{copied === v.id ? "복사됨" : "링크"}</button>
+                  <button onClick={() => setOpenMsg(openMsg === v.id ? null : v.id)} className="text-[10px] px-1.5 py-1 rounded border border-slate-200 text-slate-600">안내문</button>
+                </td>
+              </tr>
+              {v.reissueReason && v.version > 1 && (
+                <tr className="bg-amber-50/50"><td colSpan={6} className="px-2 py-1 text-[10px] text-amber-800">재발행 사유: {v.reissueReason}</td></tr>
+              )}
+              {openMsg === v.id && (
+                <tr><td colSpan={6} className="px-2 py-2 bg-slate-50">
+                  <div className="text-[10px] text-slate-400 mb-1">발송 당시 안내문 · 문서 지문 {v.snapshotHash}{v.imagesOmitted ? " · (용량 문제로 사진 제외 보관)" : ""}</div>
+                  <pre className="text-[10px] text-slate-700 whitespace-pre-wrap leading-relaxed">{v.message || "(안내문이 저장되지 않았습니다)"}</pre>
+                </td></tr>
+              )}
+            </React.Fragment>
+          ))}
+        </tbody>
+      </table>
+      {!compact && (
+        <div className="px-2 py-1.5 bg-slate-50 text-[10px] text-slate-400 border-t border-slate-100">
+          각 버전은 발송 당시 내용 그대로 보관됩니다. 원본 문서를 수정해도 과거 발송본은 바뀌지 않습니다.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProposalSummaryModal({ proposal, onClose, onOpenFull, onEdit, docVersions }) {
   const p = proposal || {};
   const items = Array.isArray(p.items) ? p.items : [];
   useEffect(() => {
@@ -4267,6 +4439,12 @@ function ProposalSummaryModal({ proposal, onClose, onOpenFull, onEdit }) {
                 <div className="text-sm font-semibold text-slate-800 break-all">{v}</div>
               </div>
             ))}
+          </div>
+
+          {/* 📌 발송 이력 — 이 제안서로 고객에게 나간 발송본들(지시서 §8) */}
+          <div className="mb-4">
+            <div className="text-[11px] font-bold text-slate-500 mb-1.5">📤 발송 이력</div>
+            <SentHistoryPanel doc={proposal} versions={docVersions} compact />
           </div>
 
           {/* B. 제안 제품 목록 — 한 품목만이 아니라 전부 */}
@@ -4327,7 +4505,7 @@ function ProposalSummaryModal({ proposal, onClose, onOpenFull, onEdit }) {
   );
 }
 
-function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onHandleRequest, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin }) {
+function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView, onLoad, onCopy, onDelete, onStatusChange, onReviewStatusChange, onCreateSample, onCreateInvoice, onHandleRequest, onBulkDelete, onBulkCompressImages, bulkCompressProgress, isAdmin, docVersions}) {
   const [summaryProposal, setSummaryProposal] = useState(null); // 📋 제안번호 클릭 시 뜨는 요약 팝업(목록 상태는 그대로 유지)
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("전체");
@@ -4655,6 +4833,7 @@ function ProposalListView({ proposals, onBack, onNewProposal, onOpenPdf, onView,
       {/* 📋 제안번호 클릭 요약 팝업 — 목록을 떠나지 않으므로 검색조건·정렬·페이지가 그대로 유지된다 */}
       {summaryProposal && (
         <ProposalSummaryModal
+          docVersions={docVersions}
           proposal={summaryProposal}
           onClose={() => setSummaryProposal(null)}
           onOpenFull={onView}
@@ -5494,7 +5673,8 @@ function buildInvoiceStageMessage({ invoice, stage, link, productLabel, supplyTo
 /* titleText / sendLabel / sentLabel / footnote 는 선택 항목이다.
    목록 화면의 [중도금·잔금 청구발송]에서도 이 모달을 그대로 재사용하면서 제목·버튼 문구만 바꾸기 위한 것으로,
    넘기지 않으면 기존 "고객 승인요청 발송" 문구가 그대로 쓰인다(기존 호출부는 손대지 않음). */
-function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLabel, sentLabel, footnote }) {
+function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLabel, sentLabel, footnote,
+                                   docKind, versions, onCreateVersion, onMarkSent }) {
   /* 고객 승인 링크.
      ⚠️ 건을 찾는 열쇠는 언제까지나 `id`(문서 ID)다 — 인보이스번호를 바꿨다고 열쇠까지 바꾸면
         이미 고객에게 보낸 옛 링크가 전부 죽는다. 번호는 `no=`로 함께 실어, 주소만 봐도
@@ -5537,6 +5717,27 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
   const edited = message !== autoMessage;
 
   const [copied, setCopied] = useState("");
+  /* 📌 발송본(얼린 사본). 확정 전에는 null이고, 확정하면 그 버전의 링크로 바뀐다.
+     문구 복사 · 발송본 확정 · 실제 발송 기록을 각각 따로 둔다(지시서 §7). */
+  const [sentVer, setSentVer] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState("");
+  const [recorded, setRecorded] = useState(false);
+  const myVersions = versionsOf(versions || [], invoice.id, stage === "completed" ? "" : stage);
+  const hasPrev = myVersions.length > 0;
+  const activeLink = sentVer ? sentLinkFor(sentVer) : link;
+  const confirmVersion = async () => {
+    if (!onCreateVersion) return;
+    setBusy(true);
+    try {
+      const v = await onCreateVersion({
+        doc: invoice, docKind: docKind || "invoice",
+        tier: stage === "completed" ? "" : stage,
+        tierLabel: stageInfo.label, message: message, reissueReason: reason,
+      });
+      if (v) setSentVer(v);          // 실패하면 null이 와서 다음 단계로 넘어가지 않는다
+    } finally { setBusy(false); }
+  };
   const copy = (text, label) => {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(""), 2000); });
@@ -5593,11 +5794,43 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
             )}
           </div>
 
-          <Field label="승인 링크">
+          {/* ① 발송본 확정 — 지금 문서를 얼려 버전으로 남긴다. 이 버전은 이후 원본이 바뀌어도 그대로다. */}
+          <div className="rounded-lg border border-[#1E3A8A]/20 bg-[#1E3A8A]/[0.03] p-3">
+            <div className="text-[11px] font-bold text-[#1E3A8A] mb-1">① 발송본 확정</div>
+            {hasPrev && !sentVer && (
+              <div className="mb-2">
+                <div className="text-[11px] text-amber-700 mb-1">
+                  이미 v{myVersions[0].version}까지 발송된 적이 있습니다. 새로 확정하면 <b>v{myVersions[0].version + 1}</b>이 만들어집니다.
+                </div>
+                <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="재발행 사유 (예: 수량 변경으로 금액 수정)"
+                  className="w-full text-xs px-2 py-1.5 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+              </div>
+            )}
+            {!sentVer ? (
+              <button onClick={confirmVersion} disabled={busy}
+                className="w-full px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-bold disabled:opacity-50">
+                {busy ? "확정 중…" : (hasPrev ? `발송본 v${myVersions[0].version + 1} 확정하기` : "발송본 v1 확정하기")}
+              </button>
+            ) : (
+              <div className="text-[11px] text-emerald-700 font-semibold">
+                ✅ 발송본 v{sentVer.version} 확정됨 · 지문 {sentVer.snapshotHash}
+                <span className="block text-slate-500 font-normal mt-0.5">이 버전은 이후 원본을 고쳐도 바뀌지 않습니다.</span>
+              </div>
+            )}
+          </div>
+
+          <Field label={sentVer ? `② 승인 링크 (발송본 v${sentVer.version} 고정)` : "승인 링크"}>
             <div className="flex gap-2">
-              <input readOnly value={link} className={inputCls + " flex-1"} onFocus={(e) => e.target.select()} />
-              <button onClick={() => copy(link, "link")} className="px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold whitespace-nowrap">{copied === "link" ? "✅ 복사됨" : "링크 복사"}</button>
+              <input readOnly value={activeLink} className={inputCls + " flex-1"} onFocus={(e) => e.target.select()} />
+              <button onClick={() => copy(activeLink, "link")} className="px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold whitespace-nowrap">{copied === "link" ? "✅ 복사됨" : "링크 복사"}</button>
             </div>
+            {sentVer && (
+              <button onClick={() => window.open(activeLink, "_blank")}
+                className="w-full mt-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-[11px] font-medium">
+                🔍 발송본 미리보기 · PDF 내려받기
+              </button>
+            )}
+            {!sentVer && <p className="text-[10px] text-amber-600 mt-1">아직 발송본을 확정하지 않아 이 링크는 <b>원본 문서</b>를 가리킵니다. 확정하면 버전 고정 링크로 바뀝니다.</p>}
           </Field>
 
           <Field label="안내 문구 (카톡·문자 붙여넣기용)">
@@ -5614,12 +5847,30 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
               className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y outline-none focus:border-[#1E3A8A] leading-relaxed" />
           </Field>
 
-          {/* 복사 = 발송 처리 — 이 버튼을 눌러야 상태가 [발송완료]로 넘어가고 발송자(로그인 사용자)가 기록된다.
-              예전엔 문구만 복사되고 상태가 [검토대기]에 머물러 있었다. */}
-          <button onClick={() => { copy(message, "msg"); if (onSent) onSent(); }}
-            className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold">
-            {copied === "msg" ? (sentLabel || "✅ 복사되었습니다 (발송완료 처리됨)") : (sendLabel || "💬 안내 문구 전체 복사 + 발송완료 처리")}
+          {/* ③ 문구 복사 — 복사만으로는 발송 성공으로 기록하지 않는다(지시서 §7).
+              실제로 카톡에 붙여넣어 보냈는지는 사람만 알 수 있으므로 ④에서 따로 눌러 기록한다. */}
+          <button onClick={() => copy(message, "msg")}
+            className="w-full px-3 py-2.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-bold border border-slate-200">
+            {copied === "msg" ? "✅ 복사되었습니다" : "③ 💬 안내 문구 복사"}
           </button>
+
+          {/* ④ 실제 발송 기록 — 복사·확정과 분리된 별도 동작 */}
+          <button
+            onClick={async () => {
+              if (!window.confirm("카카오톡으로 실제 전달을 마치셨습니까?\n\n확인을 누르면 발송 이력에 기록되고 상태가 [발송완료]로 바뀝니다.")) return;
+              if (sentVer && onMarkSent) { const ok = await onMarkSent(sentVer, "카카오톡"); if (!ok) return; }
+              setRecorded(true);
+              if (onSent) onSent();
+            }}
+            disabled={recorded}
+            className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold disabled:opacity-60">
+            {recorded ? "✅ 발송완료로 기록되었습니다" : "④ 실제 발송했습니다 — 발송완료 기록"}
+          </button>
+          {!sentVer && (
+            <p className="text-[11px] text-amber-600">
+              ⚠️ 발송본을 확정하지 않고 기록하면 <b>발송 당시 내용이 보존되지 않습니다.</b> ①을 먼저 눌러주세요.
+            </p>
+          )}
           <p className="text-[11px] text-slate-400">
             {footnote || <React.Fragment>복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 승인을 마치면 이 인보이스가 자동으로 <b>고객승인</b>으로 바뀝니다.</React.Fragment>}
           </p>
@@ -5629,7 +5880,7 @@ function InvoiceApprovalSendModal({ invoice, onClose, onSent, titleText, sendLab
   );
 }
 
-function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, onEmergencyApprove, onChangeStage, invoiceCodes, mode }) {
+function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreateSample, onCreateInvoice, onSave, onEmergencyApprove, onChangeStage, invoiceCodes, mode, docVersions, onCreateVersion, onMarkSent }) {
   const isInvoice = mode === "invoice";
   /* 미리보기 표의 인라인 수정 가능 여부.
      예전엔 인보이스 모드면 무조건 잠갔으나(좌측 폼에서만 편집), 이제 제안서와 동일하게
@@ -5957,6 +6208,8 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
       {showApprovalSend && (
         <InvoiceApprovalSendModal
           invoice={{ ...data, items }}
+          docKind={isInvoice ? "invoice" : "proposal"}
+          versions={docVersions} onCreateVersion={onCreateVersion} onMarkSent={onMarkSent}
           onSent={() => { if (onSendComplete && data.id) onSendComplete(data.id, "카카오톡"); }} // 발송자·일시 자동기록 + [발송완료] 전환
           onClose={() => setShowApprovalSend(false)}
         />
@@ -5964,6 +6217,7 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
       {showProposalSend && (
         <ProposalSendModal
           proposal={{ ...data, items }}
+          versions={docVersions} onCreateVersion={onCreateVersion} onMarkSent={onMarkSent}
           onSent={() => { if (onSendComplete && data.id) onSendComplete(data.id, "카카오톡"); }} // 발송완료 상태로 갱신
           onClose={() => setShowProposalSend(false)}
         />
@@ -5975,6 +6229,18 @@ function PdfPreview({ open, onClose, data, supplierLogo, onSendComplete, onCreat
         <aside className="pv-left no-print w-96 shrink-0 bg-white rounded-xl shadow-xl p-5 overflow-y-auto pr-3"
           style={{ maxHeight: "calc(100vh - 120px)", minHeight: 0 }}>
           <div className="text-sm font-bold text-slate-800 mb-3">📝 인보이스 편집</div>
+
+          {/* 📌 발송 이력 — 과거 발송본은 여기서 내용을 고칠 수 없다. 내려받아 비교만 한다(지시서 §8). */}
+          <div className="mb-4">
+            <div className="text-xs font-semibold text-slate-500 mb-1.5">📤 발송 이력</div>
+            <SentHistoryPanel doc={data} versions={docVersions} compact />
+            {versionsOf(docVersions || [], data.id, null).length > 0 && (
+              <p className="text-[10px] text-amber-700 mt-1 leading-relaxed">
+                ⚠️ 이미 발송된 문서입니다. 아래에서 금액·품목을 고쳐도 <b>과거 발송본과 고객이 받은 링크는 바뀌지 않습니다.</b>
+                고친 내용을 고객에게 알리려면 발송 화면에서 <b>새 버전</b>을 확정해 보내주세요.
+              </p>
+            )}
+          </div>
 
           {/* 📄 인보이스번호 — 자동 생성된 번호를 그대로 쓰거나, 고객사 요구에 맞춰 직접 고친다.
               입력하는 즉시 우측 인쇄 문서 상단의 번호가 함께 바뀐다(저장해야 목록·발송문구에 반영). */}
@@ -11377,11 +11643,43 @@ function SampleApprovalSendModal({ sample, kind, qty, grandTotal, supplyTotal, e
             <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="font-semibold text-slate-700">청구금액</span><span className="font-bold text-[#1E3A8A]">{won(amount)} <span className="font-normal text-slate-400">(부가세 포함)</span></span></div>
           </div>
 
-          <Field label="승인 링크">
+          {/* ① 발송본 확정 — 지금 문서를 얼려 버전으로 남긴다. 이 버전은 이후 원본이 바뀌어도 그대로다. */}
+          <div className="rounded-lg border border-[#1E3A8A]/20 bg-[#1E3A8A]/[0.03] p-3">
+            <div className="text-[11px] font-bold text-[#1E3A8A] mb-1">① 발송본 확정</div>
+            {hasPrev && !sentVer && (
+              <div className="mb-2">
+                <div className="text-[11px] text-amber-700 mb-1">
+                  이미 v{myVersions[0].version}까지 발송된 적이 있습니다. 새로 확정하면 <b>v{myVersions[0].version + 1}</b>이 만들어집니다.
+                </div>
+                <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="재발행 사유 (예: 수량 변경으로 금액 수정)"
+                  className="w-full text-xs px-2 py-1.5 rounded border border-slate-200 outline-none focus:border-[#1E3A8A]" />
+              </div>
+            )}
+            {!sentVer ? (
+              <button onClick={confirmVersion} disabled={busy}
+                className="w-full px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-bold disabled:opacity-50">
+                {busy ? "확정 중…" : (hasPrev ? `발송본 v${myVersions[0].version + 1} 확정하기` : "발송본 v1 확정하기")}
+              </button>
+            ) : (
+              <div className="text-[11px] text-emerald-700 font-semibold">
+                ✅ 발송본 v{sentVer.version} 확정됨 · 지문 {sentVer.snapshotHash}
+                <span className="block text-slate-500 font-normal mt-0.5">이 버전은 이후 원본을 고쳐도 바뀌지 않습니다.</span>
+              </div>
+            )}
+          </div>
+
+          <Field label={sentVer ? `② 승인 링크 (발송본 v${sentVer.version} 고정)` : "승인 링크"}>
             <div className="flex gap-2">
-              <input readOnly value={link} className={inputCls + " flex-1"} onFocus={(e) => e.target.select()} />
-              <button onClick={() => copy(link, "link")} className="px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold whitespace-nowrap">{copied === "link" ? "✅ 복사됨" : "링크 복사"}</button>
+              <input readOnly value={activeLink} className={inputCls + " flex-1"} onFocus={(e) => e.target.select()} />
+              <button onClick={() => copy(activeLink, "link")} className="px-3 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold whitespace-nowrap">{copied === "link" ? "✅ 복사됨" : "링크 복사"}</button>
             </div>
+            {sentVer && (
+              <button onClick={() => window.open(activeLink, "_blank")}
+                className="w-full mt-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-[11px] font-medium">
+                🔍 발송본 미리보기 · PDF 내려받기
+              </button>
+            )}
+            {!sentVer && <p className="text-[10px] text-amber-600 mt-1">아직 발송본을 확정하지 않아 이 링크는 <b>원본 문서</b>를 가리킵니다. 확정하면 버전 고정 링크로 바뀝니다.</p>}
           </Field>
 
           <Field label="안내 문구 (카톡·문자 붙여넣기용)">
@@ -13077,6 +13375,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
   const [clientInfo, setClientInfo] = useState(() => ({ clientName: "", clientId: "", contact: "", channel: "카카오채널", employee: (roleUser && roleUser.displayName) || "", proposalTitle: "" }));
   const [proposalList, setProposalList] = useState([]);
   const [invoiceList, setInvoiceList] = useState([]); // INVOICE(인보이스) 발행 목록 — 제안서에서 파생, proposalId로 연결
+  const [docVersions, setDocVersions] = useState([]); // 📌 고객 발송본(얼린 사본) 목록 — 원본과 별도로 보관
   const [factoriesList, setFactoriesList] = useState([]);
   const [productsList, setProductsList] = useState([]);
   const [excelArchiveList, setExcelArchiveList] = useState([]);
@@ -13497,10 +13796,11 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
     const unsub8 = fsSubscribe(COLLECTIONS.samples, markResponded((list) => setSampleList(list)), handleFsError);
     const unsub9 = fsSubscribe(COLLECTIONS.sampleStock, markResponded((list) => setSampleStockList(list)), handleFsError);
     const unsub10 = fsSubscribe(COLLECTIONS.invoices, markResponded((list) => setInvoiceList(list)), handleFsError);
+    const unsub11 = fsSubscribe(COLLECTIONS.docVersions, markResponded((list) => setDocVersions(list)), handleFsError);
     // 8초가 지나도 9개 컬렉션 중 단 하나도 응답(성공/실패 무관)이 없으면 — 권한거부 에러조차 안 뜬 것이므로
     // 네트워크/방화벽이 Firestore 접속 자체를 막고 있을 가능성이 높다고 보고 별도로 경고한다.
     const slowTimer = setTimeout(() => { if (FIREBASE_ENABLED && !gotAnyResponse) setFsSlowWarning(true); }, 8000);
-    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); clearTimeout(slowTimer); };
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); clearTimeout(slowTimer); };
   }, []);
   const [clientModal, setClientModal] = useState({ open: false, mode: "save" });
 
@@ -15152,6 +15452,72 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         수량별 단가(priceTiers)는 아예 건드리지 않으므로 구조적으로 유실될 수 없다.
      ⚠️ 한 건이 실패해도 나머지는 계속 진행하고, 끝에 성공·실패 건수를 그대로 보고한다
         (일부만 반영됐는데 "완료"로 표시하지 않기 위함 — 10장 9번 조건). */
+  /* 📌 발송본 확정 — 지금 문서를 통째로 얼려 doc_versions에 새 버전으로 남긴다(지시서 §3·§4).
+     ⚠️ 저장에 실패하면 발송본이 만들어지지 않은 것이므로 **발송완료로 기록하지 않는다**(§6).
+        호출부는 반환값이 null이면 다음 단계로 넘어가지 않아야 한다.
+     ⚠️ 원본 문서(proposals·invoices)는 여기서 건드리지 않는다. */
+  const createSentVersion = async ({ doc, docKind, tier, tierLabel, message, reissueReason }) => {
+    if (!doc || doc.id == null) { setToast("⚠️ 저장되지 않은 문서는 발송본을 만들 수 없습니다. 먼저 저장해주세요."); return null; }
+    const snapshot = buildDocSnapshot(doc, { supplierLogo: supplierLogo });
+    const version = nextVersionNo(docVersions, doc.id, tier || "");
+    const rec = pruneUndefined({
+      docId: String(doc.id), docKind: docKind || "invoice",
+      tier: tier || "", tierLabel: tierLabel || "",
+      code: doc.code || "", clientName: doc.clientName || "",
+      version: version,
+      snapshot: snapshot,
+      snapshotHash: snapshotHash(snapshot),
+      totalAmount: snapshot.totalAmount != null ? snapshot.totalAmount : proposalItemsTotal(snapshot.items),
+      message: message || "",
+      reissueReason: reissueReason || (version > 1 ? "(사유 미입력)" : ""),
+      createdAt: nowDateTimeStr(),
+      createdBy: (roleUser && roleUser.displayName) || "",
+      sentAt: "", sentBy: "", sentChannel: "",
+      approvedAt: "", approvedBy: "",
+      supersededBy: "", supersededVersion: 0,
+    });
+    // 용량 보호 — Firestore 문서 한 개는 1MB를 넘길 수 없다. 사진이 커서 넘칠 것 같으면 사진만 빼고 그 사실을 남긴다.
+    let payload = rec;
+    if (stableStringify(rec).length > 900000) {
+      payload = { ...rec, snapshot: { ...snapshot, items: snapshot.items.map((it) => ({ ...it, image: "" })) }, imagesOmitted: true };
+      payload.snapshotHash = snapshotHash(payload.snapshot);
+    }
+    try {
+      const res = await fsAdd(COLLECTIONS.docVersions, payload);
+      const saved = { ...payload, id: (res && res.id) || `v-${Date.now()}` };
+      setDocVersions((prev) => [saved, ...prev]);
+      // 직전 버전에 "이후 수정본 발행됨" 표시 — 내용은 건드리지 않고 표시만 더한다(§5)
+      const prevVer = versionsOf(docVersions, doc.id, tier || "")[0];
+      if (prevVer && prevVer.id) {
+        const patch = { supersededBy: saved.id, supersededVersion: version };
+        setDocVersions((prev) => prev.map((v) => (v.id === prevVer.id ? { ...v, ...patch } : v)));
+        try { if (typeof prevVer.id === "string") await fsUpdate(COLLECTIONS.docVersions, prevVer.id, patch); } catch (e) { console.error(e); }
+      }
+      setToast(`발송본 v${version}을 확정했습니다. 이 버전은 이후 원본이 바뀌어도 그대로 보존됩니다.`);
+      return saved;
+    } catch (e) {
+      console.error("발송본 저장 실패:", e);
+      setToast("⚠️ 발송본을 저장하지 못했습니다: " + ((e && e.message) || e) + " — 발송완료로 처리하지 않았습니다.");
+      return null;
+    }
+  };
+
+  /* 실제로 고객에게 보냈다는 기록 — 문구 복사와는 별개다(지시서 §7).
+     직원이 문구를 복사만 했다고 발송 성공으로 보지 않는다. */
+  const markVersionSent = async (version, channel) => {
+    if (!version || !version.id) return false;
+    const patch = { sentAt: nowDateTimeStr(), sentBy: (roleUser && roleUser.displayName) || "", sentChannel: channel || "카카오톡" };
+    setDocVersions((prev) => prev.map((v) => (v.id === version.id ? { ...v, ...patch } : v)));
+    try {
+      if (typeof version.id === "string") await fsUpdate(COLLECTIONS.docVersions, version.id, patch);
+      return true;
+    } catch (e) {
+      console.error("발송 기록 실패:", e);
+      setToast("⚠️ 발송 기록을 저장하지 못했습니다. 발송 이력에 남지 않았습니다.");
+      return false;
+    }
+  };
+
   const applyStandardProductNames = async (rows) => {
     const list = Array.isArray(rows) ? rows : [];
     if (list.length === 0) return;
@@ -15945,6 +16311,8 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         return (
           <InvoiceApprovalSendModal
             invoice={{ ...iv, items: Array.isArray(iv.items) ? iv.items : [] }}
+            docKind="invoice"
+            versions={docVersions} onCreateVersion={createSentVersion} onMarkSent={markVersionSent}
             titleText={`📤 ${label} 청구 안내문 발송`}
             sendLabel={`💬 ${label} 청구 문구 전체 복사 + 청구발송 처리`}
             sentLabel={`✅ 복사되었습니다 (${label} 발송완료 처리됨)`}
@@ -15959,6 +16327,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
         onClose={() => setClientModal({ open: false, mode: clientModal.mode })} onSubmit={handleClientSubmit} />
       <PdfPreview
         open={!!pdfData} data={pdfData} onClose={() => setPdfData(null)} supplierLogo={supplierLogo}
+        docVersions={docVersions} onCreateVersion={createSentVersion} onMarkSent={markVersionSent}
         onSendComplete={async (id, channel) => {
           const actorName = (roleUser && roleUser.displayName) || "알 수 없음";
           const patch = { status: "발송완료", reviewStatus: "발송완료", sentBy: actorName, sentAt: nowDateTimeStr(), sentChannel: channel, updatedAt: nowDateTimeStr(), updatedBy: actorName };
@@ -15980,6 +16349,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       <PdfPreview
         mode="invoice"
         open={!!invoiceData} data={invoiceData} onClose={() => setInvoiceData(null)} supplierLogo={supplierLogo}
+        docVersions={docVersions} onCreateVersion={createSentVersion} onMarkSent={markVersionSent}
         onChangeStage={changeInvoiceStepStage}
         /* 번호 중복 검사용 — 자기 자신을 뺀 나머지 인보이스의 번호 목록(사진 등 무거운 필드는 넘기지 않는다) */
         invoiceCodes={invoiceList.map((x) => ({ id: x.id, code: x.code, clientName: x.clientName }))}
@@ -16221,6 +16591,7 @@ function App({ currentUser, onLogout, roleUser, accounts, onSaveAccount, onDelet
       {view === "proposals" && (
         <ProposalListView
           isAdmin={isAdmin}
+          docVersions={docVersions}
           proposals={proposalList}
           onBack={() => {
             // 목록으로 돌아갈 때 "어떤 제안서를 수정중이었는지" 연결정보만 안전하게 정리한다(작성중이던 품목/고객정보 자체는 그대로 유지 —
@@ -17345,6 +17716,87 @@ function CustomerFooter() {
   );
 }
 
+/* 📌 발송본 열람 화면 — 고객이 받은 버전별 링크(?type=sent&id=…)로 들어오는 곳.
+   ⚠️ 여기서는 원본 문서(proposals·invoices)를 **절대 읽지 않는다.** 얼린 사본만 본다.
+      그래야 원본의 금액·품목·제품명·사진이 바뀌어도 고객이 받은 내용이 그대로 보인다. */
+function SentVersionPage({ versionId }) {
+  const [ver, setVer] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!FIREBASE_ENABLED || !db) { setError("문서 저장소에 연결할 수 없습니다."); setLoading(false); return; }
+        const snap = await db.collection(COLLECTIONS.docVersions).doc(versionId).get();
+        if (!alive) return;
+        if (!snap.exists) { setError("요청하신 문서를 찾을 수 없습니다. 링크를 다시 확인해 주세요."); setLoading(false); return; }
+        setVer({ id: snap.id, ...snap.data() });
+        setLoading(false);
+      } catch (e) {
+        console.error(e);
+        if (alive) { setError("문서를 불러오는 중 오류가 발생했습니다."); setLoading(false); }
+      }
+    })();
+    return () => { alive = false; };
+  }, [versionId]);
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-400 text-sm">문서를 불러오는 중입니다…</div>;
+  if (error) return (
+    <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="text-center"><div className="text-3xl mb-2">📄</div><p className="text-sm text-slate-600">{error}</p></div>
+    </div>
+  );
+
+  const snap = ver.snapshot || {};
+  const superseded = !!ver.supersededBy;
+  const data = { ...snap, id: snap.docId, isInvoice: ver.docKind === "invoice" };
+
+  return (
+    <div className="min-h-screen bg-slate-100 py-6">
+      <div className="max-w-5xl mx-auto px-4">
+        <div className="bg-[#1E3A8A] text-white rounded-t-xl px-5 py-3 flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <div className="text-sm font-bold">{SENT_KIND_LABEL[ver.docKind] || "발송 문서"}{ver.tierLabel ? ` · ${ver.tierLabel}` : ""}</div>
+            <div className="text-[11px] opacity-80">
+              문서번호 {snap.code || "-"} · 발송본 v{ver.version} · 발송일 {(ver.sentAt || ver.createdAt || "").slice(0, 16)}
+            </div>
+          </div>
+          <button onClick={() => window.print()} className="no-print bg-white text-[#1E3A8A] text-xs font-bold px-3 py-1.5 rounded-lg">
+            📄 PDF 다운로드 / 인쇄
+          </button>
+        </div>
+
+        {/* 이후 수정본이 나온 경우 — 알리되 이 버전의 내용은 그대로 둔다(지시서 §5) */}
+        {superseded && (
+          <div className="no-print bg-amber-50 border-x border-b border-amber-200 px-5 py-2.5 text-[12px] text-amber-900">
+            ⚠️ 이 문서는 <b>발송본 v{ver.version}</b>이며, 이후 수정본(v{ver.supersededVersion || "최신"})이 발행되었습니다.
+            아래 내용은 <b>발송 당시 그대로</b>이며 변경되지 않습니다. 최신 내용은 담당자에게 문의해 주세요.
+          </div>
+        )}
+        {ver.approvedAt && (
+          <div className="no-print bg-emerald-50 border-x border-b border-emerald-200 px-5 py-2.5 text-[12px] text-emerald-800">
+            ✅ 이 발송본은 {String(ver.approvedAt).slice(0, 16)}에 <b>{ver.approvedBy || "고객"}</b>님이 승인하셨습니다.
+          </div>
+        )}
+
+        <div className="bg-white rounded-b-xl shadow-sm overflow-hidden">
+          {/* 읽기 전용 문서 렌더러를 그대로 쓴다 — 고객 승인 화면과 같은 레이아웃 */}
+          <PdfPreview open data={data} mode={ver.docKind === "proposal" ? "proposal" : "invoice"}
+            supplierLogo={snap.supplierLogo || ""} onClose={() => {}} />
+        </div>
+
+        <p className="no-print text-center text-[11px] text-slate-400 mt-3">
+          본 문서는 발송 시점({(ver.sentAt || ver.createdAt || "").slice(0, 16)})의 내용을 그대로 보관한 사본입니다.
+          문서 지문 {ver.snapshotHash || "-"}
+        </p>
+      </div>
+    </div>
+  );
+}
+const SENT_KIND_LABEL = { proposal: "제품 공급 제안서", invoice: "본품 인보이스", sample: "샘플 인보이스", ct: "CT 맞춤샘플 인보이스" };
+
 function CustomerConsentPage({ invoiceId }) {
   const [invoice, setInvoice] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -17745,8 +18197,25 @@ function SampleApprovalPage({ sampleId, kind }) {
 }
 
 /* 제안서 고객 열람링크 발송 모달 — 인보이스/계약서 발송 모달과 동일 형식 */
-function ProposalSendModal({ proposal, onClose, onSent }) {
+function ProposalSendModal({ proposal, onClose, onSent, versions, onCreateVersion, onMarkSent }) {
   const link = `${window.location.origin}/agree?type=proposal&id=${proposal.id}`;
+  /* 📌 발송본 — 확정 전에는 원본 링크, 확정하면 그 버전으로 고정된 링크를 쓴다(지시서 §3·§5) */
+  const [sentVer, setSentVer] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState("");
+  const [recorded, setRecorded] = useState(false);
+  const myVersions = versionsOf(versions || [], proposal.id, "");
+  const hasPrev = myVersions.length > 0;
+  const activeLink = sentVer ? sentLinkFor(sentVer) : link;
+  const confirmVersion = async () => {
+    if (!onCreateVersion) return;
+    setBusy(true);
+    try {
+      const v = await onCreateVersion({ doc: proposal, docKind: "proposal", tier: "", tierLabel: "",
+        message: message, reissueReason: reason });
+      if (v) setSentVer(v);
+    } finally { setBusy(false); }
+  };
   const items = proposal.items || [];
   const first = items[0] || {};
   const productLabel = (first.productName || "제안 품목") + (items.length > 1 ? ` 외 ${items.length - 1}건` : "");
@@ -17808,10 +18277,30 @@ function ProposalSendModal({ proposal, onClose, onSent }) {
             <textarea readOnly rows={14} value={message} className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-y bg-slate-50" onFocus={(e) => e.target.select()} />
           </Field>
 
-          <button onClick={() => { copy(message, "msg"); if (onSent) onSent(); }}
-            className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold">
-            {copied === "msg" ? "✅ 복사되었습니다 (발송완료 처리됨)" : "💬 안내 문구 전체 복사 + 발송완료 처리"}
+          {/* ③ 문구 복사 — 복사만으로는 발송 성공으로 기록하지 않는다(지시서 §7).
+              실제로 카톡에 붙여넣어 보냈는지는 사람만 알 수 있으므로 ④에서 따로 눌러 기록한다. */}
+          <button onClick={() => copy(message, "msg")}
+            className="w-full px-3 py-2.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-bold border border-slate-200">
+            {copied === "msg" ? "✅ 복사되었습니다" : "③ 💬 안내 문구 복사"}
           </button>
+
+          {/* ④ 실제 발송 기록 — 복사·확정과 분리된 별도 동작 */}
+          <button
+            onClick={async () => {
+              if (!window.confirm("카카오톡으로 실제 전달을 마치셨습니까?\n\n확인을 누르면 발송 이력에 기록되고 상태가 [발송완료]로 바뀝니다.")) return;
+              if (sentVer && onMarkSent) { const ok = await onMarkSent(sentVer, "카카오톡"); if (!ok) return; }
+              setRecorded(true);
+              if (onSent) onSent();
+            }}
+            disabled={recorded}
+            className="w-full px-3 py-2.5 rounded-lg bg-amber-400 text-slate-900 text-sm font-bold disabled:opacity-60">
+            {recorded ? "✅ 발송완료로 기록되었습니다" : "④ 실제 발송했습니다 — 발송완료 기록"}
+          </button>
+          {!sentVer && (
+            <p className="text-[11px] text-amber-600">
+              ⚠️ 발송본을 확정하지 않고 기록하면 <b>발송 당시 내용이 보존되지 않습니다.</b> ①을 먼저 눌러주세요.
+            </p>
+          )}
           <p className="text-[11px] text-slate-400">
             복사한 문구를 카카오톡·문자에 붙여넣어 보내주세요. 고객이 제안서를 확인하면 목록에 <b>👁️ 고객확인</b> 배지가 자동으로 표시됩니다.
           </p>
@@ -18018,6 +18507,9 @@ function parseCustomerRoute() {
       return { kind: (type === "ct" || type === "ct_invoice") ? "ct" : "sample", id: q.get("id") };
     }
     if (type === "proposal" && (q.get("id") || q.get("proposalId"))) return { kind: "proposal", id: q.get("id") || q.get("proposalId") }; // 제안서 고객 열람
+    /* 📌 발송본 링크 — 이 주소는 얼린 사본만 본다. 원본이 바뀌어도 내용이 달라지지 않는다.
+       기존 type=invoice·proposal 링크는 위에서 그대로 처리되므로 옛 링크도 계속 열린다. */
+    if (type === "sent" && q.get("id")) return { kind: "sent", id: q.get("id") };
   } catch (e) { /* URLSearchParams 미지원 환경은 해시로 폴백 */ }
   const raw = decodeURIComponent(window.location.hash || "").trim();
   const mc = /^#계약서서명\?업체=(.+)$/.exec(raw);
@@ -18036,6 +18528,7 @@ const CUSTOMER_PAGE_TITLES = {
   contract: `표준계약서 전자서명 | ${BRAND_TITLE}`,
   sample: `샘플 인보이스 | ${BRAND_TITLE}`,
   ct: `CT 맞춤샘플 인보이스 | ${BRAND_TITLE}`,
+  sent: `발송 문서 | ${BRAND_TITLE}`,
 };
 
 /* 로그인 비교용 정규화 — 한글 아이디는 입력 환경에 따라 같은 글자라도 내부 코드가 달라질 수 있다
@@ -18366,6 +18859,9 @@ function Root() {
   }
   /* 고객용 동의 링크(#고객동의?건=<인보이스ID>)는 로그인 없이 열려야 하므로
      RoleLoginScreen 게이트보다 먼저 분기한다. Firebase 익명인증은 위 checking 단계에서 끝난 상태. */
+  if (customerRoute.kind === "sent") {
+    return <SentVersionPage versionId={customerRoute.id} />;
+  }
   if (customerRoute.kind === "invoice") {
     return <CustomerConsentPage invoiceId={customerRoute.id} />;
   }
